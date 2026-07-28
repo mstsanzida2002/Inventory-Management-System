@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Stockwell — AI-Powered Smart Inventory Management{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'css/landing.css' %}">
+{% endblock %}
+
+{% block content %}
+  {% include "includes/navbar.html" %}
+
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <span class="eyebrow">AI demand forecasting · dead-stock detection</span>
+        <h1>Know what&rsquo;s on your shelves. Before you run out.</h1>
+        <p class="lede">
+          Stockwell replaces spreadsheets with a live inventory ledger and AI that
+          tells you what to reorder, what to stop buying, and what&rsquo;s about
+          to run dry &mdash; before it costs you a sale.
+        </p>
+        <div class="hero-cta">
+          <a href="#contact" class="btn btn-primary btn-lg">Request a demo</a>
+          <a href="#features" class="btn btn-secondary btn-lg">See how it works</a>
+        </div>
+        <div class="hero-proof">
+          <div class="avatar-stack" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <span>Built for warehouses, retailers &amp; distributors managing 1,000+ SKUs</span>
+        </div>
+      </div>
+
+      <div class="preview-panel" aria-hidden="true">
+        <div class="preview-toprow">
+          <div class="stat-tile">
+            <div class="label">Inventory value</div>
+            <div class="value">$482,910</div>
+          </div>
+          <div class="stat-tile">
+            <div class="label">Low stock alerts</div>
+            <div class="value warn">14</div>
+          </div>
+          <div class="stat-tile">
+            <div class="label">Reorder suggested</div>
+            <div class="value up">9</div>
+          </div>
+        </div>
+
+        <div class="preview-chart">
+          <div class="chart-head">
+            <span>Weekly stock movement</span>
+            <span class="badge badge-indigo">AI</span>
+          </div>
+          <div class="bars">
+            <span style="height:40%"></span>
+            <span style="height:65%"></span>
+            <span style="height:88%"></span>
+            <span style="height:52%"></span>
+            <span style="height:70%"></span>
+            <span style="height:45%"></span>
+            <span style="height:60%"></span>
+          </div>
+        </div>
+
+        <div class="preview-list">
+          <div class="preview-row">
+            <span>Stainless Steel Bottle 750ml <span class="sku">SKU-4821</span></span>
+            <span class="badge badge-warning">Low stock</span>
+          </div>
+          <div class="preview-row">
+            <span>Cotton Tote Bag <span class="sku">SKU-1190</span></span>
+            <span class="badge badge-success">In stock</span>
+          </div>
+          <div class="preview-row">
+            <span>Ceramic Mug 350ml <span class="sku">SKU-2033</span></span>
+            <span class="badge badge-danger">Dead stock</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="ledger-ticker" aria-hidden="true">
+    <div class="ticker-track" data-ticker-track>
+      <span class="ticker-item"><span class="dir-in">&#9650;</span> +120 units &middot; SKU-4821 &middot; Warehouse A &middot; Purchase Receipt</span>
+      <span class="ticker-item"><span class="dir-out">&#9660;</span> &minus;18 units &middot; SKU-1190 &middot; Warehouse A &middot; Sale #INV-20481</span>
+      <span class="ticker-item"><span class="dir-in">&#9650;</span> +64 units &middot; SKU-7745 &middot; Warehouse B &middot; Purchase Receipt</span>
+      <span class="ticker-item"><span class="dir-out">&#9660;</span> &minus;6 units &middot; SKU-2033 &middot; Warehouse A &middot; Adjustment</span>
+      <span class="ticker-item"><span class="dir-out">&#9660;</span> &minus;32 units &middot; SKU-4821 &middot; Warehouse A &middot; Sale #INV-20482</span>
+      <span class="ticker-item"><span class="dir-in">&#9650;</span> +200 units &middot; SKU-1190 &middot; Warehouse C &middot; Purchase Receipt</span>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">Everything the inventory lifecycle needs</span>
+        <h2>One ledger. Every transaction. No spreadsheets.</h2>
+        <p>Product, supplier, purchase, sales, and adjustments all write to the same
+          real-time stock ledger &mdash; so every number on every dashboard traces
+          back to something that actually happened.</p>
+      </div>
+
+      <div class="grid grid-4">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </div>
+          <h3>Purchase &amp; receiving</h3>
+          <p>Draft, approve, and receive purchase orders &mdash; with partial deliveries and automatic stock updates on receipt.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3h18v4H3z"/><path d="M5 7v13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7"/><path d="M10 11h4"/></svg>
+          </div>
+          <h3>Sales &amp; invoicing</h3>
+          <p>Every sale checks live availability, deducts stock automatically, and generates a printable invoice.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18" stroke-linecap="round"/></svg>
+          </div>
+          <h3>Adjustments &amp; audit trail</h3>
+          <p>Every correction requires a reason and supervisor approval, and is logged &mdash; nothing is ever silently deleted.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          </div>
+          <h3>Role-based access</h3>
+          <p>Administrators, supervisors, and staff each see only what their role needs &mdash; enforced on every request.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ai">
+    <div class="container">
+      <div class="ai-split">
+        <div>
+          <span class="eyebrow" style="background:rgba(242,169,59,0.16); color:var(--c-amber);">AI built into the ledger, not bolted on</span>
+          <h2>Forecast demand. Catch dead stock before it ties up your cash.</h2>
+          <p class="lede">Stockwell analyzes your actual sales history &mdash; not guesses &mdash;
+            to recommend reorder quantities and flag products that have stopped moving,
+            so purchasing decisions are based on data instead of gut feel.</p>
+          <div class="ai-metric-row">
+            <div class="ai-metric">
+              <div class="num">2,400+</div>
+              <div class="label">forecasts generated weekly</div>
+            </div>
+            <div class="ai-metric">
+              <div class="num">18%</div>
+              <div class="label">avg. reduction in dead stock</div>
+            </div>
+          </div>
+        </div>
+        <div class="feature-card is-ai" style="background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.12);">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l6-6 4 4 8-8"/></svg>
+          </div>
+          <h3 style="color:#fff;">Reorder recommendation</h3>
+          <p style="color:var(--c-slate-200);">SKU-4821 &middot; Stainless Steel Bottle 750ml</p>
+          <div class="preview-row" style="border-color:rgba(255,255,255,0.12);">
+            <span style="color:var(--c-slate-200);">Forecasted demand (14d)</span>
+            <span class="mono" style="color:#fff;">340 units</span>
+          </div>
+          <div class="preview-row" style="border-color:rgba(255,255,255,0.12);">
+            <span style="color:var(--c-slate-200);">Current stock</span>
+            <span class="mono" style="color:#fff;">96 units</span>
+          </div>
+          <div class="preview-row" style="border:none;">
+            <span style="color:var(--c-slate-200);">Suggested reorder</span>
+            <span class="badge badge-warning">280 units</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="contact">
+    <div class="container">
+      <div class="cta-band">
+        <h2>Ready to see your inventory in real time?</h2>
+        <p class="lede">Get a walkthrough with your own product catalog &mdash; no generic demo data.</p>
+        <a href="mailto:hello@stockwell.example" class="btn btn-secondary btn-lg" style="margin-top: var(--sp-4); background:#fff;">Request a demo</a>
+      </div>
+    </div>
+  </section>
+
+  {% include "includes/footer.html" %}
+{% endblock %}

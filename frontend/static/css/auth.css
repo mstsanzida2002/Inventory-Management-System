@@ -1,0 +1,245 @@
+/* ==========================================================================
+   AUTH — split-panel login page.
+   Left: form panel (white/mist). Right: brand panel (indigo gradient +
+   abstract ledger/crate illustration). No self-registration tab —
+   accounts are provisioned by the System Administrator (req 2.6).
+   ========================================================================== */
+
+/* Page is a decorative backdrop (soft brand-color glows over the site's
+   mist background); the actual UI floats on top as an elevated card,
+   rather than bleeding the two panels edge-to-edge. */
+.auth-page {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+}
+
+.auth-bg-glow {
+  position: fixed;
+  z-index: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: authGlowDrift 18s ease-in-out infinite alternate;
+}
+.auth-bg-glow.one {
+  width: 620px; height: 620px;
+  top: -200px; left: -180px;
+  background: radial-gradient(circle, rgba(61,79,224,0.14), transparent 70%);
+}
+.auth-bg-glow.two {
+  width: 520px; height: 520px;
+  bottom: -180px; right: -160px;
+  background: radial-gradient(circle, rgba(242,169,59,0.13), transparent 70%);
+  animation-duration: 22s;
+  animation-delay: -6s;
+}
+.auth-bg-glow.three {
+  width: 380px; height: 380px;
+  top: 55%; right: 6%;
+  background: radial-gradient(circle, rgba(31,169,122,0.09), transparent 70%);
+  animation-duration: 25s;
+  animation-delay: -12s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-bg-glow { animation: none; }
+}
+@media (max-width: 720px) {
+  .auth-bg-glow.three { display: none; }
+}
+
+.auth-shell { position: relative; z-index: 1; width: 100%; max-width: 1080px; }
+
+.auth-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  color: var(--c-slate);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  margin-bottom: var(--sp-4);
+}
+.auth-back-link:hover { color: var(--c-indigo); }
+.auth-back-link .icon { width: 16px; height: 16px; }
+
+/* ---- Elevated card holding both panels ---- */
+/* Left (form) is deliberately wider than right (info) — it's the panel
+   that matters for the task at hand. */
+.auth-card {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.3fr) minmax(360px, 1fr);
+  background: var(--c-white);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+/* ---- Left: form panel ---- */
+.auth-form-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: var(--sp-8);
+}
+.auth-form-inner { max-width: 360px; margin-inline: auto; width: 100%; }
+.auth-brand { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-8); }
+.auth-brand .brand-mark { width: 28px; height: 28px; }
+.auth-brand span { font-family: var(--font-display); font-weight: 800; font-size: var(--fs-sm); }
+
+/* Flatten the shared .btn-primary glow for this page only — a colored
+   drop-shadow reads as a marketing CTA, not a sign-in action. */
+.auth-form .btn-primary {
+  box-shadow: none;
+  margin-top: var(--sp-2);
+}
+.auth-form .btn-primary:hover { box-shadow: var(--shadow-sm); }
+
+/* Circular tinted icon badges on the inputs, scoped to this page only —
+   the shared .field-icon stays a plain inline glyph everywhere else. */
+.auth-form .field-icon {
+  left: 0.4rem;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--c-indigo-tint);
+  color: var(--c-indigo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-form .field-icon svg { width: 16px; height: 16px; }
+.auth-form .input { padding-left: 3.4rem; }
+
+.auth-heading {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  margin-bottom: var(--sp-2);
+}
+.auth-subheading { color: var(--c-slate); font-size: var(--fs-sm); margin-bottom: var(--sp-6); }
+
+.auth-form .form-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--sp-6);
+}
+.auth-form .form-footer-row a { font-size: var(--fs-sm); font-weight: 500; }
+
+.auth-divider {
+  display: flex; align-items: center; gap: var(--sp-3);
+  color: var(--c-slate); font-size: var(--fs-xs);
+  margin-block: var(--sp-6);
+}
+.auth-divider::before, .auth-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--c-slate-200);
+}
+
+.auth-footnote {
+  margin-top: var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--c-slate);
+  text-align: center;
+}
+
+/* ---- Right: brand panel ---- */
+/* Light wash in the site's own palette (mist → indigo tint), matching the
+   rest of the app rather than a dark marketing panel. Two soft, slow-moving
+   glows carry the motion — everything else is static. */
+.auth-brand-panel {
+  position: relative;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(61,79,224,0.07) 1px, transparent 0) 0 0/26px 26px,
+    linear-gradient(160deg, var(--c-mist) 0%, var(--c-indigo-tint) 60%, var(--c-white) 100%);
+  border-left: 1px solid var(--c-slate-100);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: var(--sp-10);
+}
+
+.auth-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  width: 420px; height: 420px;
+  top: -110px; right: -110px;
+  background: radial-gradient(circle, rgba(61,79,224,0.14), transparent 70%);
+  animation: authGlowDrift 10s ease-in-out infinite alternate;
+}
+.auth-glow.amber {
+  width: 320px; height: 320px;
+  top: auto; right: auto; bottom: -90px; left: -90px;
+  background: radial-gradient(circle, rgba(242,169,59,0.14), transparent 70%);
+  animation-duration: 13s;
+  animation-delay: -4s;
+}
+@keyframes authGlowDrift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(-14px, 18px) scale(1.12); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-glow { animation: none; }
+}
+
+.auth-panel-content {
+  position: relative;
+  z-index: 1;
+  max-width: 420px;
+  width: 100%;
+  opacity: 0;
+  transform: translateY(8px);
+  animation: authPanelIn var(--dur-slow) var(--ease-out) forwards;
+  animation-delay: 100ms;
+}
+@keyframes authPanelIn {
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-panel-content { animation: none; opacity: 1; transform: none; }
+}
+
+.auth-panel-eyebrow {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-indigo);
+  margin-bottom: var(--sp-4);
+}
+
+.auth-panel-headline {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-tight);
+  color: var(--c-ink);
+  letter-spacing: -0.01em;
+  margin-bottom: var(--sp-5);
+}
+
+.auth-panel-text { color: var(--c-slate); font-size: var(--fs-sm); line-height: var(--lh-normal); }
+.auth-panel-text + .auth-panel-text { margin-top: var(--sp-4); }
+
+.auth-panel-footline {
+  border-top: 1px solid var(--c-slate-100);
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-5);
+  color: var(--c-slate);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 900px) {
+  .auth-shell { max-width: 440px; }
+  .auth-card { grid-template-columns: 1fr; }
+  .auth-brand-panel { display: none; }
+}
+
+@media (max-width: 480px) {
+  .auth-page { padding: var(--sp-4); }
+  .auth-form-panel { padding: var(--sp-6); }
+}

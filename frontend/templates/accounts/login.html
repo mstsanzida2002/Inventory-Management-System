@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Log in — Stockwell{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'css/auth.css' %}?v=5">
+{% endblock %}
+
+{% block content %}
+{% include 'includes/icons.html' %}
+<div class="auth-page">
+  <span class="auth-bg-glow one" aria-hidden="true"></span>
+  <span class="auth-bg-glow two" aria-hidden="true"></span>
+  <span class="auth-bg-glow three" aria-hidden="true"></span>
+
+  <div class="auth-shell">
+
+    <a href="{% url 'frontend:landing' %}" class="auth-back-link">
+      <svg class="icon"><use href="#icon-chevron-left"></use></svg>
+      Back to homepage
+    </a>
+
+    <div class="auth-card">
+
+      <div class="auth-form-panel">
+        <div class="auth-form-inner">
+          <div class="auth-brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span>Stockwell</span>
+          </div>
+
+          <h1 class="auth-heading">Welcome back</h1>
+          <p class="auth-subheading">Log in with the credentials your administrator assigned you.</p>
+
+          {% if form.non_field_errors %}
+            <div class="field-error" style="margin-bottom: var(--sp-4); padding-left:0;">
+              {{ form.non_field_errors }}
+            </div>
+          {% endif %}
+
+          <form method="post" action="{% url 'accounts:login' %}" class="auth-form" novalidate>
+            {% csrf_token %}
+
+            <div class="field">
+              <span class="field-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+              </span>
+              <label class="sr-only" for="id_username">Username or email</label>
+              <input class="input {% if form.username.errors %}has-error{% endif %}"
+                     type="text" name="username" id="id_username"
+                     placeholder="Username or email" required autofocus>
+            </div>
+            {% if form.username.errors %}<div class="field-error">{{ form.username.errors|striptags }}</div>{% endif %}
+
+            <div class="field">
+              <span class="field-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+              </span>
+              <label class="sr-only" for="id_password">Password</label>
+              <input class="input {% if form.password.errors %}has-error{% endif %}"
+                     type="password" name="password" id="id_password"
+                     placeholder="Password" required style="padding-right: 3rem;">
+              <button type="button" class="btn-ghost" data-toggle-password="id_password"
+                      aria-label="Show password"
+                      style="position:absolute; right:6px; top:50%; transform:translateY(-50%); padding:0.5rem; border-radius:50%;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            {% if form.password.errors %}<div class="field-error">{{ form.password.errors|striptags }}</div>{% endif %}
+
+            <div class="form-footer-row">
+              <label class="checkbox-row">
+                <input type="checkbox" name="remember_me" id="id_remember_me">
+                Keep me signed in
+              </label>
+              <a href="{% url 'accounts:password_reset' %}">Forgot password?</a>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-block btn-lg">Log in</button>
+          </form>
+
+          <p class="auth-footnote">
+            Locked out or need an account? Contact your System Administrator &mdash;
+            Stockwell accounts are provisioned internally, not self-registered.
+          </p>
+        </div>
+      </div>
+
+      <div class="auth-brand-panel" aria-hidden="true">
+        <span class="auth-glow"></span>
+        <span class="auth-glow amber"></span>
+
+        <div class="auth-panel-content">
+          <div class="auth-panel-eyebrow">AI-Powered Inventory Management</div>
+          <div class="auth-panel-headline">Stock decisions, backed by data — not guesswork.</div>
+
+          <p class="auth-panel-text">
+            Stockwell tracks products, categories, suppliers, purchases, and sales in one
+            place, with stock levels updated the moment a sale, receipt, or adjustment happens.
+            Inventory never quietly drifts into the negative.
+          </p>
+          <p class="auth-panel-text">
+            Every purchase order and stock adjustment passes through supervisor approval and is recorded in a permanent audit log. AI-driven demand forecasting and dead-stock detection catch slow-moving inventory early.
+          </p>
+
+          <p class="auth-panel-footline">Trusted by inventory teams managing 50,000+ SKUs</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}

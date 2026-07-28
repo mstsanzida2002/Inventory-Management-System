@@ -1,0 +1,29 @@
+# Environments / secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+/staticfiles
+
+# Claude Code local settings (may contain machine-specific/local config)
+.claude/settings.local.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

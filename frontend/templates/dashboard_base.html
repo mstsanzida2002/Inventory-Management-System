@@ -1,0 +1,55 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block browser_title %}Dashboard{% endblock %} · Stockwell</title>
+
+  {# Fonts used by tokens.css: Archivo (display), Inter (body), IBM Plex Mono (data) #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+
+  {# Shared design system — same load order as the public site #}
+  <link rel="stylesheet" href="{% static 'css/tokens.css' %}">
+  <link rel="stylesheet" href="{% static 'css/base.css' %}">
+  <link rel="stylesheet" href="{% static 'css/components.css' %}">
+  <link rel="stylesheet" href="{% static 'css/dashboard.css' %}">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+
+  {% include 'includes/icons.html' %}
+
+  <div class="app">
+
+    {% include 'includes/sidebar.html' %}
+
+    <div class="app-main">
+      <header class="topbar">
+        <button class="topbar-menu-btn" id="sidebarToggle" type="button" aria-label="Toggle navigation">
+          <svg class="icon"><use href="#icon-menu"></use></svg>
+        </button>
+
+        <div class="topbar-heading">
+          <div class="topbar-eyebrow">{% block page_eyebrow %}Overview{% endblock %}</div>
+          <h1 class="topbar-title">{% block page_title %}Dashboard{% endblock %}</h1>
+        </div>
+
+        {% include 'includes/topbar_actions.html' %}
+      </header>
+
+      <main class="page-body">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="{% static 'js/chart-colors.js' %}"></script>
+  <script src="{% static 'js/dashboard.js' %}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

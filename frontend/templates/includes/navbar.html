@@ -1,0 +1,50 @@
+{% load static %}
+
+<header class="site-header">
+  <div class="container nav">
+
+    <a href="{% url 'frontend:landing' %}" class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      Stockwell
+    </a>
+
+    <ul class="nav-links" data-nav-links>
+      <li><a href="{% url 'frontend:landing' %}#features">Features</a></li>
+      <li><a href="{% url 'frontend:landing' %}#ai">AI Forecasting</a></li>
+    
+      <li><a href="{% url 'frontend:landing' %}#contact">Contact</a></li>
+    </ul>
+
+    <div class="nav-actions">
+      <a href="{% url 'frontend:login' %}" class="btn btn-ghost">
+        Log in
+      </a>
+
+      <a href="{% url 'frontend:landing' %}#contact" class="btn btn-primary">
+        Request a demo
+      </a>
+
+      <button
+        class="nav-toggle"
+        data-nav-toggle
+        aria-label="Toggle navigation"
+        aria-expanded="false"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        >
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+
+  </div>
+</header>

@@ -1,0 +1,404 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Demand Forecasting{% endblock %}
+{% block page_eyebrow %}Intelligence{% endblock %}
+{% block page_title %}Demand Forecasting{% endblock %}
+
+{% block content %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Demand forecasting</h2>
+      <p class="text-slate">Predicts future demand from historical sales and recommends reorder quantities, per product and period.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-secondary" type="button">
+        <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
+        Export
+      </button>
+      <button class="btn btn-primary" type="button" id="runForecastBtn">
+        <svg class="icon icon-sm"><use href="#icon-refresh"></use></svg>
+        Run forecast now
+      </button>
+    </div>
+  </div>
+
+  {# --------------------------------------------------------------- KPIs #}
+  <div class="kpi-grid">
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-cpu"></use></svg></span>
+      </div>
+      <div class="kpi-value">8</div>
+      <div class="kpi-label">Products forecasted</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-check-circle"></use></svg></span>
+      </div>
+      <div class="kpi-value">73%</div>
+      <div class="kpi-label">Avg. confidence score</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-alert-triangle"></use></svg></span>
+      </div>
+      <div class="kpi-value">5</div>
+      <div class="kpi-label">Flagged for reorder</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-clock"></use></svg></span>
+      </div>
+      <div class="kpi-value" style="font-size: var(--fs-lg);">Today, 03:00</div>
+      <div class="kpi-label">Last run &middot; model rf_20260727</div>
+    </div>
+
+  </div>
+
+  {# ---------------------------------------------------------- AI insight #}
+  <div class="ai-section-head">
+    <span class="ai-badge">
+      <svg class="icon"><use href="#icon-cpu"></use></svg>
+      AI Insight
+    </span>
+    <p class="text-slate text-sm" style="margin:0;">5 of 8 forecasted products are trending toward a stock shortfall this week &mdash; review the reorder recommendations below.</p>
+  </div>
+
+  {% comment %}
+    Period control
+    Single toggle drives both the trend chart and the prediction table
+    below, instead of two separate Weekly/Monthly controls.
+  {% endcomment %}
+  <div class="flex items-center gap-3" style="margin-bottom: var(--sp-5); flex-wrap:wrap;">
+    <span class="text-slate text-sm" style="font-weight:600;">Forecast period</span>
+    <div class="segmented" id="forecastPeriodToggle">
+      <button type="button" class="is-active" data-value="weekly">Weekly</button>
+      <button type="button" data-value="monthly">Monthly</button>
+    </div>
+  </div>
+
+  <div class="dash-grid">
+
+    {# ------------------------------------------------------- Left column #}
+    <div class="dash-col">
+
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Forecasted demand trend</h3>
+            <p class="panel-sub">Total predicted demand vs. recommended reorder quantity, next 4 periods</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="chart-wrap" style="height:260px;">
+            <canvas id="forecastTrendChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
+          <div class="field" style="margin-bottom:0; flex:1; max-width:320px;">
+            <svg class="field-icon"><use href="#icon-search"></use></svg>
+            <input type="search" class="input" id="forecastSearch" placeholder="Search by product or SKU...">
+          </div>
+          <select class="input" id="forecastCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+            <option value="">All categories</option>
+            <option>Medical Supplies</option>
+            <option>Tools</option>
+            <option>Office Supplies</option>
+            <option>Safety Equipment</option>
+            <option>Housewares</option>
+            <option>Electronics</option>
+            <option>Warehouse Equipment</option>
+          </select>
+        </div>
+
+        <div class="panel-body no-top-pad">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Category</th>
+                  <th>Period</th>
+                  <th>Current stock</th>
+                  <th>Forecasted demand</th>
+                  <th>Reorder qty</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody id="forecastTableBody">
+
+                <tr data-search="nitrile gloves box of 100 sku-20194" data-category="Medical Supplies" data-period="weekly">
+                  <td>Nitrile Gloves, Box of 100<div class="cell-sub">SKU-20194</div></td>
+                  <td>Medical Supplies</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">0 units</td>
+                  <td class="mono">95 units</td>
+                  <td class="mono">95</td>
+                  <td><span class="confidence-bar"><span style="width:88%;"></span></span>88%</td>
+                </tr>
+                <tr data-search="nitrile gloves box of 100 sku-20194" data-category="Medical Supplies" data-period="monthly" hidden>
+                  <td>Nitrile Gloves, Box of 100<div class="cell-sub">SKU-20194</div></td>
+                  <td>Medical Supplies</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">0 units</td>
+                  <td class="mono">380 units</td>
+                  <td class="mono">380</td>
+                  <td><span class="confidence-bar"><span style="width:82%;"></span></span>82%</td>
+                </tr>
+
+                <tr data-search="cordless drill 18v sku-11832" data-category="Tools" data-period="weekly">
+                  <td>Cordless Drill, 18V<div class="cell-sub">SKU-11832</div></td>
+                  <td>Tools</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">4 units</td>
+                  <td class="mono">12 units</td>
+                  <td class="mono">8</td>
+                  <td><span class="confidence-bar"><span style="width:71%;"></span></span>71%</td>
+                </tr>
+                <tr data-search="cordless drill 18v sku-11832" data-category="Tools" data-period="monthly" hidden>
+                  <td>Cordless Drill, 18V<div class="cell-sub">SKU-11832</div></td>
+                  <td>Tools</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">4 units</td>
+                  <td class="mono">46 units</td>
+                  <td class="mono">42</td>
+                  <td><span class="confidence-bar"><span style="width:68%;"></span></span>68%</td>
+                </tr>
+
+                <tr data-search="a4 copy paper ream sku-30456" data-category="Office Supplies" data-period="weekly">
+                  <td>A4 Copy Paper, Ream<div class="cell-sub">SKU-30456</div></td>
+                  <td>Office Supplies</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">9 units</td>
+                  <td class="mono">140 units</td>
+                  <td class="mono">131</td>
+                  <td><span class="confidence-bar"><span style="width:91%;"></span></span>91%</td>
+                </tr>
+                <tr data-search="a4 copy paper ream sku-30456" data-category="Office Supplies" data-period="monthly" hidden>
+                  <td>A4 Copy Paper, Ream<div class="cell-sub">SKU-30456</div></td>
+                  <td>Office Supplies</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">9 units</td>
+                  <td class="mono">560 units</td>
+                  <td class="mono">551</td>
+                  <td><span class="confidence-bar"><span style="width:89%;"></span></span>89%</td>
+                </tr>
+
+                <tr data-search="safety helmet class e sku-40217" data-category="Safety Equipment" data-period="weekly">
+                  <td>Safety Helmet, Class E<div class="cell-sub">SKU-40217</div></td>
+                  <td>Safety Equipment</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">0 units</td>
+                  <td class="mono">18 units</td>
+                  <td class="mono">18</td>
+                  <td><span class="confidence-bar"><span style="width:65%;"></span></span>65%</td>
+                </tr>
+                <tr data-search="safety helmet class e sku-40217" data-category="Safety Equipment" data-period="monthly" hidden>
+                  <td>Safety Helmet, Class E<div class="cell-sub">SKU-40217</div></td>
+                  <td>Safety Equipment</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">0 units</td>
+                  <td class="mono">70 units</td>
+                  <td class="mono">70</td>
+                  <td><span class="confidence-bar"><span style="width:60%;"></span></span>60%</td>
+                </tr>
+
+                <tr data-search="stainless water bottle 750ml sku-50221" data-category="Housewares" data-period="weekly">
+                  <td>Stainless Water Bottle, 750ml<div class="cell-sub">SKU-50221</div></td>
+                  <td>Housewares</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">340 units</td>
+                  <td class="mono">55 units</td>
+                  <td class="mono">0</td>
+                  <td><span class="confidence-bar"><span style="width:76%;"></span></span>76%</td>
+                </tr>
+                <tr data-search="stainless water bottle 750ml sku-50221" data-category="Housewares" data-period="monthly" hidden>
+                  <td>Stainless Water Bottle, 750ml<div class="cell-sub">SKU-50221</div></td>
+                  <td>Housewares</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">340 units</td>
+                  <td class="mono">210 units</td>
+                  <td class="mono">0</td>
+                  <td><span class="confidence-bar"><span style="width:74%;"></span></span>74%</td>
+                </tr>
+
+                <tr data-search="led desk lamp sku-60214" data-category="Electronics" data-period="weekly">
+                  <td>LED Desk Lamp<div class="cell-sub">SKU-60214</div></td>
+                  <td>Electronics</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">95 units</td>
+                  <td class="mono">24 units</td>
+                  <td class="mono">0</td>
+                  <td><span class="confidence-bar"><span style="width:64%;"></span></span>64%</td>
+                </tr>
+                <tr data-search="led desk lamp sku-60214" data-category="Electronics" data-period="monthly" hidden>
+                  <td>LED Desk Lamp<div class="cell-sub">SKU-60214</div></td>
+                  <td>Electronics</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">95 units</td>
+                  <td class="mono">95 units</td>
+                  <td class="mono">0</td>
+                  <td><span class="confidence-bar"><span style="width:63%;"></span></span>63%</td>
+                </tr>
+
+                <tr data-search="industrial shelving unit sku-70118" data-category="Warehouse Equipment" data-period="weekly">
+                  <td>Industrial Shelving Unit<div class="cell-sub">SKU-70118</div></td>
+                  <td>Warehouse Equipment</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">18 units</td>
+                  <td class="mono">5 units</td>
+                  <td class="mono">0</td>
+                  <td><span class="confidence-bar"><span style="width:55%;"></span></span>55%</td>
+                </tr>
+                <tr data-search="industrial shelving unit sku-70118" data-category="Warehouse Equipment" data-period="monthly" hidden>
+                  <td>Industrial Shelving Unit<div class="cell-sub">SKU-70118</div></td>
+                  <td>Warehouse Equipment</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">18 units</td>
+                  <td class="mono">19 units</td>
+                  <td class="mono">1</td>
+                  <td><span class="confidence-bar"><span style="width:52%;"></span></span>52%</td>
+                </tr>
+
+                <tr data-search="wireless barcode scanner sku-80339" data-category="Electronics" data-period="weekly">
+                  <td>Wireless Barcode Scanner<div class="cell-sub">SKU-80339</div></td>
+                  <td>Electronics</td>
+                  <td class="cell-sub">28 Jul &ndash; 03 Aug</td>
+                  <td class="mono">27 units</td>
+                  <td class="mono">9 units</td>
+                  <td class="mono">0</td>
+                  <td><span class="confidence-bar"><span style="width:83%;"></span></span>83%</td>
+                </tr>
+                <tr data-search="wireless barcode scanner sku-80339" data-category="Electronics" data-period="monthly" hidden>
+                  <td>Wireless Barcode Scanner<div class="cell-sub">SKU-80339</div></td>
+                  <td>Electronics</td>
+                  <td class="cell-sub">01 &ndash; 31 Aug</td>
+                  <td class="mono">27 units</td>
+                  <td class="mono">33 units</td>
+                  <td class="mono">6</td>
+                  <td><span class="confidence-bar"><span style="width:80%;"></span></span>80%</td>
+                </tr>
+
+              </tbody>
+            </table>
+
+            <div class="empty-state" id="forecastEmptyState" hidden>
+              <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
+              <div class="empty-state-title">No forecasts match your filters</div>
+              <p class="empty-state-text">Try a different search term or category, or switch between weekly and monthly forecasts.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-body" style="padding-top:0;">
+          <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+            <p class="text-slate text-xs" style="margin:0;">Showing forecasts for 8 of 1,284 products &middot; weekly view</p>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary" type="button" disabled>Previous</button>
+              <button class="btn btn-secondary" type="button" disabled>Next</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    {# ------------------------------------------------------ Right column #}
+    <div class="dash-col">
+
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Reorder priorities</h3>
+        </div>
+        <div class="panel-body no-top-pad">
+          <div class="widget-list">
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+                <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">A4 Copy Paper, Ream</div>
+                <div class="widget-meta">Office Supplies &middot; reorder 131 units</div>
+              </div>
+              <span class="badge badge-indigo">91%</span>
+            </div>
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+                <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">Nitrile Gloves, Box of 100</div>
+                <div class="widget-meta">Medical Supplies &middot; reorder 95 units</div>
+              </div>
+              <span class="badge badge-indigo">88%</span>
+            </div>
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
+                <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">Safety Helmet, Class E</div>
+                <div class="widget-meta">Safety Equipment &middot; reorder 18 units</div>
+              </div>
+              <span class="badge badge-indigo">65%</span>
+            </div>
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
+                <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">Cordless Drill, 18V</div>
+                <div class="widget-meta">Tools &middot; reorder 8 units</div>
+              </div>
+              <span class="badge badge-indigo">71%</span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="card-flat">
+        <h4 style="margin-bottom: var(--sp-3);">How this forecast works</h4>
+        <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">
+          A Scikit-learn model (RandomForestRegressor) is trained on historical sales, aggregated weekly and monthly per product, then predicts demand for the next periods with a confidence score.
+        </p>
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">&lt; 4 weeks of sales data</span>
+            <span class="badge badge-danger">Skipped</span>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">4&ndash;12 weeks of data</span>
+            <span class="badge badge-warning">Linear regression</span>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">&gt; 12 weeks of data</span>
+            <span class="badge badge-success">Random forest</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/table-filter.js' %}"></script>
+  <script src="{% static 'js/async-run-button.js' %}"></script>
+  <script src="{% static 'js/forecasting.js' %}"></script>
+{% endblock %}

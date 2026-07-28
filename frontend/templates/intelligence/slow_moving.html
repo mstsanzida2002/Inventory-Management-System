@@ -1,0 +1,334 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Slow-Moving & Dead Stock{% endblock %}
+{% block page_eyebrow %}Intelligence{% endblock %}
+{% block page_title %}Slow-Moving &amp; Dead Stock{% endblock %}
+
+{% block content %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Slow-moving &amp; dead stock</h2>
+      <p class="text-slate">Rule-based classification from turnover rate and days since last sale &mdash; no ML model, just configurable thresholds.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-secondary" type="button">
+        <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
+        Export
+      </button>
+      <button class="btn btn-primary" type="button" id="runClassificationBtn">
+        <svg class="icon icon-sm"><use href="#icon-refresh"></use></svg>
+        Run classification now
+      </button>
+    </div>
+  </div>
+
+  {# --------------------------------------------------------------- KPIs #}
+  <div class="kpi-grid">
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-trending-up"></use></svg></span>
+      </div>
+      <div class="kpi-value">1,142</div>
+      <div class="kpi-label">Fast-moving</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-clock"></use></svg></span>
+      </div>
+      <div class="kpi-value">118</div>
+      <div class="kpi-label">Slow-moving</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-danger"><svg class="icon"><use href="#icon-trending-down"></use></svg></span>
+      </div>
+      <div class="kpi-value">24</div>
+      <div class="kpi-label">Dead stock</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon tint-danger"><svg class="icon"><use href="#icon-alert-triangle"></use></svg></span>
+      </div>
+      <div class="kpi-value">142</div>
+      <div class="kpi-label">Total flagged (slow + dead)</div>
+    </div>
+
+  </div>
+
+  {# ---------------------------------------------------------- AI insight #}
+  <div class="ai-section-head">
+    <span class="ai-badge">
+      <svg class="icon"><use href="#icon-cpu"></use></svg>
+      AI Insight
+    </span>
+    <p class="text-slate text-sm" style="margin:0;">Classified using a 60-day slow-moving threshold and a 180-day dead-stock threshold &mdash; configurable in System Settings.</p>
+  </div>
+
+  <div class="dash-grid">
+
+    {# ------------------------------------------------------- Left column #}
+    <div class="dash-col">
+
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Classification breakdown</h3>
+            <p class="panel-sub">Share of catalog by movement classification</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="chart-wrap" style="height:220px;">
+            <canvas id="classificationChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
+          <div class="field" style="margin-bottom:0; flex:1; max-width:300px;">
+            <svg class="field-icon"><use href="#icon-search"></use></svg>
+            <input type="search" class="input" id="classificationSearch" placeholder="Search by product or SKU...">
+          </div>
+          <div class="flex gap-3" style="flex-wrap:wrap;">
+            <select class="input" id="classificationCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+              <option value="">All categories</option>
+              <option>Medical Supplies</option>
+              <option>Tools</option>
+              <option>Office Supplies</option>
+              <option>Safety Equipment</option>
+              <option>Housewares</option>
+              <option>Electronics</option>
+              <option>Warehouse Equipment</option>
+            </select>
+            <div class="segmented" id="classificationToggle">
+              <button type="button" class="is-active" data-value="">All</button>
+              <button type="button" data-value="fast">Fast</button>
+              <button type="button" data-value="slow">Slow</button>
+              <button type="button" data-value="dead">Dead</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-body no-top-pad">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Category</th>
+                  <th>Last sold</th>
+                  <th>Turnover</th>
+                  <th>Classification</th>
+                  <th>Recommendation</th>
+                </tr>
+              </thead>
+              <tbody id="classificationTableBody">
+
+                <tr data-search="nitrile gloves box of 100 sku-20194" data-category="Medical Supplies" data-classification="fast">
+                  <td>Nitrile Gloves, Box of 100<div class="cell-sub">SKU-20194</div></td>
+                  <td>Medical Supplies</td>
+                  <td class="mono">3 days ago</td>
+                  <td class="mono">4.2x</td>
+                  <td><span class="badge badge-success">Fast-moving</span></td>
+                  <td class="text-sm">Moving well. Turnover rate: 4.2.</td>
+                </tr>
+
+                <tr data-search="cordless drill 18v sku-11832" data-category="Tools" data-classification="fast">
+                  <td>Cordless Drill, 18V<div class="cell-sub">SKU-11832</div></td>
+                  <td>Tools</td>
+                  <td class="mono">4 days ago</td>
+                  <td class="mono">3.8x</td>
+                  <td><span class="badge badge-success">Fast-moving</span></td>
+                  <td class="text-sm">Moving well. Turnover rate: 3.8.</td>
+                </tr>
+
+                <tr data-search="a4 copy paper ream sku-30456" data-category="Office Supplies" data-classification="fast">
+                  <td>A4 Copy Paper, Ream<div class="cell-sub">SKU-30456</div></td>
+                  <td>Office Supplies</td>
+                  <td class="mono">8 days ago</td>
+                  <td class="mono">5.1x</td>
+                  <td><span class="badge badge-success">Fast-moving</span></td>
+                  <td class="text-sm">Moving well. Turnover rate: 5.1.</td>
+                </tr>
+
+                <tr data-search="stainless water bottle 750ml sku-50221" data-category="Housewares" data-classification="fast">
+                  <td>Stainless Water Bottle, 750ml<div class="cell-sub">SKU-50221</div></td>
+                  <td>Housewares</td>
+                  <td class="mono">12 days ago</td>
+                  <td class="mono">2.9x</td>
+                  <td><span class="badge badge-success">Fast-moving</span></td>
+                  <td class="text-sm">Moving well. Turnover rate: 2.9.</td>
+                </tr>
+
+                <tr data-search="led desk lamp sku-60214" data-category="Electronics" data-classification="fast">
+                  <td>LED Desk Lamp<div class="cell-sub">SKU-60214</div></td>
+                  <td>Electronics</td>
+                  <td class="mono">21 days ago</td>
+                  <td class="mono">1.8x</td>
+                  <td><span class="badge badge-success">Fast-moving</span></td>
+                  <td class="text-sm">Moving well. Turnover rate: 1.8.</td>
+                </tr>
+
+                <tr data-search="safety helmet class e sku-40217" data-category="Safety Equipment" data-classification="slow">
+                  <td>Safety Helmet, Class E<div class="cell-sub">SKU-40217</div></td>
+                  <td>Safety Equipment</td>
+                  <td class="mono">95 days ago</td>
+                  <td class="mono">0.3x</td>
+                  <td><span class="badge badge-warning">Slow-moving</span></td>
+                  <td class="text-sm">Slow-moving (last sold 95 days ago). Consider promotional pricing, bundling, or reorder suspension.</td>
+                </tr>
+
+                <tr data-search="industrial shelving unit sku-70118" data-category="Warehouse Equipment" data-classification="slow">
+                  <td>Industrial Shelving Unit<div class="cell-sub">SKU-70118</div></td>
+                  <td>Warehouse Equipment</td>
+                  <td class="mono">142 days ago</td>
+                  <td class="mono">0.4x</td>
+                  <td><span class="badge badge-warning">Slow-moving</span></td>
+                  <td class="text-sm">Slow-moving (last sold 142 days ago). Consider promotional pricing, bundling, or reorder suspension.</td>
+                </tr>
+
+                <tr data-search="wireless barcode scanner sku-80339" data-category="Electronics" data-classification="slow">
+                  <td>Wireless Barcode Scanner<div class="cell-sub">SKU-80339</div></td>
+                  <td>Electronics</td>
+                  <td class="mono">67 days ago</td>
+                  <td class="mono">1.1x</td>
+                  <td><span class="badge badge-warning">Slow-moving</span></td>
+                  <td class="text-sm">Slow-moving (last sold 67 days ago). Consider promotional pricing, bundling, or reorder suspension.</td>
+                </tr>
+
+                <tr data-search="laminated whiteboard 4x3ft" data-category="Office Supplies" data-classification="slow">
+                  <td>Laminated Whiteboard, 4x3ft</td>
+                  <td>Office Supplies</td>
+                  <td class="mono">98 days ago</td>
+                  <td class="mono">0.7x</td>
+                  <td><span class="badge badge-warning">Slow-moving</span></td>
+                  <td class="text-sm">Slow-moving (last sold 98 days ago). Consider promotional pricing, bundling, or reorder suspension.</td>
+                </tr>
+
+                <tr data-search="ceramic mug set 6-piece" data-category="Housewares" data-classification="dead">
+                  <td>Ceramic Mug Set, 6-Piece</td>
+                  <td>Housewares</td>
+                  <td class="mono">231 days ago</td>
+                  <td class="mono">0.1x</td>
+                  <td><span class="badge badge-danger">Dead stock</span></td>
+                  <td class="text-sm">Not sold in 231 days. Consider clearance sale, write-off, or return to supplier. Suspend further purchasing.</td>
+                </tr>
+
+                <tr data-search="solar garden light pack of 4" data-category="Housewares" data-classification="dead">
+                  <td>Solar Garden Light, Pack of 4</td>
+                  <td>Housewares</td>
+                  <td class="mono">Never sold</td>
+                  <td class="mono">0.0x</td>
+                  <td><span class="badge badge-danger">Dead stock</span></td>
+                  <td class="text-sm">No recorded sales. Consider clearance sale, write-off, or return to supplier. Suspend further purchasing.</td>
+                </tr>
+
+              </tbody>
+            </table>
+
+            <div class="empty-state" id="classificationEmptyState" hidden>
+              <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
+              <div class="empty-state-title">No products match your filters</div>
+              <p class="empty-state-text">Try a different search term, category, or classification.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-body" style="padding-top:0;">
+          <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+            <p class="text-slate text-xs" style="margin:0;">Showing 1&ndash;11 of 1,284 classified products</p>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary" type="button" disabled>Previous</button>
+              <button class="btn btn-secondary" type="button" disabled>Next</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    {# ------------------------------------------------------ Right column #}
+    <div class="dash-col">
+
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Needs attention</h3>
+        </div>
+        <div class="panel-body no-top-pad">
+          <div class="widget-list">
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+                <svg class="icon icon-sm"><use href="#icon-trending-down"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">Solar Garden Light, Pack of 4</div>
+                <div class="widget-meta">Housewares &middot; no recorded sales</div>
+              </div>
+              <span class="badge badge-danger">Dead</span>
+            </div>
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+                <svg class="icon icon-sm"><use href="#icon-trending-down"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">Ceramic Mug Set, 6-Piece</div>
+                <div class="widget-meta">Housewares &middot; 231 days since last sale</div>
+              </div>
+              <span class="badge badge-danger">Dead</span>
+            </div>
+
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
+                <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">Industrial Shelving Unit</div>
+                <div class="widget-meta">142 of 180 days to dead-stock threshold</div>
+              </div>
+              <span class="badge badge-warning">Watch</span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="card-flat">
+        <h4 style="margin-bottom: var(--sp-3);">Classification rules</h4>
+        <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">
+          Rule-based, not machine learning &mdash; recalculated daily from turnover rate and days since last completed sale.
+        </p>
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">Sold recently, healthy turnover</span>
+            <span class="badge badge-success">Fast &lt; 60 days</span>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">Last sold 60&ndash;179 days ago</span>
+            <span class="badge badge-warning">Slow-moving</span>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">180+ days, or never sold</span>
+            <span class="badge badge-danger">Dead stock</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/table-filter.js' %}"></script>
+  <script src="{% static 'js/async-run-button.js' %}"></script>
+  <script src="{% static 'js/slow-moving.js' %}"></script>
+{% endblock %}

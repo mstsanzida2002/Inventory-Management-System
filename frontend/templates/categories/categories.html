@@ -1,0 +1,219 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Categories{% endblock %}
+{% block page_eyebrow %}Catalog{% endblock %}
+{% block page_title %}Categories{% endblock %}
+
+{% block content %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Categories</h2>
+      <p class="text-slate">36 categories organizing 1,284 products across your catalog.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-primary" type="button" data-modal-open="addCategoryModal">
+        <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
+        Add category
+      </button>
+    </div>
+  </div>
+
+  <div class="grid grid-4" id="categoriesGrid">
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-danger"><svg class="icon"><use href="#icon-shield"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Medical Supplies</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">PPE, first aid &amp; clinical consumables</p>
+      <span class="badge badge-indigo">64 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-sliders"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Tools</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Power tools, hand tools &amp; accessories</p>
+      <span class="badge badge-indigo">48 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-receipt"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Office Supplies</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Paper goods, stationery &amp; consumables</p>
+      <span class="badge badge-indigo">112 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-shield"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Safety Equipment</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Helmets, harnesses &amp; protective gear</p>
+      <span class="badge badge-indigo">36 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-box"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Housewares</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Kitchen, storage &amp; home essentials</p>
+      <span class="badge badge-indigo">84 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-cpu"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Electronics</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Devices, components &amp; accessories</p>
+      <span class="badge badge-indigo">57 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-layers"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Warehouse Equipment</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Shelving, pallets &amp; handling gear</p>
+      <span class="badge badge-indigo">22 products</span>
+    </div>
+
+    <div class="card-flat">
+      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
+        <span class="kpi-icon tint-danger"><svg class="icon"><use href="#icon-cart"></use></svg></span>
+        <div class="flex gap-2">
+          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+        </div>
+      </div>
+      <h4 style="margin-bottom:0.3rem;">Retail &amp; Packaging</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Bags, boxes &amp; point-of-sale supplies</p>
+      <span class="badge badge-indigo">41 products</span>
+    </div>
+
+  </div>
+
+  {# -------------------------------------------------- Add category modal #}
+  <div class="modal-overlay" id="addCategoryModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addCategoryModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="addCategoryModalTitle">Add category</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="addCategoryForm" novalidate>
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="category-name">Category name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="category-name" name="name" placeholder="e.g. Medical Supplies">
+            <div class="field-error" id="category-name-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="category-parent">Parent category <span class="optional-tag">(optional)</span></label>
+            <div class="select-wrap">
+              <select class="input select" id="category-parent" name="parent">
+                <option value="" selected>No parent (top-level)</option>
+                <option>Medical Supplies</option>
+                <option>Tools</option>
+                <option>Office Supplies</option>
+                <option>Safety Equipment</option>
+                <option>Housewares</option>
+                <option>Electronics</option>
+                <option>Warehouse Equipment</option>
+                <option>Retail &amp; Packaging</option>
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="category-parent-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="category-code">Category code <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="category-code" name="code" placeholder="e.g. CAT-MED">
+            <div class="field-error" id="category-code-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="category-description">Description <span class="optional-tag">(optional)</span></label>
+            <textarea class="textarea" id="category-description" name="description" rows="3" placeholder="Short description shown on the category card..."></textarea>
+            <div class="field-error" id="category-description-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="category-status">Status</label>
+            <div class="select-wrap">
+              <select class="input select" id="category-status" name="status">
+                <option selected>Active</option>
+                <option>Inactive</option>
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="category-status-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="addCategoryForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save category
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/modal.js' %}"></script>
+  <script src="{% static 'js/form-validation.js' %}"></script>
+  <script src="{% static 'js/dom-utils.js' %}"></script>
+  <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/category-form.js' %}"></script>
+{% endblock %}

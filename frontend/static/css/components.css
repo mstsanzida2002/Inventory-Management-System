@@ -1,0 +1,479 @@
+/* ==========================================================================
+   COMPONENTS this is the component.css file— reusable across every page (landing, auth, and later
+   the dashboard app). Depends on tokens.css + base.css.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  padding: 0.85rem 1.5rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--c-indigo), var(--c-indigo-deep));
+  color: var(--c-white);
+  box-shadow: var(--shadow-indigo);
+}
+.btn-primary:hover { box-shadow: 0 16px 32px rgba(61,79,224,0.36); color: var(--c-white); }
+
+.btn-secondary {
+  background: var(--c-white);
+  color: var(--c-ink);
+  border-color: var(--c-slate-200);
+}
+.btn-secondary:hover { border-color: var(--c-indigo); color: var(--c-indigo); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--c-ink);
+}
+.btn-ghost:hover { background: var(--c-slate-100); }
+
+.btn-block { width: 100%; }
+.btn-lg { padding: 1rem 2rem; font-size: var(--fs-md); }
+
+/* ------------------------------------------------------------------ Cards */
+.card {
+  background: var(--c-white);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--c-slate-200);
+  box-shadow: var(--shadow-md);
+  padding: var(--sp-6);
+}
+.card-flat {
+  background: var(--c-white);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--c-slate-200);
+  padding: var(--sp-5);
+}
+
+/* ----------------------------------------------------------- Status pills */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 0.3em 0.75em;
+  border-radius: var(--radius-pill);
+}
+.badge::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.badge-success { background: var(--c-success-tint); color: var(--c-success); }
+.badge-warning { background: var(--c-warning-tint); color: #9C6B12; }
+.badge-danger  { background: var(--c-danger-tint);  color: var(--c-danger); }
+.badge-indigo  { background: var(--c-indigo-tint);  color: var(--c-indigo); }
+
+/* ------------------------------------------------------------ Form fields */
+.field {
+  position: relative;
+  margin-bottom: var(--sp-4);
+}
+.field-icon {
+  position: absolute;
+  left: var(--sp-4);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px; height: 20px;
+  color: var(--c-slate);
+  pointer-events: none;
+}
+.input {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  padding: 0.95rem 1.1rem 0.95rem 2.9rem;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--c-slate-200);
+  background: var(--c-mist);
+  color: var(--c-ink);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+.input::placeholder { color: var(--c-slate); }
+.input:focus {
+  outline: none;
+  border-color: var(--c-indigo);
+  background: var(--c-white);
+}
+.input.has-error { border-color: var(--c-danger); }
+.field-error {
+  color: var(--c-danger);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
+  padding-left: var(--sp-4);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--c-slate);
+}
+
+/* ------------------------------------------------- Labeled form fields --
+   .field (from above) doubles as the wrapper for plain, icon-less inputs
+   used in forms — .input already provides border/radius/focus styling,
+   .input-plain just removes the left padding reserved for .field-icon. */
+.form-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-ink);
+  margin-bottom: var(--sp-2);
+}
+.form-label .optional-tag {
+  font-weight: 500;
+  font-size: var(--fs-xs);
+  color: var(--c-slate);
+}
+.required-mark { color: var(--c-danger); margin-left: 0.15em; }
+
+.input-plain { padding-left: 1.1rem; }
+
+.textarea {
+  display: block;
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  padding: 0.85rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--c-slate-200);
+  background: var(--c-mist);
+  color: var(--c-ink);
+  resize: vertical;
+  min-height: 92px;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+.textarea::placeholder { color: var(--c-slate); }
+.textarea:focus { outline: none; border-color: var(--c-indigo); background: var(--c-white); }
+.textarea.has-error { border-color: var(--c-danger); }
+
+.select-wrap { position: relative; }
+.select-wrap .input.select {
+  padding: 0.95rem 2.6rem 0.95rem 1.1rem;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.select-chevron {
+  position: absolute;
+  right: var(--sp-4);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px; height: 18px;
+  color: var(--c-slate);
+  pointer-events: none;
+}
+
+/* File upload — the real <input type="file"> is visually hidden (.sr-only,
+   from base.css) but stays focusable; the <label> is the clickable/drop
+   surface so native keyboard + click behavior keeps working. */
+.file-drop {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  border: 1.5px dashed var(--c-slate-200);
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--c-mist);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+.file-drop:hover,
+.file-drop:focus-within { border-color: var(--c-indigo); background: var(--c-white); }
+.file-drop-icon {
+  width: 44px; height: 44px;
+  border-radius: var(--radius-md);
+  background: var(--c-indigo-tint);
+  color: var(--c-indigo);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.file-drop-text { min-width: 0; flex: 1; }
+.file-drop-title { font-size: var(--fs-sm); font-weight: 600; color: var(--c-ink); }
+.file-drop-filename { font-size: var(--fs-xs); color: var(--c-slate); margin-top: 0.15rem; }
+.file-drop-preview {
+  width: 52px; height: 52px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  border: 1px solid var(--c-slate-200);
+  flex-shrink: 0;
+}
+/* base.css sets `img { display: block }` as an author rule, which (by CSS
+   cascade origin, not specificity) beats the UA stylesheet's [hidden]
+   default — so it must be restated explicitly here. */
+.file-drop-preview[hidden] { display: none; }
+
+/* ------------------------------------------------------------- Form grid */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--sp-4) var(--sp-5);
+}
+.form-grid .field { margin-bottom: 0; }
+.form-grid .field-full { grid-column: 1 / -1; }
+
+/* ----------------------------------------------------------------- Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+  background: rgba(16, 22, 43, 0.55);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--dur-base) var(--ease-out),
+              visibility 0s linear var(--dur-base);
+}
+.modal-overlay.is-open {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+body.modal-open { overflow: hidden; }
+
+.modal {
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100vh - var(--sp-8));
+  display: flex;
+  flex-direction: column;
+  background: var(--c-white);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(18px) scale(0.98);
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.modal-overlay.is-open .modal { transform: translateY(0) scale(1); }
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6);
+  border-bottom: 1px solid var(--c-slate-200);
+  flex-shrink: 0;
+}
+.modal-title { margin-bottom: 0; }
+.modal-subtitle { font-size: var(--fs-xs); color: var(--c-slate); margin-top: 0.2rem; }
+.modal-body { padding: var(--sp-6); overflow-y: auto; }
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6);
+  border-top: 1px solid var(--c-slate-200);
+  flex-shrink: 0;
+}
+
+/* Size modifier for forms with a repeatable line-items table (Purchase,
+   Sale) — same modal chrome, just a wider dialog for the extra columns. */
+.modal.modal-lg { max-width: 900px; }
+
+/* -------------------------------------------------------- Line items grid
+   Repeatable product/qty/price/discount/tax rows used by the Purchase and
+   Sale forms (see line-items.js). Built on the same .input/.pill-btn/.mono
+   primitives as the rest of the form system — no new field styling. */
+.line-items-head,
+.line-item-row {
+  display: grid;
+  grid-template-columns: 2fr 0.8fr 1fr 0.8fr 0.8fr 1fr auto;
+  gap: var(--sp-3);
+  align-items: center;
+}
+.line-items-head {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--c-slate);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--c-slate-200);
+  margin-bottom: var(--sp-3);
+}
+.line-item-row { padding-block: var(--sp-2); }
+.line-item-row + .line-item-row { border-top: 1px solid var(--c-slate-100); }
+.line-item-row .input { padding: 0.6rem 0.85rem; }
+.line-item-total {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-ink);
+  text-align: right;
+  white-space: nowrap;
+}
+.line-item-remove { width: 30px; height: 30px; flex-shrink: 0; }
+.line-items-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--c-slate-200);
+}
+.line-items-grand-total { font-size: var(--fs-md); font-weight: 700; color: var(--c-ink); }
+.line-items-grand-total .mono { color: var(--c-indigo); }
+
+@media (max-width: 760px) {
+  .line-items-head { display: none; }
+  .line-item-row {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-2);
+    padding-block: var(--sp-3);
+  }
+  .line-item-product-field { grid-column: 1 / -1; }
+  .line-item-total { text-align: left; }
+  .line-item-remove { justify-self: end; }
+}
+
+@media (max-width: 640px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .modal-header, .modal-body, .modal-footer { padding-inline: var(--sp-4); }
+  .modal-footer { flex-direction: column-reverse; }
+  .modal-footer .btn { width: 100%; }
+}
+
+/* ------------------------------------------------------------ Empty state
+   Shown in place of a table/grid body when filters match zero rows.
+   Toggled via the native [hidden] attribute (table-filter.js) — no
+   conflicting `display` rule exists for a plain div, so no override needed
+   (contrast with .file-drop-preview[hidden], which does need one). */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--sp-3);
+  padding: var(--sp-10) var(--sp-5);
+  color: var(--c-slate);
+}
+.empty-state-icon {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  background: var(--c-slate-100);
+  color: var(--c-slate);
+  display: flex; align-items: center; justify-content: center;
+}
+.empty-state-icon .icon { width: 26px; height: 26px; }
+.empty-state-title { font-family: var(--font-display); font-weight: 700; font-size: var(--fs-md); color: var(--c-ink); }
+.empty-state-text { font-size: var(--fs-sm); color: var(--c-slate); max-width: 380px; margin: 0; }
+/* Same cascade-origin gotcha as .file-drop-preview[hidden] above: an
+   author rule setting `display` always beats the UA [hidden] default,
+   regardless of specificity, so it must be restated explicitly here. */
+.empty-state[hidden] { display: none; }
+
+/* --------------------------------------------------- Async action spinner
+   Used by AsyncRunButton (e.g. "Run forecast now") while a task is queued. */
+.spin { animation: spin 900ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
+
+/* ------------------------------------------------------------------- Nav */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(245, 246, 250, 0.85);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--c-slate-200);
+}
+.nav {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--fs-md);
+  color: var(--c-ink);
+}
+.brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--c-indigo), var(--c-amber));
+  flex-shrink: 0;
+}
+.nav-links {
+  display: flex;
+  gap: var(--sp-6);
+  list-style: none;
+  margin: 0; padding: 0;
+}
+.nav-links a {
+  color: var(--c-ink);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.nav-links a:hover { color: var(--c-indigo); }
+.nav-actions { display: flex; align-items: center; gap: var(--sp-3); }
+.nav-toggle { display: none; }
+
+@media (max-width: 860px) {
+  .nav-links { display: none; }
+  .nav-toggle {
+    display: inline-flex;
+    background: none; border: none; cursor: pointer;
+    width: 40px; height: 40px; align-items: center; justify-content: center;
+  }
+}
+
+/* ---------------------------------------------------------------- Footer */
+.site-footer {
+  background: var(--c-ink);
+  color: var(--c-slate-200);
+  padding-block: var(--sp-10) var(--sp-6);
+}
+.site-footer a { color: var(--c-slate-200); }
+.site-footer a:hover { color: var(--c-white); }
+.footer-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: var(--sp-6);
+  padding-bottom: var(--sp-8);
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.footer-col h4 { color: var(--c-white); font-size: var(--fs-sm); margin-bottom: var(--sp-3); }
+.footer-col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); font-size: var(--fs-sm); }
+.footer-bottom {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-top: var(--sp-5); font-size: var(--fs-xs); color: var(--c-slate);
+}
+@media (max-width: 760px) {
+  .footer-grid { grid-template-columns: 1fr 1fr; }
+}

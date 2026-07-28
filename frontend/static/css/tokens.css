@@ -1,0 +1,93 @@
+/* ==========================================================================
+   DESIGN TOKENS — AI-Powered Smart Inventory Management System
+   Single source of truth for color, type, spacing, radius, shadow, motion.
+   ========================================================================== */
+
+:root {
+  /* ---- Brand palette ---- */
+  --c-ink:          #10162B;   /* headings, dark surfaces, nav */
+  --c-ink-soft:     #232A44;   /* dark surface, one step lighter */
+  --c-indigo:       #3D4FE0;   /* primary brand / actions */
+  --c-indigo-deep:  #2734A6;   /* hover / active / gradient end */
+  --c-indigo-tint:  #EEF0FD;   /* pale indigo surface (badges, active nav) */
+  --c-amber:        #F2A93B;   /* AI / insight accent */
+  --c-amber-tint:   #FDF1DD;
+  --c-mist:         #F5F6FA;   /* page background */
+  --c-white:        #FFFFFF;
+  --c-slate:        #64708A;   /* secondary text */
+  --c-slate-200:    #2d3c66;   /* borders, dividers */
+  --c-slate-100:    #EEF0F5;
+
+  /* ---- Status colors (inventory semantics) ---- */
+  --c-success:      #1FA97A;   /* in stock / fast-moving */
+  --c-warning:      #F2A93B;   /* low stock / slow-moving */
+  --c-danger:       #E14B4B;   /* out of stock / dead stock */
+  --c-success-tint: #E4F7EF;
+  --c-warning-tint: #FDF1DD;
+  --c-danger-tint:  #FBE9E8;
+
+  /* ---- Typography ---- */
+  --font-display: 'Archivo', 'Segoe UI', sans-serif;
+  --font-body:    'Inter', 'Segoe UI', sans-serif;
+  --font-mono:    'IBM Plex Mono', 'Courier New', monospace;
+
+  --fs-xs:   0.75rem;   /* 12px */
+  --fs-sm:   0.875rem;  /* 14px */
+  --fs-base: 1rem;      /* 16px */
+  --fs-md:   1.125rem;  /* 18px */
+  --fs-lg:   1.375rem;  /* 22px */
+  --fs-xl:   1.75rem;   /* 28px */
+  --fs-2xl:  2.25rem;   /* 36px */
+  --fs-3xl:  3rem;      /* 48px */
+  --fs-4xl:  3.75rem;   /* 60px */
+
+  --lh-tight: 1.15;
+  --lh-snug:  1.35;
+  --lh-normal: 1.6;
+
+  /* ---- Spacing scale ---- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-8: 3rem;
+  --sp-10: 4rem;
+  --sp-12: 6rem;
+  --sp-16: 8rem;
+
+  /* ---- Radius ---- */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  /* ---- Shadow ---- */
+  --shadow-sm: 0 1px 2px rgba(16, 22, 43, 0.06);
+  --shadow-md: 0 8px 24px rgba(16, 22, 43, 0.08);
+  --shadow-lg: 0 20px 48px rgba(16, 22, 43, 0.14);
+  --shadow-indigo: 0 12px 28px rgba(61, 79, 224, 0.28);
+
+  /* ---- Motion ---- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 150ms;
+  --dur-base: 250ms;
+  --dur-slow: 600ms;
+
+  /* ---- Layout ---- */
+  --container-max: 1200px;
+  --header-h: 76px;
+  /* ---- Dashboard Layout ----
+     --sidebar-w / --topbar-h are owned by the app-shell block in dashboard.css.
+     Do not redeclare them here: dashboard.css loads later and would silently
+     win, making any value set at this level dead code. */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}

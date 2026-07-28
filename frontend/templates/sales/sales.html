@@ -1,0 +1,302 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Sales{% endblock %}
+{% block page_eyebrow %}Operations{% endblock %}
+{% block page_title %}Sales{% endblock %}
+
+{% block content %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Sales</h2>
+      <p class="text-slate">Cancelling a sale restores stock immediately — history is preserved for demand forecasting.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-primary" type="button" data-modal-open="addSaleModal">
+        <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
+        New sale
+      </button>
+    </div>
+  </div>
+
+  {# ------------------------------------------------------- Summary strip #}
+  <div class="stat-strip">
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
+      <div>
+        <div class="stat-strip-value">$4,714.95</div>
+        <div class="stat-strip-label">Revenue today</div>
+      </div>
+    </div>
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-receipt"></use></svg>
+      <div>
+        <div class="stat-strip-value">2</div>
+        <div class="stat-strip-label">Transactions today</div>
+      </div>
+    </div>
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-trending-up"></use></svg>
+      <div>
+        <div class="stat-strip-value">$589.37</div>
+        <div class="stat-strip-label">Avg. order value, 30d</div>
+      </div>
+    </div>
+    <div class="stat-strip-item is-danger">
+      <svg class="icon icon-lg"><use href="#icon-alert-circle"></use></svg>
+      <div>
+        <div class="stat-strip-value">2</div>
+        <div class="stat-strip-label">Cancelled, 30d</div>
+      </div>
+    </div>
+  </div>
+
+  {# ------------------------------------------------------------------ Sales #}
+  <div class="panel">
+    <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
+      <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
+        <svg class="field-icon"><use href="#icon-search"></use></svg>
+        <input type="search" class="input" placeholder="Search by invoice number or customer...">
+      </div>
+      <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+        <option>All statuses</option>
+        <option>Completed</option>
+        <option>Cancelled</option>
+      </select>
+    </div>
+
+    <div class="panel-body no-top-pad">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Invoice</th>
+              <th>Customer</th>
+              <th>Date</th>
+              <th>Items</th>
+              <th>Total</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="salesTableBody">
+
+            <tr>
+              <td class="mono">INV-20260726-0301</td>
+              <td>Order Café Bistro</td>
+              <td class="mono">26 Jul 2026</td>
+              <td class="mono">2</td>
+              <td class="mono">$342.00</td>
+              <td><span class="badge badge-success">Completed</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260726-0300</td>
+              <td>Walk-in customer</td>
+              <td class="mono">26 Jul 2026</td>
+              <td class="mono">1</td>
+              <td class="mono">$89.99</td>
+              <td><span class="badge badge-success">Completed</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260725-0298</td>
+              <td>Meridian Facilities Group</td>
+              <td class="mono">25 Jul 2026</td>
+              <td class="mono">6</td>
+              <td class="mono">$1,240.50</td>
+              <td><span class="badge badge-success">Completed</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260725-0297</td>
+              <td>Walk-in customer</td>
+              <td class="mono">25 Jul 2026</td>
+              <td class="mono">3</td>
+              <td class="mono">$214.75</td>
+              <td><span class="badge badge-success">Completed</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260724-0291</td>
+              <td>Union Street Clinic</td>
+              <td class="mono">24 Jul 2026</td>
+              <td class="mono">4</td>
+              <td class="mono">$560.00</td>
+              <td><span class="badge badge-danger">Cancelled</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260723-0286</td>
+              <td>Walk-in customer</td>
+              <td class="mono">23 Jul 2026</td>
+              <td class="mono">1</td>
+              <td class="mono">$27.40</td>
+              <td><span class="badge badge-success">Completed</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260722-0280</td>
+              <td>Parkside Retail Group</td>
+              <td class="mono">22 Jul 2026</td>
+              <td class="mono">8</td>
+              <td class="mono">$2,105.30</td>
+              <td><span class="badge badge-success">Completed</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="mono">INV-20260720-0271</td>
+              <td>Walk-in customer</td>
+              <td class="mono">20 Jul 2026</td>
+              <td class="mono">2</td>
+              <td class="mono">$145.00</td>
+              <td><span class="badge badge-danger">Cancelled</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel-body" style="padding-top:0;">
+      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+        <p class="text-slate text-xs" style="margin:0;">Showing 1–8 of 301 sales</p>
+        <div class="flex gap-2">
+          <button class="btn btn-secondary" type="button" disabled>Previous</button>
+          <button class="btn btn-secondary" type="button">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% comment %}
+    New sale modal
+    Fields sourced from modules/06_SALES.md's documented SaleCreateSerializer
+    (customer_name, notes, items[{product_id, quantity, unit_price, discount,
+    tax}]) — invoice_number, created_by, transaction_date, status, and
+    total_amount are all auto-set server-side, not user input.
+  {% endcomment %}
+  <div class="modal-overlay" id="addSaleModal" data-modal aria-hidden="true">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="addSaleModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="addSaleModalTitle">New sale</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="addSaleForm" novalidate>
+        <div class="form-grid">
+
+          <div class="field">
+            <label class="form-label" for="sale-customer-name">Customer name <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="sale-customer-name" name="customer_name" placeholder="e.g. Walk-in customer">
+            <div class="field-error" id="sale-customer-name-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-2);">
+              <label class="form-label" style="margin-bottom:0;">Line items<span class="required-mark">*</span></label>
+              <button type="button" class="btn btn-secondary" id="sale-add-item" style="padding:0.5rem 1rem;">
+                <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
+                Add line
+              </button>
+            </div>
+            <div class="line-items-head">
+              <div>Product</div>
+              <div>Qty</div>
+              <div>Unit price</div>
+              <div>Disc %</div>
+              <div>Tax %</div>
+              <div style="text-align:right;">Line total</div>
+              <div></div>
+            </div>
+            <div class="line-items" id="sale-line-items"></div>
+            <div class="field-error" id="sale-items-error" role="alert"></div>
+            <div class="line-items-footer">
+              <span class="line-items-grand-total">Total: <span class="mono" id="sale-grand-total">$0.00</span></span>
+            </div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="sale-notes">Notes <span class="optional-tag">(optional)</span></label>
+            <textarea class="textarea" id="sale-notes" name="notes" rows="2" placeholder="Optional notes about this sale..."></textarea>
+            <div class="field-error" id="sale-notes-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="addSaleForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Complete sale
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/modal.js' %}"></script>
+  <script src="{% static 'js/form-validation.js' %}"></script>
+  <script src="{% static 'js/dom-utils.js' %}"></script>
+  <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/mock-catalog.js' %}"></script>
+  <script src="{% static 'js/line-items.js' %}"></script>
+  <script src="{% static 'js/sale-form.js' %}"></script>
+{% endblock %}

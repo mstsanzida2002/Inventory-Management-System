@@ -1,0 +1,31 @@
+{% comment %}
+  includes/topbar_actions.html
+  The right-hand portion of the topbar: search, notifications, user menu.
+  Kept free of {% block %} tags on purpose — blocks only resolve correctly
+  against the extends chain when they live in the base template file itself,
+  not inside a nested {% include %}. The eyebrow/title block lives in
+  dashboard_base.html directly; this partial is included right after it.
+{% endcomment %}
+<div class="topbar-search">
+  <svg class="icon"><use href="#icon-search"></use></svg>
+  <input type="search" placeholder="Search products, suppliers, PO#..." aria-label="Search">
+  <kbd>/</kbd>
+</div>
+
+<div class="topbar-actions">
+  <button class="icon-btn" type="button" aria-label="Notifications">
+    <svg class="icon"><use href="#icon-bell"></use></svg>
+    <span class="dot"></span>
+  </button>
+
+  <div class="topbar-divider"></div>
+
+  <button class="topbar-user" type="button">
+    <div class="avatar">{{ request.user.get_initials|default:"AT" }}</div>
+    <div class="topbar-user-info">
+      <div class="name">{{ request.user.get_full_name|default:"Amara Tenzin" }}</div>
+      <div class="role">{{ request.user.role|default:"System Administrator" }}</div>
+    </div>
+    <svg class="icon"><use href="#icon-chevron-down"></use></svg>
+  </button>
+</div>

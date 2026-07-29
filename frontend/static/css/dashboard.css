@@ -104,6 +104,14 @@
   background: var(--c-amber);
 }
 
+.nav-item-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  pointer-events: none;
+}
+.nav-item-disabled:hover { background: none; color: var(--c-ink); }
+.nav-item-disabled:hover .icon { color: #7C87A8; }
+
 .nav-item-badge {
   margin-left: auto;
   font-size: 0.6875rem;

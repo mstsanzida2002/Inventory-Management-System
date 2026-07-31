@@ -1,0 +1,279 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Users & Roles{% endblock %}
+{% block page_eyebrow %}Administration{% endblock %}
+{% block page_title %}Users &amp; Roles{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+    Frontend-only mock. No docs/04_USERS.md or dedicated Users & Roles doc
+    exists (see docs/project_memory.md §12/17) — fields below are exactly
+    SCHEMA.md's User model: username, email, employee_id, full_name, role
+    (UserRole choices: admin/supervisor/staff), is_active. password is
+    deliberately NOT a form field here (not in this task's specified field
+    list) — matching how Product's own is_active isn't asked at creation
+    either; is_active defaults true and only shows as a status badge in
+    the list, same precedent as every other module's Add modal.
+  {% endcomment %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Users &amp; roles</h2>
+      <p class="text-slate">18 system users across 3 roles.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-primary" type="button" data-modal-open="addUserModal">
+        <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
+        Add user
+      </button>
+    </div>
+  </div>
+
+  {# ------------------------------------------------------- Summary strip #}
+  <div class="stat-strip">
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-users"></use></svg>
+      <div>
+        <div class="stat-strip-value">18</div>
+        <div class="stat-strip-label">Total users</div>
+      </div>
+    </div>
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-shield"></use></svg>
+      <div>
+        <div class="stat-strip-value">2</div>
+        <div class="stat-strip-label">Administrators</div>
+      </div>
+    </div>
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-cpu"></use></svg>
+      <div>
+        <div class="stat-strip-value">4</div>
+        <div class="stat-strip-label">Supervisors</div>
+      </div>
+    </div>
+    <div class="stat-strip-item">
+      <svg class="icon icon-lg"><use href="#icon-box"></use></svg>
+      <div>
+        <div class="stat-strip-value">12</div>
+        <div class="stat-strip-label">Staff</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
+      <div class="field" style="margin-bottom:0; flex:1; max-width:320px;">
+        <svg class="field-icon"><use href="#icon-search"></use></svg>
+        <input type="search" class="input" placeholder="Search by name, username, or email...">
+      </div>
+      <div class="flex gap-3" style="flex-wrap:wrap;">
+        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+          <option>All roles</option>
+          <option>System Administrator</option>
+          <option>Inventory Supervisor</option>
+          <option>Inventory Staff</option>
+        </select>
+        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:150px;">
+          <option>All statuses</option>
+          <option>Active</option>
+          <option>Inactive</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="panel-body no-top-pad">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Username</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody">
+
+            <tr>
+              <td>Amara Tenzin<div class="cell-sub">EMP-0001</div></td>
+              <td class="mono">amara.tenzin</td>
+              <td>amara.tenzin@stockwell.example</td>
+              <td><span class="badge badge-indigo">System Administrator</span></td>
+              <td><span class="badge badge-success">Active</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Priya Nair<div class="cell-sub">EMP-0014</div></td>
+              <td class="mono">priya.nair</td>
+              <td>priya.nair@stockwell.example</td>
+              <td><span class="badge badge-warning">Inventory Supervisor</span></td>
+              <td><span class="badge badge-success">Active</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Kito Fernandes<div class="cell-sub">EMP-0022</div></td>
+              <td class="mono">kito.fernandes</td>
+              <td>kito.fernandes@stockwell.example</td>
+              <td><span class="badge badge-success">Inventory Staff</span></td>
+              <td><span class="badge badge-success">Active</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Devlin Okoro<div class="cell-sub">EMP-0031</div></td>
+              <td class="mono">devlin.okoro</td>
+              <td>devlin.okoro@stockwell.example</td>
+              <td><span class="badge badge-success">Inventory Staff</span></td>
+              <td><span class="badge badge-success">Active</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Sana Malik<div class="cell-sub">EMP-0009</div></td>
+              <td class="mono">sana.malik</td>
+              <td>sana.malik@stockwell.example</td>
+              <td><span class="badge badge-warning">Inventory Supervisor</span></td>
+              <td><span class="badge badge-danger">Inactive</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  <button class="pill-btn" type="button" aria-label="Reactivate user"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Elan Voss<div class="cell-sub">EMP-0040</div></td>
+              <td class="mono">elan.voss</td>
+              <td>elan.voss@stockwell.example</td>
+              <td><span class="badge badge-success">Inventory Staff</span></td>
+              <td><span class="badge badge-success">Active</span></td>
+              <td>
+                <div class="widget-actions">
+                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                </div>
+              </td>
+            </tr>
+
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel-body" style="padding-top:0;">
+      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+        <p class="text-slate text-xs" style="margin:0;">Showing 1&ndash;6 of 18 users</p>
+        <div class="flex gap-2">
+          <button class="btn btn-secondary" type="button" disabled>Previous</button>
+          <button class="btn btn-secondary" type="button">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ------------------------------------------------------- Add user modal #}
+  <div class="modal-overlay" id="addUserModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addUserModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="addUserModalTitle">Add user</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="addUserForm" novalidate>
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="user-full-name">Full name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="user-full-name" name="full_name" placeholder="e.g. Priya Nair">
+            <div class="field-error" id="user-full-name-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="user-username">Username<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="user-username" name="username" placeholder="e.g. priya.nair">
+            <div class="field-error" id="user-username-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="user-employee-id">Employee ID<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="user-employee-id" name="employee_id" placeholder="e.g. EMP-0042">
+            <div class="field-error" id="user-employee-id-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="user-email">Email<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="email" id="user-email" name="email" placeholder="name@stockwell.example">
+            <div class="field-error" id="user-email-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="user-role">Role<span class="required-mark">*</span></label>
+            <div class="select-wrap">
+              <select class="input select" id="user-role" name="role">
+                <option value="" selected disabled>Select role</option>
+                <option value="admin">System Administrator</option>
+                <option value="supervisor">Inventory Supervisor</option>
+                <option value="staff">Inventory Staff</option>
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="user-role-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="addUserForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save user
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/modal.js' %}"></script>
+  <script src="{% static 'js/form-validation.js' %}"></script>
+  <script src="{% static 'js/dom-utils.js' %}"></script>
+  <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/user-form.js' %}"></script>
+{% endblock %}

@@ -13,10 +13,47 @@
 </div>
 
 <div class="topbar-actions">
-  <button class="icon-btn" type="button" aria-label="Notifications">
-    <svg class="icon"><use href="#icon-bell"></use></svg>
-    <span class="dot"></span>
-  </button>
+  <div class="dropdown" id="notifDropdown">
+    <button class="icon-btn" type="button" aria-label="Notifications" aria-expanded="false" data-dropdown-toggle>
+      <svg class="icon"><use href="#icon-bell"></use></svg>
+      <span class="dot"></span>
+    </button>
+    <div class="dropdown-menu dropdown-menu-right" role="menu">
+      <div class="dropdown-menu-header">Notifications</div>
+
+      <a href="/notifications/" class="dropdown-notif is-unread" role="menuitem">
+        <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+          <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
+        </span>
+        <div class="widget-main">
+          <div class="widget-title">Out of Stock: Nitrile Gloves, Box of 100</div>
+          <div class="widget-meta">2 minutes ago</div>
+        </div>
+      </a>
+
+      <a href="/notifications/" class="dropdown-notif is-unread" role="menuitem">
+        <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
+          <svg class="icon icon-sm"><use href="#icon-clock"></use></svg>
+        </span>
+        <div class="widget-main">
+          <div class="widget-title">PO PO-20260728-4821 Awaiting Approval</div>
+          <div class="widget-meta">38 minutes ago</div>
+        </div>
+      </a>
+
+      <a href="/notifications/" class="dropdown-notif" role="menuitem">
+        <span class="widget-icon" style="background:var(--c-success-tint); color:var(--c-success);">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+        </span>
+        <div class="widget-main">
+          <div class="widget-title">PO PO-20260726-1190 Approved</div>
+          <div class="widget-meta">Yesterday</div>
+        </div>
+      </a>
+
+      <a href="/notifications/" class="dropdown-menu-footer" role="menuitem">View all notifications</a>
+    </div>
+  </div>
 
   <div class="topbar-divider"></div>
 

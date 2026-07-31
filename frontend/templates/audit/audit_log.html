@@ -1,0 +1,186 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Audit Log{% endblock %}
+{% block page_eyebrow %}Administration{% endblock %}
+{% block page_title %}Audit Log{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+    Frontend-only mock per docs/13_AUDIT.md. Rows use real action constants
+    from frontend/audit.py (AuditLog is IMMUTABLE — model-enforced, see
+    docs/bugsfound.md BUG-20's sibling fix — so this page will only ever
+    be a read-only viewer, matching 13_AUDIT.md's "Admin only" rule; no
+    RBAC gate exists yet, see this task's own scope). module/status filter
+    client-side via table-filter.js (audit-log.js); date range stays
+    decorative like every other list page's date filters.
+  {% endcomment %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Audit log</h2>
+      <p class="text-slate">Immutable record of every significant action &mdash; System Administrator only once real auth exists.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-secondary" type="button">
+        <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
+        Export CSV
+      </button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-4); padding-bottom: var(--sp-5);">
+      <div class="field" style="margin-bottom:0; flex:1; max-width:280px;">
+        <svg class="field-icon"><use href="#icon-search"></use></svg>
+        <input type="search" class="input" id="auditSearch" placeholder="Search by user or action...">
+      </div>
+      <div class="flex gap-3" style="flex-wrap:wrap; align-items:center;">
+        <div class="field" style="margin-bottom:0; max-width:150px;">
+          <input class="input input-plain" type="date" aria-label="From date" value="2026-07-01">
+        </div>
+        <div class="field" style="margin-bottom:0; max-width:150px;">
+          <input class="input input-plain" type="date" aria-label="To date" value="2026-07-30">
+        </div>
+        <select class="input" id="auditModuleFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+          <option value="">All modules</option>
+          <option value="authentication">Authentication</option>
+          <option value="purchases">Purchases</option>
+          <option value="sales">Sales</option>
+          <option value="adjustments">Adjustments</option>
+          <option value="inventory">Inventory</option>
+          <option value="products">Products</option>
+        </select>
+        <div class="segmented" id="auditStatusToggle">
+          <button type="button" class="is-active" data-value="">All</button>
+          <button type="button" data-value="success">Success</button>
+          <button type="button" data-value="failure">Failure</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-body no-top-pad">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Action</th>
+              <th>Module</th>
+              <th>Affected ID</th>
+              <th>Status</th>
+              <th>IP address</th>
+            </tr>
+          </thead>
+          <tbody id="auditTableBody">
+
+            <tr data-search="amara tenzin po_approved" data-module="purchases" data-status="success">
+              <td class="mono">Jul 30, 2026 09:14</td>
+              <td>Amara Tenzin</td>
+              <td class="mono">PO_APPROVED</td>
+              <td><span class="badge badge-indigo">purchases</span></td>
+              <td class="mono">4821</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">10.0.0.14</td>
+            </tr>
+
+            <tr data-search="kito fernandes sale_created" data-module="sales" data-status="success">
+              <td class="mono">Jul 30, 2026 08:52</td>
+              <td>Kito Fernandes</td>
+              <td class="mono">SALE_CREATED</td>
+              <td><span class="badge badge-indigo">sales</span></td>
+              <td class="mono">3421</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">10.0.0.22</td>
+            </tr>
+
+            <tr data-search="unknown user login_failed" data-module="authentication" data-status="failure">
+              <td class="mono">Jul 30, 2026 07:31</td>
+              <td class="text-slate">Unknown (unauthenticated)</td>
+              <td class="mono">LOGIN_FAILED</td>
+              <td><span class="badge badge-indigo">authentication</span></td>
+              <td class="mono">&mdash;</td>
+              <td><span class="badge badge-danger">Failure</span></td>
+              <td class="mono">203.0.113.8</td>
+            </tr>
+
+            <tr data-search="priya nair adjustment_approved" data-module="adjustments" data-status="success">
+              <td class="mono">Jul 29, 2026 16:40</td>
+              <td>Priya Nair</td>
+              <td class="mono">ADJUSTMENT_APPROVED</td>
+              <td><span class="badge badge-indigo">adjustments</span></td>
+              <td class="mono">521</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">10.0.0.31</td>
+            </tr>
+
+            <tr data-search="system low_stock_alert_sent" data-module="inventory" data-status="success">
+              <td class="mono">Jul 29, 2026 14:02</td>
+              <td class="text-slate">System</td>
+              <td class="mono">LOW_STOCK_ALERT_SENT</td>
+              <td><span class="badge badge-indigo">inventory</span></td>
+              <td class="mono">11832</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">&mdash;</td>
+            </tr>
+
+            <tr data-search="amara tenzin po_rejected" data-module="purchases" data-status="success">
+              <td class="mono">Jul 29, 2026 11:18</td>
+              <td>Amara Tenzin</td>
+              <td class="mono">PO_REJECTED</td>
+              <td><span class="badge badge-indigo">purchases</span></td>
+              <td class="mono">4816</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">10.0.0.14</td>
+            </tr>
+
+            <tr data-search="kito fernandes product_created" data-module="products" data-status="success">
+              <td class="mono">Jul 28, 2026 15:55</td>
+              <td>Kito Fernandes</td>
+              <td class="mono">PRODUCT_CREATED</td>
+              <td><span class="badge badge-indigo">products</span></td>
+              <td class="mono">20194</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">10.0.0.22</td>
+            </tr>
+
+            <tr data-search="priya nair login_success" data-module="authentication" data-status="success">
+              <td class="mono">Jul 28, 2026 08:03</td>
+              <td>Priya Nair</td>
+              <td class="mono">LOGIN_SUCCESS</td>
+              <td><span class="badge badge-indigo">authentication</span></td>
+              <td class="mono">&mdash;</td>
+              <td><span class="badge badge-success">Success</span></td>
+              <td class="mono">10.0.0.31</td>
+            </tr>
+
+          </tbody>
+        </table>
+
+        <div class="empty-state" id="auditEmptyState" hidden>
+          <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
+          <div class="empty-state-title">No log entries match your filters</div>
+          <p class="empty-state-text">Try a different search term, module, or status.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-body" style="padding-top:0;">
+      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+        <p class="text-slate text-xs" style="margin:0;">Showing 1&ndash;8 of 2,940 log entries</p>
+        <div class="flex gap-2">
+          <button class="btn btn-secondary" type="button" disabled>Previous</button>
+          <button class="btn btn-secondary" type="button" disabled>Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/table-filter.js' %}"></script>
+  <script src="{% static 'js/audit-log.js' %}"></script>
+{% endblock %}

@@ -1,0 +1,158 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Settings{% endblock %}
+{% block page_eyebrow %}Administration{% endblock %}
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+    Frontend-only mock. SystemSettings (SCHEMA.md §13) is a documented
+    singleton, so this is deliberately ONE form page, not a multi-page
+    settings section — every field below is exactly on that model, nothing
+    invented. The Save button is decorative (type="button", no JS) — no
+    real form submission exists yet, matching every other module's
+    not-yet-wired controls.
+  {% endcomment %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Settings</h2>
+      <p class="text-slate">System-wide configuration. One settings record for the whole company.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <button class="btn btn-primary" type="button">
+        <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+        Save changes
+      </button>
+    </div>
+  </div>
+
+  <form id="settingsForm" novalidate>
+
+    {# --------------------------------------------------- Company info #}
+    <div class="panel" style="margin-bottom: var(--sp-6);">
+      <div class="panel-header">
+        <div>
+          <h3>Company information</h3>
+          <p class="panel-sub">Shown on invoices, reports, and PDF exports.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="settings-company-name">Company name</label>
+            <input class="input input-plain" type="text" id="settings-company-name" name="company_name" value="Stockwell Distribution Ltd.">
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="settings-company-logo">Company logo <span class="optional-tag">(optional)</span></label>
+            <label class="file-drop" for="settings-company-logo">
+              <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
+              <span class="file-drop-text">
+                <span class="file-drop-title">Click to upload a logo</span>
+                <div class="file-drop-filename">PNG or JPG, up to 5MB</div>
+              </span>
+              <img class="file-drop-preview" alt="" hidden>
+            </label>
+            <input type="file" class="sr-only" id="settings-company-logo" name="company_logo" accept="image/png,image/jpeg">
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="settings-company-address">Company address <span class="optional-tag">(optional)</span></label>
+            <textarea class="textarea" id="settings-company-address" name="company_address" rows="2">4400 Riverside Distribution Park, Warehouse 7, Portland, OR</textarea>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-company-email">Company email <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="email" id="settings-company-email" name="company_email" value="ops@stockwell.example">
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-company-phone">Company phone <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="settings-company-phone" name="company_phone" value="+1 (503) 555-0199">
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    {# ----------------------------------------------- Inventory & AI defaults #}
+    <div class="panel" style="margin-bottom: var(--sp-6);">
+      <div class="panel-header">
+        <div>
+          <h3>Inventory &amp; AI thresholds</h3>
+          <p class="panel-sub">Defaults applied when a product doesn't set its own reorder level, and thresholds the AI classifier/forecaster use.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+
+          <div class="field">
+            <label class="form-label" for="settings-default-reorder-level">Default reorder level</label>
+            <input class="input input-plain" type="number" id="settings-default-reorder-level" name="default_reorder_level" value="10" min="0" step="1">
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-forecast-period-weeks">Forecast period (weeks)</label>
+            <input class="input input-plain" type="number" id="settings-forecast-period-weeks" name="forecast_period_weeks" value="4" min="0" step="1">
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-forecast-retrain-days">Forecast retrain interval (days)</label>
+            <input class="input input-plain" type="number" id="settings-forecast-retrain-days" name="forecast_retrain_days" value="7" min="0" step="1">
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-slow-moving-threshold">Slow-moving threshold (days)</label>
+            <input class="input input-plain" type="number" id="settings-slow-moving-threshold" name="slow_moving_threshold_days" value="60" min="0" step="1">
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-dead-stock-threshold">Dead stock threshold (days)</label>
+            <input class="input input-plain" type="number" id="settings-dead-stock-threshold" name="dead_stock_threshold_days" value="180" min="0" step="1">
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    {# --------------------------------------------------------- Session #}
+    <div class="panel" style="margin-bottom: var(--sp-6);">
+      <div class="panel-header">
+        <h3>Session</h3>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field">
+            <label class="form-label" for="settings-session-timeout">Session timeout (seconds)</label>
+            <input class="input input-plain" type="number" id="settings-session-timeout" name="session_timeout_seconds" value="3600" min="0" step="1">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# ---------------------------------------------------- Notifications #}
+    <div class="panel">
+      <div class="panel-header">
+        <h3>Notifications</h3>
+      </div>
+      <div class="panel-body">
+        <div class="flex flex-col gap-3">
+          <label class="checkbox-row">
+            <input type="checkbox" name="email_notifications_enabled" id="settings-email-notifications" checked>
+            Enable email notifications
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="low_stock_email_enabled" id="settings-low-stock-email" checked>
+            Send low-stock alerts by email
+          </label>
+        </div>
+      </div>
+    </div>
+
+  </form>
+
+{% endblock %}

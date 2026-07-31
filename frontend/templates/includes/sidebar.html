@@ -73,30 +73,31 @@
 
     <div class="nav-group">
       <div class="nav-group-label">Insights</div>
-      <span class="nav-item nav-item-disabled" aria-disabled="true" tabindex="-1" title="Coming soon">
+      <a href="/reports/" class="nav-item {% if active_nav|default:"dashboard" == 'reports' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-bar-chart"></use></svg>
         <span>Reports</span>
-      </span>
-      <span class="nav-item nav-item-disabled" aria-disabled="true" tabindex="-1" title="Coming soon">
+      </a>
+      <a href="/notifications/" class="nav-item {% if active_nav|default:"dashboard" == 'notifications' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-bell"></use></svg>
         <span>Notifications</span>
-      </span>
+        <span class="nav-item-badge">6</span>
+      </a>
     </div>
 
     <div class="nav-group">
       <div class="nav-group-label">Administration</div>
-      <span class="nav-item nav-item-disabled" aria-disabled="true" tabindex="-1" title="Coming soon">
+      <a href="/users/" class="nav-item {% if active_nav|default:"dashboard" == 'users' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-users"></use></svg>
         <span>Users &amp; Roles</span>
-      </span>
-      <span class="nav-item nav-item-disabled" aria-disabled="true" tabindex="-1" title="Coming soon">
+      </a>
+      <a href="/audit-log/" class="nav-item {% if active_nav|default:"dashboard" == 'audit-log' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-shield"></use></svg>
         <span>Audit Log</span>
-      </span>
-      <span class="nav-item nav-item-disabled" aria-disabled="true" tabindex="-1" title="Coming soon">
+      </a>
+      <a href="/settings/" class="nav-item {% if active_nav|default:"dashboard" == 'settings' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-settings"></use></svg>
         <span>Settings</span>
-      </span>
+      </a>
     </div>
 
   </nav>

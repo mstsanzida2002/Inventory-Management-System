@@ -16,4 +16,9 @@ urlpatterns = [
     path("adjustments/", views.adjustments, name="adjustments"),
     path("ai/forecasting/", views.demand_forecasting, name="forecasting"),
     path("ai/slow-moving/", views.slow_moving_dead_stock, name="slow_moving"),
+    path("reports/", views.reports, name="reports"),
+    path("notifications/", views.notifications, name="notifications"),
+    path("users/", views.users, name="users"),
+    path("audit-log/", views.audit_log, name="audit_log"),
+    path("settings/", views.settings, name="settings"),
 ]

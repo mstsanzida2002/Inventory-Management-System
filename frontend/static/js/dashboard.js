@@ -33,6 +33,39 @@
     scrim.addEventListener("click", close);
   }
 
+  /* -------------------------------------------------- Topbar dropdowns */
+  function initDropdowns() {
+    var dropdowns = document.querySelectorAll(".dropdown");
+    if (!dropdowns.length) return;
+
+    function closeAll() {
+      dropdowns.forEach(function (d) {
+        d.classList.remove("is-open");
+        var toggle = d.querySelector("[data-dropdown-toggle]");
+        if (toggle) toggle.setAttribute("aria-expanded", "false");
+      });
+    }
+
+    dropdowns.forEach(function (dropdown) {
+      var toggle = dropdown.querySelector("[data-dropdown-toggle]");
+      if (!toggle) return;
+      toggle.addEventListener("click", function (event) {
+        event.stopPropagation();
+        var isOpen = dropdown.classList.contains("is-open");
+        closeAll();
+        if (!isOpen) {
+          dropdown.classList.add("is-open");
+          toggle.setAttribute("aria-expanded", "true");
+        }
+      });
+    });
+
+    document.addEventListener("click", closeAll);
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") closeAll();
+    });
+  }
+
   /* ------------------------------------------------- Sales/Purchases chart */
   function initSalesChart() {
     var canvas = document.getElementById("salesChart");
@@ -200,6 +233,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initSidebarToggle();
+    initDropdowns();
     initSalesChart();
     initInventoryChart();
   });

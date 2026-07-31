@@ -260,6 +260,55 @@
   border: 2px solid var(--c-mist);
 }
 
+/* Generic topbar dropdown (currently just the notification bell, but kept
+   reusable — .icon-btn is already position:relative, so any .icon-btn can
+   become a dropdown trigger by wrapping it in .dropdown). Toggled via
+   dashboard.js's initNotificationDropdown(). */
+.dropdown { position: relative; }
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + var(--sp-3));
+  left: 0;
+  width: 340px;
+  max-width: calc(100vw - var(--sp-8));
+  background: var(--c-white);
+  border: 1px solid var(--c-slate-200);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 50;
+  overflow: hidden;
+}
+.dropdown-menu-right { left: auto; right: 0; }
+.dropdown.is-open .dropdown-menu { display: block; }
+.dropdown-menu-header {
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  color: var(--c-ink);
+  border-bottom: 1px solid var(--c-slate-100);
+}
+.dropdown-notif {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--c-slate-100);
+  color: inherit;
+}
+.dropdown-notif:hover { background: var(--c-slate-100); }
+.dropdown-notif .widget-title { font-size: var(--fs-sm); }
+.dropdown-notif.is-unread .widget-title { font-weight: 700; }
+.dropdown-menu-footer {
+  display: block;
+  text-align: center;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-indigo);
+}
+.dropdown-menu-footer:hover { background: var(--c-slate-100); }
+
 .topbar-divider { width: 1px; height: 32px; background: var(--c-slate-200); }
 
 .topbar-user {

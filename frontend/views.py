@@ -35,3 +35,18 @@ def demand_forecasting(request):
 
 def slow_moving_dead_stock(request):
     return render(request, "intelligence/slow_moving.html", {"active_nav": "slow-moving"})
+
+def reports(request):
+    return render(request, "reports/reports.html", {"active_nav": "reports"})
+
+def notifications(request):
+    return render(request, "notifications/notifications.html", {"active_nav": "notifications"})
+
+def users(request):
+    return render(request, "users/users.html", {"active_nav": "users"})
+
+def audit_log(request):
+    return render(request, "audit/audit_log.html", {"active_nav": "audit-log"})
+
+def settings(request):
+    return render(request, "settings/settings.html", {"active_nav": "settings"})

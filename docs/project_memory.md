@@ -2,7 +2,7 @@
 
 > **Read this file first, before any other document, before writing any code.**
 > This file is the permanent engineering memory of the project. It reflects the
-> **actual current state of the repository** as of 2026-07-30, updated after:
+> **actual current state of the repository** as of 2026-07-31, updated after:
 > (1) four frontend routing/consistency bug fixes, (2) **Backend Phase 1** —
 > full Django ORM schema (16 models), (3) **Backend Phase 2** — all 16
 > registered in Django admin, (4) **Backend Phase 3/3.4/3.5** —
@@ -13,13 +13,17 @@
 > retrofitted into every service method). 53 tests passing. (5) **Phase
 > 3.6** — built mock frontend pages for the 5 previously-disabled sidebar
 > links (Reports, Notifications, Users & Roles, Audit Log, Settings) and
-> re-enabled them; all 15 sidebar links now go somewhere real. Still not
-> built: the `AUTH_USER_MODEL` switch, real views/forms wiring the Phase 3
-> services to the UI (Phase 3.6 pages are static mocks like every other
-> page, not wired to `frontend/services.py`), API, RBAC, AI. Migrations
-> exist (`0001`–`0003`) but are **not applied** to the real `db.sqlite3` —
-> deliberately deferred pending the `AUTH_USER_MODEL` decision (see
-> §5/§12/§16). See `docs/frontend_work.md` for a frontend-only summary.
+> re-enabled them; all 15 sidebar links now go somewhere real. (5)
+> **Phase 3.65** — regression check on Phase 3.6, no bugs found. (6)
+> **Phase 3.7** — `AUTH_USER_MODEL` switched to `frontend.User`; the 3
+> `frontend` migrations were regenerated from a clean slate and **are now
+> applied** to `db.sqlite3` (was empty, safe to reset). Every
+> `created_by`/`approved_by`/`performed_by`/`recipient` FK now really
+> resolves to `frontend.User`. 53 tests passing (fixed 2 fallout issues —
+> see §12/§15). Still not built: real views/forms wiring the Phase 3
+> services to the UI (Phase 3.6 pages are static mocks, not wired to
+> `frontend/services.py`), API, RBAC, AI. See `docs/frontend_work.md` for
+> a frontend-only summary.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
 > file wins for "what exists today."** The other docs win for "what the
@@ -39,24 +43,22 @@ slow-moving/dead-stock detection). The full design targets three roles
 (System Administrator, Inventory Supervisor, Inventory Staff) operating
 against a Django REST Framework API consumed by server-rendered templates.
 
-**Current development stage: front-end mock / UI prototype, plus a Phase 1
-database schema layer and a Phase 2 admin layer sitting on top of it.**
-The Django ORM models now exist (`frontend/models.py` — 16 concrete models
-+ a `TimeStampedModel` abstract base, matching `docs/SCHEMA.md`
-field-for-field, verified programmatically — see §6), and all 16 are
-registered in `frontend/admin.py` with `list_display`/`search_fields`/
-`list_filter`/`ordering` configured per model (see §5). `python manage.py
-check` passes clean, and the admin index page (`/admin/`) correctly lists
-all 16 models. But there are still **zero migrations**, so no application
-tables exist in the database — every model's admin list view throws
-`OperationalError: no such table` the moment you click into it, nothing
-reads or writes through these models yet, there is no authentication, no
-API, no business logic, and no AI implementation. Everything else is the
-same complete, polished, static-data Django template + vanilla-JS/CSS
-front end as before — every "Add X" button opens a real modal with real
-client-side validation, but nothing persists and nothing computes. Treat
-this repo as a high-fidelity clickable prototype sitting on top of an
-as-yet-unmigrated schema, not a working back end.
+**Current development stage: front-end mock / UI prototype, sitting on top
+of a real, migrated database schema, admin layer, and service layer —
+none of which any view calls yet.** The Django ORM models
+(`frontend/models.py` — 16 concrete models + a `TimeStampedModel` abstract
+base, matching `docs/SCHEMA.md` field-for-field — see §6) are migrated
+into `db.sqlite3`, `AUTH_USER_MODEL = 'frontend.User'` (Phase 3.7, see
+§5), and all 16 models are registered and browsable in
+`frontend/admin.py` (see §5). But there is still no real authentication
+view logic, no API, and no AI implementation, and — critically — no view
+in `frontend/views.py` calls the ORM or the service layer at all.
+Everything user-facing is the same complete, polished, static-data Django
+template + vanilla-JS/CSS front end as before — every "Add X" button opens
+a real modal with real client-side validation, but nothing persists and
+nothing computes. Treat this repo as a high-fidelity clickable prototype
+with a working, tested backend sitting unconnected beside it, not a
+wired-up application.
 
 **Technology stack — documented (intended) vs. actual (installed):**
 
@@ -64,7 +66,7 @@ as-yet-unmigrated schema, not a working back end.
 |---|---|---|
 | Framework | Django 5.x | **Django 6.0.7** (newer than documented) |
 | API | DRF 3.15+ | Not installed |
-| Database | PostgreSQL 15+ | **SQLite** (`db.sqlite3`, Django default) — schema now exists in code (§6), but **not migrated** |
+| Database | PostgreSQL 15+ | **SQLite** (`db.sqlite3`, Django default) — schema migrated and applied (§6) |
 | Cache/queue | Redis 7+, Celery 5.x | Not installed |
 | ML | Scikit-learn 1.4+, Pandas, NumPy | Not installed |
 | Auth hashing | `django[argon2]` | Not installed (default PBKDF2 hasher in use) |
@@ -122,10 +124,8 @@ What is actually built and working:
   read-only (prevents a cleartext-overwrite footgun on a bare
   `AbstractBaseUser` admin form), `SystemSettings` blocks adding a second
   row. Verified live: the `/admin/` index page renders cleanly and lists
-  all 16 models. **But every model's list view 500s** —
-  `OperationalError: no such table` — confirmed for all 16, since there
-  are still zero migrations. Admin registration is code-complete; admin
-  data-browsing is blocked on migrations (see §5/§12).
+  all 16 models, and (Phase 3.7) every model's list view now actually
+  works — migrations applied, see §5/§6/§12.
 - ✅ **Service layer (Backend Phase 3/3.4/3.5)** — `frontend/services.py`:
   `InventoryService` (increase/decrease_stock, stock-never-negative,
   writes `InventoryMovement`), `PurchaseService` (submit/approve/reject/
@@ -137,17 +137,17 @@ What is actually built and working:
   Celery yet) wired into every service method. 5 model/service bugs fixed
   along the way (immutability, singleton enforcement, redundant indexes,
   a `Decimal`/`float` crash bug inherited from `SCHEMA.md`'s own reference
-  code — full list in `docs/bugsfound.md`). 53 tests passing. Migrations
-  `0001`–`0003` generated (needed for the test DB) but still **not
-  applied** to the real `db.sqlite3` — see §5/§12. Nothing calls any of
-  this yet — no views/forms exist (see §5).
+  code — full list in `docs/bugsfound.md`). 53 tests passing, migrations
+  applied to the real `db.sqlite3` (Phase 3.7, see §5/§6). Still nothing
+  calls any of this from a view — no views/forms exist yet (see §5).
 - ✅ **Landing page** (`landing/index.html`) — full marketing page, hero,
   fabricated metrics, animated ticker, features grid, AI teaser section.
   Now uses the shared icon sprite for its feature icons (fixed — see §15).
 - ✅ **Login page UI** (`accounts/login.html`) — styled split-panel form,
   password-visibility toggle, now posts to the correct `frontend:login`
   route consistently (routing bug fixed — see §15). ⚠️ Still no real
-  Django auth behind it — no migrations, no auth wiring (see §12).
+  Django auth view logic behind it (Phase 4) — the data layer it needs
+  (`AUTH_USER_MODEL`, migrations) is ready as of Phase 3.7 (see §12).
 - ✅ **Dashboard shell** (`dashboard_base.html` + `sidebar.html` +
   `topbar_actions.html`) — sidebar nav (all 15 links now live, none
   disabled — Phase 3.6, see §15), topbar search/user menu, and a working
@@ -200,15 +200,13 @@ What is actually built and working:
 - Verified regression-free (Phase 3.65): no leaked `{# #}` comment text, no
   `[hidden]`/`display` cascade bugs, no console errors across all 5 pages —
   see §15.
+- ✅ **`AUTH_USER_MODEL` switch + migrations applied (Phase 3.7)** —
+  `AUTH_USER_MODEL = 'frontend.User'`, `db.sqlite3` reset and migrated
+  fresh, every user-pointing FK confirmed resolving to `frontend.User` at
+  runtime, `createsuperuser` creates a real `frontend.User` row. Admin
+  list pages (Phase 2) now actually render — verified live. See §15.
 
 Not built at all (0%):
-- ❌ Migrations applied — files exist (`0001`–`0003`) but were never run
-  against the real `db.sqlite3` (deliberate — see §16).
-- ❌ `AUTH_USER_MODEL` switch — the custom `User` model exists in code but
-  Django is still using its own default `auth.User`; nothing is actually
-  authenticated through the new model yet (see §5/§12).
-- ❌ Admin data-browsing — registration exists (Phase 2, above), but every
-  model's list view 500s without migrations. Registered ≠ usable yet.
 - ❌ RBAC enforcement, session logic, real login view
 - ❌ Any DRF/API layer, any views/forms calling the new services at all
 - ❌ Persistence/backend wiring for Reports, Notifications, Users & Roles,
@@ -227,14 +225,14 @@ Not built at all (0%):
 ```
 inventory 3/
 ├── config/                    Django project package
-│   ├── settings.py            Single-file settings (no base/dev/prod split, unlike TECH_STACK.md's documented pattern). AUTH_USER_MODEL still default (not switched — see §5/§12).
+│   ├── settings.py            Single-file settings (no base/dev/prod split, unlike TECH_STACK.md's documented pattern). AUTH_USER_MODEL = 'frontend.User' (Phase 3.7, see §5).
 │   ├── urls.py                Root URLconf: /admin/, /accounts/ (django.contrib.auth.urls), / (frontend app)
 │   ├── wsgi.py / asgi.py
 ├── frontend/                  The ONLY Django app. Holds both the backend schema and the entire UI.
-│   ├── models.py              16 concrete models + TimeStampedModel abstract base (Backend Phase 1), matching docs/SCHEMA.md exactly. NOT yet migrated.
-│   ├── admin.py                All 16 models registered (Backend Phase 2) — list_display/search_fields/list_filter/ordering configured. Data-browsing blocked on migrations (see §5).
+│   ├── models.py              16 concrete models + TimeStampedModel abstract base (Backend Phase 1), matching docs/SCHEMA.md exactly. Migrated (Phase 3.7).
+│   ├── admin.py                All 16 models registered (Backend Phase 2) — list_display/search_fields/list_filter/ordering configured. Data-browsing works (Phase 3.7, see §5).
 │   ├── views.py               One-line render() functions per page, no business logic, no ORM usage yet
-│   ├── urls.py                app_name="frontend"; 12 registered routes (see §5)
+│   ├── urls.py                app_name="frontend"; 17 registered routes (12 + 5 from Phase 3.6, see §5)
 │   ├── apps.py / tests.py     Stock Django scaffolding, tests.py unused
 │   ├── migrations/             Only __init__.py — models exist but have never been migrated (deliberately deferred to Phase 1b, see §16)
 │   ├── templates/
@@ -264,7 +262,7 @@ inventory 3/
 │   └── project_memory.md       ← this file
 ├── manage.py
 ├── requirements.txt             6 packages total — see §1 table (Pillow added in Backend Phase 1)
-├── db.sqlite3                   Django's own built-in tables (auth, admin, sessions, contenttypes) are already migrated from initial `startproject` — but zero `frontend` tables (no migrations generated for the new models yet)
+├── db.sqlite3                   All tables migrated: Django's built-ins (auth, admin, sessions, contenttypes) plus all 16 `frontend` tables (Phase 3.7)
 ├── .env / .env.example
 └── .venv/
 ```
@@ -420,19 +418,14 @@ nothing calls.
   directly inside each class body (custom `UserManager`, `save()` overrides
   for PO/invoice-number generation and line-total calculation, `AuditLog`'s
   immutability enforcement, `SystemSettings.get_settings()`) — see §13 for
-  why this reading of "models only" was chosen. **`AUTH_USER_MODEL` in
-  `config/settings.py` is still Django's default (`auth.User`)** — the new
-  custom `User` model is not yet the active auth model. Switching requires
-  resetting `db.sqlite3` first, since `auth`/`admin` migrations are already
-  applied against the default user model (confirmed via
-  `manage.py showmigrations`); this is a deliberate Phase 1b decision, not
-  an oversight (see §12/§16). Because every cross-model FK to a user uses
-  `settings.AUTH_USER_MODEL` (exactly as SCHEMA.md specifies) rather than a
-  hardcoded string, the switch will resolve correctly with zero model-code
-  changes once it happens.
-- **Migrations**: none generated yet. `python manage.py showmigrations
-  frontend` → `(no migrations)`. Deliberately deferred (task scoping called
-  this "Phase 1b").
+  why this reading of "models only" was chosen. **`AUTH_USER_MODEL =
+  'frontend.User'` (Phase 3.7)** — switched by resetting `db.sqlite3`
+  (confirmed empty first) and regenerating migrations fresh. Confirmed live:
+  `PurchaseOrder.created_by` resolves to `frontend.models.User`, not
+  `auth.User`.
+- **Migrations**: `frontend/migrations/0001_initial.py`, generated fresh
+  in Phase 3.7 with `AUTH_USER_MODEL` already correct, applied to
+  `db.sqlite3` (`showmigrations` shows all `[X]`).
 - **URLs**: `config/urls.py` registers 3 top-level patterns: `/admin/`,
   `/accounts/` (Django's built-in `django.contrib.auth.urls`, namespaced
   `accounts`), and `/` (includes `frontend.urls`, namespaced `frontend`).
@@ -467,35 +460,28 @@ nothing calls.
   - `SystemSettings.has_add_permission` blocks creating a second row once
     one exists (the model is documented as a singleton but nothing in
     `models.py` enforces that — see §12).
-  **Verified live** (Playwright against the dev server, with a throwaway
-  superuser, deleted afterward): `/admin/` index renders cleanly and lists
-  all 16 models correctly (Add/Change vs. Add/View split matches the
-  permission overrides above). **But clicking into any of the 16 models'
-  list views 500s** — `OperationalError: no such table: <table>` —
-  confirmed for all 16, an unavoidable consequence of zero migrations
-  existing (see §6/§12). One extra discovery while verifying: **deleting
-  an unrelated `auth.User` row now also crashes** the same way, because
-  Django's cascade-delete collector walks every reverse FK pointing at
-  `settings.AUTH_USER_MODEL` before allowing the delete — which now
-  includes every Phase 1 model's user FK — and can't query their
-  nonexistent tables. So right now no `auth.User` can be deleted through
-  the ORM at all, not just admin list views being broken (see §12).
+  **Verified live**: `/admin/` index renders cleanly and lists all 16
+  models correctly. **Phase 3.7 update**: list views no longer 500 —
+  `/admin/frontend/user/` and `/admin/frontend/purchaseorder/` both
+  confirmed `200` via a real login flow, now that migrations are applied
+  (see §6/§12/§15). Creating and deleting a `frontend.User` also confirmed
+  crash-free.
 - **Services (Backend Phase 3/3.4/3.5 — done)**: `frontend/services.py`,
   `frontend/audit.py`, `frontend/notifications.py` — see §2 for what they
-  do. Still no views/forms call any of them; migrations `0001`–`0003`
-  exist but aren't applied to the real DB, so this is all tested against
-  Django's throwaway test database only (53 passing tests), not run
-  against real data yet.
+  do. Still no views/forms call any of them. 53 tests passing (against
+  Django's throwaway test database, as always) — Phase 3.7 fixed 2 fallout
+  issues from the `AUTH_USER_MODEL` switch: test fixtures needed unique
+  `employee_id`s, and `notify_supervisors()`'s test fixtures needed a real
+  `role` set now that its role-based query actually runs (see §15).
 
 ---
 
 ## 6. Database
 
-- **Actual state**: `db.sqlite3` has Django's own built-in tables (`auth`,
-  `admin`, `sessions`, `contenttypes`) already migrated from the initial
-  `startproject`. **Zero `frontend` tables exist** — the 16 models in
-  `frontend/models.py` have never been migrated (`manage.py showmigrations
-  frontend` → `(no migrations)`).
+- **Actual state (Phase 3.7)**: `db.sqlite3` was reset (confirmed empty of
+  real data first) and all migrations — `auth`/`admin`/`contenttypes`/
+  `sessions` plus a freshly-regenerated `frontend.0001_initial` — are
+  applied. `manage.py showmigrations` shows all `[X]`.
 - **Schema implementation status**: **all 16 models implemented in code**,
   verified programmatically (Django shell introspection of
   `model._meta.get_fields()`, `_meta.indexes`, `_meta.db_table`, and each
@@ -506,7 +492,7 @@ nothing calls.
 
   | Model | Key fields | Relationships |
   |---|---|---|
-  | `User` | username, email, employee_id (all unique), role (admin/supervisor/staff), lockout fields | base for all `created_by`/`performed_by`/`requested_by`/`approved_by` FKs (via `settings.AUTH_USER_MODEL` — not yet the active auth model, see §5) |
+  | `User` | username, email, employee_id (all unique), role (admin/supervisor/staff), lockout fields | base for all `created_by`/`performed_by`/`requested_by`/`approved_by` FKs (via `settings.AUTH_USER_MODEL` — the active auth model since Phase 3.7, see §5) |
   | `Category` | name (unique), is_active | Product FK (PROTECT) |
   | `Supplier` | supplier_name, company_name, email (unique), is_active | Product FK, PurchaseOrder FK (both PROTECT) |
   | `Product` | sku (unique), barcode (unique, nullable), purchase_price, selling_price, reorder_level, current_stock, unit | FK→Category, FK→Supplier (PROTECT) |
@@ -523,11 +509,9 @@ nothing calls.
   | `AuditLog` | action, module, affected_id, status, details (JSON), ip_address — **immutable, save()/delete() raise `PermissionError` on update/delete attempts**. Note: does **not** inherit `TimeStampedModel` — it's a plain `models.Model` with its own `timestamp` field instead of `created_at`/`updated_at`, exactly as SCHEMA.md writes it. | FK→User (SET_NULL) |
   | `SystemSettings` | singleton (`get_settings()` → `get_or_create(pk=1)`); default_reorder_level, forecast config, threshold days, session_timeout_seconds, notification toggles | none |
 
-  Documented migration order (per-app, not yet actionable since everything
-  is one app now): users → products → suppliers → purchases → sales →
-  inventory → adjustments → notifications → audit → settings_manager →
-  ai_forecasting → ai_classification. In the current single-app structure
-  this collapses to one `makemigrations frontend` (see §16).
+  Documented migration order (per-app) collapses to one
+  `makemigrations frontend` in the current single-app structure — this is
+  what Phase 3.7 actually ran, producing one `0001_initial.py`.
 
 - **Redundancies found in SCHEMA.md itself** (implemented literally, not
   fixed — not this session's call to resolve, flagged for whoever owns the
@@ -564,10 +548,9 @@ nothing calls.
   clashed with Django's own still-present default `auth.User` (`fields.E304`
   on `manage.py check`). Standard, well-known Django fix; doesn't change
   the DB schema shape (see §13/§18).
-- **Pending**: migrations (the hard blocker — admin registration exists,
-  §5, but is unusable without this), the `AUTH_USER_MODEL` switch,
-  seed/fixture data, and all business logic/services layered on top (see
-  §16/§17).
+- **Pending**: seed/fixture data, real views/forms calling the service
+  layer, RBAC/auth wiring (Phase 4). Migrations + `AUTH_USER_MODEL`
+  resolved Phase 3.7 (§15).
 
 ---
 
@@ -575,9 +558,9 @@ nothing calls.
 
 Both AI pages are polished front-end mocks with **no real model, no real
 job, no real data pipeline** behind them. `DemandForecast` and
-`InventoryClassification` now exist as Django models in code (§6), but
-they're unmigrated and completely unused — the pages below remain 100%
-static mocks with no connection to these models yet.
+`InventoryClassification` exist as migrated Django models (§6) but are
+completely unused — the pages below remain 100% static mocks with no
+connection to these models yet.
 
 **Demand Forecasting** (`docs/DEMAND_FORECASTING.md`, page at
 `/ai/forecasting/`):
@@ -736,8 +719,9 @@ data (admin list views 500; see §12).
   have no click handlers.
 - Login form renders and validates client-side, posts to the correct route
   now (`frontend:login`, fixed — see §15), but there's still no real
-  Django auth behind it — no migrations, no `AUTH_USER_MODEL` switch, no
-  auth view logic.
+  Django auth behind it — no auth view logic (Phase 4). Migrations +
+  `AUTH_USER_MODEL` are resolved (§15), so the data layer this needs is
+  ready; nothing in the login view uses it yet.
 
 **No longer missing**: Reports, Notifications, Audit Log, Users & Roles,
 Settings all got real mock pages in Phase 3.6 (§11) — sidebar links
@@ -791,35 +775,16 @@ still open):
    shared icon sprite (`includes/icons.html`), which the page now also
    includes (it didn't before).
 
-**Open items from Backend Phase 1** (not bugs — `manage.py check` passes
-clean — but real decisions/gaps to track):
-- **`AUTH_USER_MODEL` still points to Django's default `auth.User`.** The
-  new custom `frontend.User` model exists and matches SCHEMA.md, but
-  nothing is actually authenticated through it. Switching requires
-  resetting `db.sqlite3` first, since `auth`/`admin` migrations are already
-  applied against the default user model — deliberately deferred to Phase
-  1b (see §16), not forgotten.
-- **No migrations generated yet** — `frontend` has zero tables; the schema
-  exists only in Python.
+**Open items from Backend Phase 1 — RESOLVED Phase 3.7:**
+`AUTH_USER_MODEL` is now `frontend.User`, migrations are generated and
+applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
 
-**Open items from Backend Phase 2** (admin registration is code-complete
-and `manage.py check` passes, but real gaps surfaced while verifying live):
-- **No migrations means admin registration is currently decorative.**
-  `/admin/` index page renders and lists all 16 models correctly, but
-  every single one 500s (`OperationalError: no such table`) the moment you
-  click into its list view. Confirmed for all 16, not a sample — this is
-  now the single highest-priority blocker (see §16).
-- **Deleting any `auth.User` is now broken too, not just admin list
-  views.** Django's cascade-delete collector walks every reverse FK
-  pointing at `settings.AUTH_USER_MODEL` before permitting a delete —
-  which now includes every Phase 1 model's `created_by`/`approved_by`/
-  `performed_by`/`requested_by`/`recipient`/`user` FK — and crashes trying
-  to query their nonexistent tables. This means basic Django auth
-  operations (deleting a user account) are collateral damage of the
-  no-migrations state, not just the new pages themselves. Worked around
-  during verification with a raw SQL delete (bypassing the ORM collector)
-  to remove a throwaway test superuser; not a fix, just how the cleanup
-  was done safely.
+**Open items from Backend Phase 2 — RESOLVED Phase 3.7:**
+- Admin list views no longer 500 — verified live for `User` and
+  `PurchaseOrder`, both render `200`.
+- Deleting a user no longer crashes — cascade-delete collector now walks
+  real, migrated tables. Re-verified: create + delete a throwaway
+  `frontend.User`, no error.
 - **A bug was found and fixed in `SystemSettingsAdmin` itself during this
   phase**: `has_add_permission` originally queried `SystemSettings.objects
   .exists()` directly. Django calls `has_add_permission` for *every*
@@ -829,13 +794,10 @@ and `manage.py check` passes, but real gaps surfaced while verifying live):
   SystemSettings page. Fixed by wrapping the query in
   `try/except DatabaseError`, failing open. Worth remembering for any
   future permission-method override that queries the DB (see §18).
-- **Both `frontend.User` and `auth.User` now show up in admin, side by
-  side, with no visible connection.** Confirmed live: "Authentication and
-  Authorization > Users" (the real, active auth model) and "Frontend >
-  Users" (the new, inert custom model) both render as separate sections.
-  Creating a `frontend.User` row does nothing useful yet — no other
-  model's user FK actually points to it (see §5's `AUTH_USER_MODEL` note).
-  Someone unfamiliar with that decision would reasonably expect otherwise.
+- **RESOLVED Phase 3.7**: Django no longer auto-registers `auth.User` in
+  admin once `AUTH_USER_MODEL` is swapped — confirmed live via
+  `admin.site._registry`, only `frontend.User` (+ `auth.Group`) show up.
+  The old side-by-side duplicate-Users confusion is gone.
 - **Cosmetic**: `SystemSettings` has no `verbose_name`/`verbose_name_plural`
   set, so Django's default auto-pluralization renders "System settingss"
   (double s) in the admin index. Harmless, visible, not fixed (models.py
@@ -866,9 +828,9 @@ and `manage.py check` passes, but real gaps surfaced while verifying live):
 **Unfinished pages**: Reports, Notifications, Audit Log, Users & Roles,
 Settings — not started.
 
-**Missing backend**: no migrations (models exist in code only, admin is
-registered but unusable without this — see §5/§6), no `AUTH_USER_MODEL`
-switch, no API, no auth wiring, no services, no Celery, no AI execution.
+**Missing backend**: no API, no real auth views/RBAC (Phase 4), no Celery,
+no AI execution. Migrations + `AUTH_USER_MODEL` resolved Phase 3.7 (§15);
+the service layer (§5) exists but nothing calls it from a view yet.
 
 **Temporary/mock implementations**: every table on every list page is
 hardcoded static HTML rows, not server-rendered from a queryset. "Run
@@ -896,12 +858,13 @@ Search/filter/pagination controls on most pages are decorative.
 
 **Full bug catalog**: `docs/bugsfound.md` now tracks every bug found
 project-wide, each traced to its source doc where applicable — check there
-instead of this section for exhaustive detail going forward. Two notable
-Phase 3.5 additions there: `notify_supervisors()`'s `role`-based filter and
-`PurchaseService`'s `user.full_name` interpolation both only work once
-`AUTH_USER_MODEL` switches (currently fall back to `is_staff`/
-`get_full_name()` — disclosed simplifications, not bugs, but tied to the
-same still-open §16 decision).
+instead of this section for exhaustive detail going forward.
+`notify_supervisors()`'s `role`-based filter is now live for real (Phase
+3.7) — the `is_staff`/`is_superuser` fallback in `frontend/notifications.py`
+is dead in practice but deliberately left in place (Phase 4/RBAC decision,
+not this phase's scope). `PurchaseService`'s `user.full_name` path is also
+now live; `_user_display_name()`'s `get_full_name()` fallback is similarly
+inert but undeleted for the same reason.
 
 ---
 
@@ -960,7 +923,9 @@ same still-open §16 decision).
   Written exactly as SCHEMA.md specifies. This keeps the model code
   forward-compatible: once a later phase resets the DB and flips
   `AUTH_USER_MODEL = 'frontend.User'`, every FK resolves to the custom
-  model correctly with zero model-code changes needed.
+  model correctly with zero model-code changes needed. **Confirmed
+  correct, Phase 3.7**: the switch happened exactly as predicted here,
+  zero changes needed to any FK declaration in `models.py`.
 - **Added `related_name` overrides on `User.groups`/`user_permissions`** —
   not in SCHEMA.md's literal text, but required because `PermissionsMixin`
   hardcodes `related_name="user_set"`, which clashes with Django's own
@@ -989,9 +954,10 @@ same still-open §16 decision).
   editable.** A bare `ModelAdmin` on an `AbstractBaseUser` subclass renders
   `password` as a plain editable text field with no hashing (Django's
   `UserAdmin`/`ReadOnlyPasswordHashField` machinery isn't wired up since
-  `AUTH_USER_MODEL` hasn't been switched) — editing it would silently
-  bypass `set_password()` and break login. Admin-config-only, doesn't
-  touch `models.py`.
+  `AUTH_USER_MODEL` wasn't switched at the time) — editing it would
+  silently bypass `set_password()` and break login. Admin-config-only,
+  doesn't touch `models.py`. Still applies post-Phase-3.7: this admin
+  customization was never removed and remains correct.
 - **Disabled change/delete permissions in admin for `InventoryMovement`
   and `AuditLog`** instead of leaving them as plain editable models.
   `AuditLog.save()`/`delete()` already raise `PermissionError` on mutation
@@ -1189,6 +1155,18 @@ session history, not `git log`:
     on outside-click, Audit Log's search+status filters work including the
     empty state. Add User modal fields and Settings form fields both
     verified to match `SCHEMA.md` exactly, nothing invented.
+19. **Phase 3.7: `AUTH_USER_MODEL` switch** — confirmed BUG-11's writeup
+    was still accurate (not stale): `AUTH_USER_MODEL` was never set, every
+    cross-model FK resolved to `auth.User`. Confirmed `db.sqlite3` had 0
+    real rows, so reset it and the 3 `frontend` migrations, set
+    `AUTH_USER_MODEL = 'frontend.User'`, regenerated one fresh
+    `0001_initial.py`, migrated. Verified live: FK resolution, a real
+    `createsuperuser`-created `frontend.User` with `role`/`employee_id`
+    populated, admin list pages rendering `200`, create+delete of a user
+    not crashing (BUG-19 closed). Fixed 2 test-suite fallout issues
+    (`employee_id` uniqueness, `notify_supervisors()`'s now-real
+    `role`-based query) — 53/53 tests passing. `docs/bugsfound.md` updated
+    (BUG-19 closed, BUG-11 given a follow-up note).
 
 ---
 
@@ -1196,24 +1174,15 @@ session history, not `git log`:
 
 Highest priority first:
 
-1. **Decide and execute the `AUTH_USER_MODEL` switch, then apply
-   migrations to the real `db.sqlite3`.** Still the single highest-priority
-   blocker — breaks basic Django auth (`auth.User` deletion), blocks admin
-   data-browsing, and blocks `notify_supervisors()`'s role filter and
-   `PurchaseService`'s `full_name` lookup from ever using their real,
-   documented logic (currently on disclosed fallbacks — see §12). Reset
-   `db.sqlite3` (safe, no business data in it), set `AUTH_USER_MODEL =
-   'frontend.User'` *before* migrating (order matters — see §5), then
-   `migrate` (migration files already exist: `0001`–`0003`).
-2. **Re-verify `/admin/`** once migrations are applied for real.
-3. **Wire views/forms to the now-complete service layer** (§2) — this is
-   the next real unblock once #1 is done; replace static hardcoded rows
-   module by module (Products first). The 5 Phase 3.6 pages (§11) join
-   this same backlog — they're mocks like everything else.
-4. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
+1. **Wire real views/forms to the now-complete service layer** (§2) —
+   the data layer (`AUTH_USER_MODEL`, migrations, both resolved Phase 3.7,
+   §15) is finally ready for this. Replace static hardcoded rows module by
+   module (Products first). The 5 Phase 3.6 pages (§11) join this same
+   backlog — they're mocks like everything else.
+2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
    (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
    `12_SEARCH.md`, `14_SETTINGS.md`).
-5. **Then** real auth views, DRF API layer, RBAC enforcement, Celery
+3. **Then** real auth views, DRF API layer, RBAC enforcement, Celery
    (needed for the notification email `.delay()` upgrade — see §2), and
    the real AI pipelines — in that order.
 
@@ -1226,14 +1195,12 @@ Grouped by module, per the documentation:
 - **Database schema**: ✅ **done** (Backend Phase 1, §6) — all 16 models
   implemented matching SCHEMA.md.
 - **Admin registration**: ✅ **done** (Backend Phase 2, §5) — all 16
-  models registered with sensible list/search/filter config. Not yet
-  usable for data-browsing (see §12). Still pending overall: migrations,
-  the `AUTH_USER_MODEL` switch, seed data (see §16).
-- **Auth**: the custom `User` model now exists in code (Phase 1) but isn't
-  wired as the active auth model yet. Still needed: `AUTH_USER_MODEL`
-  switch + migrations + real login/logout view logic, session timeout,
-  account lockout (5 attempts/300s), password reset via email, Argon2
-  hashing, profile update.
+  models registered, and now actually usable for data-browsing (migrations
+  applied Phase 3.7, see §12). Still pending: seed data.
+- **Auth**: the custom `User` model is now the active `AUTH_USER_MODEL`
+  (Phase 3.7). Still needed: real login/logout view logic, session
+  timeout, account lockout (5 attempts/300s), password reset via email,
+  Argon2 hashing, profile update.
 - **RBAC**: permission classes/decorators/mixins per the 3-role matrix in
   `02_RBAC.md`; template-level role conditionals.
 - **Products/Categories**: real CRUD, SKU auto-generation (already coded
@@ -1362,12 +1329,14 @@ from decisions made and corrections applied during development:
   described elsewhere (e.g. `PurchaseService`, `SaleService`). State this
   interpretation explicitly rather than silently picking one, so it can be
   corrected if a narrower reading was actually intended.
-- **This project has no working backend yet, even with models in place.**
-  Before implementing any feature that seems to need persistence, confirm
-  whether you're meant to be building real Django wiring (migrations,
-  views, services — a genuinely new phase of work) or another
-  front-end-only mock page following the existing static-data pattern.
-  Don't assume — the distinction changes the entire approach.
+- **Data layer (models/migrations/`AUTH_USER_MODEL`/admin) being real
+  doesn't mean views are wired to it.** Even post-Phase-3.7, every view is
+  still a one-line `render()` with no ORM usage. Before implementing any
+  feature that seems to need persistence, confirm whether you're meant to
+  be wiring a real view to the service layer (a genuinely new phase of
+  work) or building another front-end-only mock page following the
+  existing static-data pattern. Don't assume — the distinction changes the
+  entire approach.
 - **`TECH_STACK.md` describes Bootstrap 5.3**; the actual project uses a
   custom hand-built design system instead. This was a deliberate choice,
   not a mistake — don't "fix" it by pulling in Bootstrap, and don't be
@@ -1389,14 +1358,15 @@ from decisions made and corrections applied during development:
   `/admin/`'s index page entirely.
 - **Django's delete-cascade collector walks every reverse FK before
   allowing a delete, including FKs from models whose tables don't exist
-  yet.** Deleting an `auth.User` in this project currently crashes, even
-  though the delete has nothing to do with the new schema, because the
-  collector tries to check `PurchaseOrder`/`SaleTransaction`/etc. (all FK'd
-  to `settings.AUTH_USER_MODEL`) for related rows and hits
-  `OperationalError: no such table`. If you need to delete a row while
-  models reference it through unmigrated tables, a raw SQL delete
-  (bypassing the ORM collector) is a reasonable, safe escape hatch for
-  throwaway test data — not something to reach for on real data.
+  yet.** Deleting a user crashed in this project throughout the
+  no-migrations period, even though the delete had nothing to do with the
+  new schema, because the collector checked `PurchaseOrder`/
+  `SaleTransaction`/etc. (all FK'd to `settings.AUTH_USER_MODEL`) for
+  related rows and hit `OperationalError: no such table`. Resolved
+  Phase 3.7 once migrations were applied — general lesson stands for any
+  project in a similar half-migrated state: a raw SQL delete (bypassing
+  the ORM collector) is a reasonable, safe escape hatch for throwaway test
+  data in that window, not something to reach for on real data.
 - **A docstring claiming a model is "immutable" or "singleton" is not the
   same as that being enforced in code.** `AuditLog` enforces immutability
   via `save()`/`delete()` overrides that raise `PermissionError` — that's

@@ -51,7 +51,7 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-16 | `INDEX.md`'s File Map links to subfolders that don't exist | `INDEX.md` (entire File Map table) | 🚩 Reported |
 | BUG-17 | 8 files `INDEX.md` references don't exist on disk | `INDEX.md` (File Map table) | 🚩 Reported |
 | BUG-18 | `SystemSettingsAdmin.has_add_permission` DB query broke entire `/admin/` index | N/A — self-introduced this project, no doc specifies admin config | 🔧 Fixed same phase |
-| BUG-19 | Deleting any `auth.User` crashes (cascade collector hits unmigrated tables) | `SCHEMA.md` (indirectly — every model's `settings.AUTH_USER_MODEL` FK) + zero migrations | 🚩 Reported |
+| BUG-19 | Deleting any `auth.User` crashes (cascade collector hits unmigrated tables) | `SCHEMA.md` (indirectly — every model's `settings.AUTH_USER_MODEL` FK) + zero migrations | ✅ Fixed (Phase 3.7) |
 | BUG-20 | `InventoryMovement` "immutable ledger" is a docstring only, not code-enforced | `SCHEMA.md` §7 InventoryMovement | 🚩 Reported |
 | BUG-21 | `SystemSettings` "singleton" not enforced at the model level | `SCHEMA.md` §13 SystemSettings | 🚩 Reported |
 | BUG-22 | "System settingss" double-s typo in admin (no `verbose_name_plural`) | `SCHEMA.md` §13 SystemSettings (no verbose_name given) | 🚩 Reported |
@@ -215,6 +215,12 @@ custom-user-model project, not specific to this codebase.
 **Status:** ✅ Fixed — added explicit `related_name` overrides
 (`frontend_user_set`, `frontend_user_permissions_set`) on `User.groups`/
 `user_permissions`. Renames a reverse accessor only; no schema-shape change.
+**Follow-up (Phase 3.7):** this fix only addressed the `related_name`
+clash symptom — `AUTH_USER_MODEL` itself was still unset, exactly as this
+writeup's root cause described, confirmed live (`settings.AUTH_USER_MODEL`
+== `'auth.User'`, every cross-model FK resolved to
+`django.contrib.auth.models.User`). Now actually switched to
+`'frontend.User'`; see BUG-19 for the migration/db reset that went with it.
 
 ### BUG-12 — `Product`/`InventoryRecord` duplicate `current_stock`/`reorder_level`
 **Root cause:** Both models independently define `current_stock` and
@@ -336,9 +342,10 @@ appears in `PurchaseOrder`, `SaleTransaction`, `InventoryMovement`,
 defect — it's an emergent interaction between correctly-implemented
 SCHEMA.md FKs and the deliberately-deferred migration state (see
 `docs/project_memory.md` §16 for why migrations were deferred).
-**Status:** 🚩 Reported, not fixed — resolves automatically once
-migrations are applied to the real database. Worked around during Phase 2
-verification with a raw SQL delete for a throwaway test superuser.
+**Status:** ✅ Fixed (Phase 3.7) — resolved exactly as predicted, by
+applying migrations to the real database (as part of the `AUTH_USER_MODEL`
+switch, BUG-11). Re-verified live: created and deleted a throwaway
+`frontend.User` with no crash.
 
 ### BUG-20 — `InventoryMovement` "immutable ledger" is a docstring only, not code-enforced
 **Root cause:** `InventoryMovement`'s docstring states "Immutable ledger —

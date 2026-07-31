@@ -102,6 +102,11 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Custom user model (Phase 3.7) — SCHEMA.md §1 User. Must be set before the
+# first migration; every FK in frontend/models.py already targets
+# settings.AUTH_USER_MODEL in anticipation of this.
+AUTH_USER_MODEL = 'frontend.User'
+
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/

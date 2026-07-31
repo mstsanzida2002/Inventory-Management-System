@@ -16,17 +16,14 @@ Two deliberate, disclosed simplifications vs. the documented design:
    this module needs to change.
 
 2. notify_supervisors() is documented to filter recipients by
-   `role__in=[UserRole.ADMIN, UserRole.SUPERVISOR]`. That field only
-   exists on frontend.User, not on the currently-active AUTH_USER_MODEL
-   (django.contrib.auth.models.User — the switch is still pending, see
-   docs/project_memory.md §16 item 1). Until that switch happens, this
-   falls back to Django's built-in is_staff=True OR is_superuser=True as
-   a rough "elevated user" proxy, so the function is actually callable
-   today instead of raising FieldError the moment it's used. This
-   fallback is not documented anywhere — it's a stand-in, confirmed with
-   the project owner rather than invented silently — and it should be
-   deleted (not merely left as dead code) once AUTH_USER_MODEL switches
-   and the `role`-based filter above starts working for real.
+   `role__in=[UserRole.ADMIN, UserRole.SUPERVISOR]`. As of Phase 3.7,
+   AUTH_USER_MODEL == frontend.User, so that field exists and this is the
+   query that actually runs — the role__in filter is real, not
+   hypothetical. The is_staff=True OR is_superuser=True branch below is
+   dead in practice today (FieldError can no longer be raised here) but is
+   left in place as a defensive fallback rather than deleted outright,
+   since removing it is a behavior decision for Phase 4 (RBAC), not this
+   phase's scope.
 """
 from django.conf import settings as django_settings
 from django.contrib.auth import get_user_model

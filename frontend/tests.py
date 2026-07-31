@@ -32,6 +32,7 @@ from frontend.models import (
     SaleStatus,
     Supplier,
     SystemSettings,
+    UserRole,
 )
 from frontend.services import (
     AdjustmentService,
@@ -48,12 +49,17 @@ class ServiceTestCase(TestCase):
     """Shared fixtures for all service-layer tests."""
 
     def setUp(self):
-        self.user = User.objects.create_user(username='staffer', email='staffer@example.com', password='x')
-        # notify_supervisors()'s current fallback recipient pool (see
-        # frontend/notifications.py) is is_staff=True OR is_superuser=True,
-        # since `role` doesn't exist on the active AUTH_USER_MODEL yet.
+        self.user = User.objects.create_user(
+            username='staffer', email='staffer@example.com', password='x',
+            employee_id='EMP-1001', full_name='Staffer One',
+        )
+        # notify_supervisors() (frontend/notifications.py) queries by
+        # role__in=[ADMIN, SUPERVISOR] now that AUTH_USER_MODEL == frontend.User
+        # (Phase 3.7) — role must be set for this fixture to be found by it.
+        # is_staff=True is kept too since it's still a real, separate field.
         self.supervisor = User.objects.create_user(
             username='supervisor', email='supervisor@example.com', password='x', is_staff=True,
+            employee_id='EMP-1002', full_name='Supervisor One', role=UserRole.SUPERVISOR,
         )
         self.category = Category.objects.create(name='Widgets')
         self.supplier = Supplier.objects.create(
@@ -683,9 +689,11 @@ class LowStockNotificationTests(ServiceTestCase):
     def test_sale_dropping_stock_to_reorder_level_notifies_all_supervisors(self):
         second_supervisor = User.objects.create_user(
             username='supervisor2', email='super2@example.com', password='x', is_superuser=True,
+            employee_id='EMP-1003', full_name='Supervisor Two', role=UserRole.ADMIN,
         )
         inactive_supervisor = User.objects.create_user(
             username='ex-supervisor', email='ex@example.com', password='x', is_staff=True, is_active=False,
+            employee_id='EMP-1004', full_name='Ex Supervisor', role=UserRole.SUPERVISOR,
         )
         self.give_stock(10)  # reorder_level=5 on this fixture's Product
 

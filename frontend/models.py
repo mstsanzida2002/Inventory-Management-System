@@ -73,7 +73,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class Meta:
         db_table = 'users'
         indexes = [
-            models.Index(fields=['email']),
+            # email's index removed (BUG-13): unique=True above already
+            # creates a DB-level unique index on this column.
             models.Index(fields=['employee_id']),
             models.Index(fields=['role']),
         ]
@@ -153,8 +154,9 @@ class Product(TimeStampedModel):
     class Meta:
         db_table = 'products'
         indexes = [
-            models.Index(fields=['sku']),
-            models.Index(fields=['barcode']),
+            # sku's and barcode's indexes removed (BUG-13): both are
+            # unique=True above, which already creates a DB-level unique
+            # index on each column.
             models.Index(fields=['category']),
             models.Index(fields=['supplier']),
             models.Index(fields=['is_active']),
@@ -328,6 +330,14 @@ class InventoryMovement(TimeStampedModel):
             models.Index(fields=['movement_type']),
         ]
 
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise PermissionError("InventoryMovement records are immutable and cannot be modified.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("InventoryMovement records cannot be deleted.")
+
 
 # --------------------------------------------------------- 8. Inventory Adjustment
 
@@ -486,6 +496,18 @@ class SystemSettings(TimeStampedModel):
 
     class Meta:
         db_table = 'system_settings'
+        verbose_name = 'System Settings'
+        verbose_name_plural = 'System Settings'
+
+    def save(self, *args, **kwargs):
+        # Force every save onto the same row so a second row can never be
+        # produced regardless of caller (was previously convention-only —
+        # see BUG-21). A plain instantiate+save() converges onto row 1
+        # (Django UPDATEs when pk is set and the row exists); a second
+        # .objects.create() (which forces an INSERT) raises IntegrityError
+        # instead of silently duplicating — either way, never a 2nd row.
+        self.pk = 1
+        super().save(*args, **kwargs)
 
     @classmethod
     def get_settings(cls):

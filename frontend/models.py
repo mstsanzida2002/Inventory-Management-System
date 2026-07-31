@@ -5,6 +5,8 @@ single `frontend` app per current project structure. Cross-model references
 that SCHEMA.md writes as app-label strings (e.g. 'suppliers.Supplier') are
 written as direct class references instead, since there is only one app.
 """
+from decimal import Decimal
+
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
@@ -217,7 +219,13 @@ class PurchaseOrderItem(TimeStampedModel):
         db_table = 'purchase_order_items'
 
     def save(self, *args, **kwargs):
-        self.line_total = (self.unit_price * self.ordered_qty) * (1 - self.discount / 100) * (1 + self.tax / 100)
+        # discount/tax default to plain int 0 (not Decimal) until first
+        # loaded from the DB, and int 0 / 100 is a float — Decimal * float
+        # raises TypeError. Coerce explicitly so the default (no-discount)
+        # case doesn't crash; SCHEMA.md's reference code has this same bug.
+        discount = Decimal(str(self.discount))
+        tax = Decimal(str(self.tax))
+        self.line_total = (self.unit_price * self.ordered_qty) * (1 - discount / 100) * (1 + tax / 100)
         super().save(*args, **kwargs)
 
 

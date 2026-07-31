@@ -251,7 +251,7 @@ inventory 3/
 │   ├── views.py               One-line render() functions per page, no business logic, no ORM usage yet
 │   ├── urls.py                app_name="frontend"; 17 registered routes (12 + 5 from Phase 3.6, see §5)
 │   ├── apps.py / tests.py     Stock Django scaffolding, tests.py unused
-│   ├── migrations/             Only __init__.py — models exist but have never been migrated (deliberately deferred to Phase 1b, see §16)
+│   ├── migrations/             0001_initial.py, applied to PostgreSQL (Phase 3.7 switch, Phase 3.8 engine — see §5/§6)
 │   ├── templates/
 │   │   ├── base.html                  Public-site root layout (landing + login)
 │   │   ├── dashboard_base.html        Authenticated-app root layout (all other pages)
@@ -446,10 +446,11 @@ nothing calls.
 - **URLs**: `config/urls.py` registers 3 top-level patterns: `/admin/`,
   `/accounts/` (Django's built-in `django.contrib.auth.urls`, namespaced
   `accounts`), and `/` (includes `frontend.urls`, namespaced `frontend`).
-  `frontend/urls.py` registers 12 routes, all GET-rendered templates:
+  `frontend/urls.py` registers 17 routes, all GET-rendered templates:
   `""` (landing), `login/`, `dashboard/`, `products/`, `categories/`,
   `suppliers/`, `purchases/`, `sales/`, `inventory/`, `adjustments/`,
-  `ai/forecasting/`, `ai/slow-moving/`.
+  `ai/forecasting/`, `ai/slow-moving/`, plus the 5 Phase 3.6 routes
+  (`reports/`, `notifications/`, `users/`, `audit-log/`, `settings/`).
 - **Views**: every view in `frontend/views.py` is still a one-line
   `render(request, "<template>", {"active_nav": "<name>"})` — no forms, no
   querysets, no auth checks, no POST handling, no ORM usage at all. Models
@@ -1201,6 +1202,18 @@ session history, not `git log`:
     `InventoryService`'s `select_for_update()` usage (§2) is real,
     correctly wrapped in `@transaction.atomic`, and the only path that
     mutates stock — not a gap SQLite was silently hiding.
+21. **Phase 3.9: reconcile docs against code** — found `docs/bugsfound.md`
+    was stale, not the code: BUG-13/20/21/22/25 were all genuinely fixed
+    back in Phase 3.4 (confirmed by reading `frontend/models.py`/
+    `services.py` directly, not by trusting either doc), but
+    `bugsfound.md`'s status column was never updated to match — this
+    document's own timeline (item 13 above) had it right the whole time.
+    Root cause: Phase 3.4's doc-sync step only touched `project_memory.md`
+    (per the standing update-after-every-change rule), and `bugsfound.md`
+    was never in that rule's scope, so it silently drifted. Also fixed two
+    unrelated stale spots: §3's migrations line and §5's route count
+    (12 → 17, missing the 5 Phase 3.6 routes). No code changes — all 5
+    fixes were already real. 53/53 tests still passing.
 
 ---
 

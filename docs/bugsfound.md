@@ -45,19 +45,19 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-10 | `ImageField` used without Pillow installed | `SCHEMA.md` (§1 User, §4 Product, §13 SystemSettings — `ImageField` fields) | ✅ Fixed |
 | BUG-11 | `PermissionsMixin` `related_name` clash with `auth.User` | `SCHEMA.md` §1 User (`class User(AbstractBaseUser, PermissionsMixin, ...)`) | ✅ Fixed |
 | BUG-12 | `Product`/`InventoryRecord` duplicate `current_stock`/`reorder_level` | `SCHEMA.md` §4 Product + §7 InventoryRecord | 🚩 Reported |
-| BUG-13 | Redundant `models.Index` on already-`unique=True` fields | `SCHEMA.md` §1 User, §4 Product | 🚩 Reported |
+| BUG-13 | Redundant `models.Index` on already-`unique=True` fields | `SCHEMA.md` §1 User, §4 Product | ✅ Fixed (Phase 3.4) |
 | BUG-14 | `Product.category`/`Product.supplier` both `related_name='products'` | `SCHEMA.md` §4 Product | 🚩 Reported |
 | BUG-15 | `InventoryClassification.classified_at` duplicates inherited `updated_at` | `SCHEMA.md` §10 InventoryClassification | 🚩 Reported |
 | BUG-16 | `INDEX.md`'s File Map links to subfolders that don't exist | `INDEX.md` (entire File Map table) | 🚩 Reported |
 | BUG-17 | 8 files `INDEX.md` references don't exist on disk | `INDEX.md` (File Map table) | 🚩 Reported |
 | BUG-18 | `SystemSettingsAdmin.has_add_permission` DB query broke entire `/admin/` index | N/A — self-introduced this project, no doc specifies admin config | 🔧 Fixed same phase |
 | BUG-19 | Deleting any `auth.User` crashes (cascade collector hits unmigrated tables) | `SCHEMA.md` (indirectly — every model's `settings.AUTH_USER_MODEL` FK) + zero migrations | ✅ Fixed (Phase 3.7) |
-| BUG-20 | `InventoryMovement` "immutable ledger" is a docstring only, not code-enforced | `SCHEMA.md` §7 InventoryMovement | 🚩 Reported |
-| BUG-21 | `SystemSettings` "singleton" not enforced at the model level | `SCHEMA.md` §13 SystemSettings | 🚩 Reported |
-| BUG-22 | "System settingss" double-s typo in admin (no `verbose_name_plural`) | `SCHEMA.md` §13 SystemSettings (no verbose_name given) | 🚩 Reported |
+| BUG-20 | `InventoryMovement` "immutable ledger" is a docstring only, not code-enforced | `SCHEMA.md` §7 InventoryMovement | ✅ Fixed (Phase 3.4) |
+| BUG-21 | `SystemSettings` "singleton" not enforced at the model level | `SCHEMA.md` §13 SystemSettings | ✅ Fixed (Phase 3.4) |
+| BUG-22 | "System settingss" double-s typo in admin (no `verbose_name_plural`) | `SCHEMA.md` §13 SystemSettings (no verbose_name given) | ✅ Fixed (Phase 3.4) |
 | BUG-23 | `SaleService`: `Decimal * float TypeError` on default discount/tax | `06_SALES.md` (`SaleService.create_sale`) | ✅ Fixed |
 | BUG-24 | `PurchaseOrderItem.save()`: identical `Decimal * float TypeError` | `SCHEMA.md` §5 PurchaseOrderItem | ✅ Fixed |
-| BUG-25 | `PurchaseService.cancel()` documented but missing from the doc's own code sample | `05_PURCHASES.md` (state machine + business rules vs. Service Layer code block) | 🚩 Reported |
+| BUG-25 | `PurchaseService.cancel()` documented but missing from the doc's own code sample | `05_PURCHASES.md` (state machine + business rules vs. Service Layer code block) | ✅ Fixed (Phase 3.4) |
 | BUG-26 | No `docs/08_ADJUSTMENTS.md` exists at all | `INDEX.md` references it; file missing from disk | 🚩 Reported |
 
 ---
@@ -253,7 +253,10 @@ a harmless but redundant duplicate index.
 SCHEMA.md §1 User:    email = models.EmailField(unique=True)   ... indexes = [models.Index(fields=['email']), ...]
 SCHEMA.md §4 Product: sku = models.CharField(..., unique=True) ... indexes = [models.Index(fields=['sku']), models.Index(fields=['barcode']), ...]
 ```
-**Status:** 🚩 Reported, not fixed — implemented literally as documented.
+**Status:** ✅ Fixed (Phase 3.4) — the redundant `models.Index` entries
+removed from `User.email`/`Product.sku`/`Product.barcode`'s `Meta.indexes`
+(the `unique=True` constraint's own index is untouched, still enforced).
+Confirmed live via `SCHEMA.md`'s Phase 3.4 model diff.
 
 ### BUG-14 — `Product.category`/`Product.supplier` both `related_name='products'`
 **Root cause:** Both FKs use the identical `related_name`. Harmless in
@@ -371,9 +374,11 @@ SCHEMA.md §12 AuditLog:
 ```
 SCHEMA.md documents the identical invariant for two models but only
 provides enforcement code for one of them.
-**Status:** 🚩 Reported, not fixed at the model level. Mitigated at the
-admin layer only (`has_change_permission`/`has_delete_permission`
-disabled in `InventoryMovementAdmin`) — direct ORM code can still mutate it.
+**Status:** ✅ Fixed (Phase 3.4) — `InventoryMovement.save()`/`delete()`
+now override and raise `PermissionError`, mirroring `AuditLog` exactly.
+The admin-layer mitigation (`has_change_permission`/`has_delete_permission`
+disabled) is still in place too, but the enforcement is now real at the
+model level — direct ORM code can no longer mutate it either.
 
 ### BUG-21 — `SystemSettings` "singleton" not enforced at the model level
 **Root cause:** `SystemSettings` is documented as a singleton via
@@ -392,9 +397,13 @@ SCHEMA.md §13 SystemSettings:
         return obj
 ```
 The docstring asserts the invariant; no code in the class body enforces it.
-**Status:** 🚩 Reported, not fixed at the model level. Mitigated at the
-admin layer only (`has_add_permission` blocks a second row through
-`/admin/` — see BUG-18 for the bug that mitigation itself introduced).
+**Status:** ✅ Fixed (Phase 3.4) — `SystemSettings.save()` now forces
+`self.pk = 1` before every save, so no caller (ORM, admin, or otherwise)
+can ever produce a second row: a plain instantiate+save() converges onto
+row 1, and a second `.objects.create()` raises `IntegrityError` instead of
+silently duplicating. The admin-layer mitigation (BUG-18's
+`has_add_permission` guard) is still in place too, but the invariant is
+now real at the model level, not just at `/admin/`.
 
 ### BUG-22 — "System settingss" double-s typo in admin
 **Root cause:** `SystemSettings` has no `verbose_name`/`verbose_name_plural`
@@ -403,8 +412,12 @@ to the auto-derived verbose name "System settings") renders "System
 settingss" in the admin index.
 **Source Documentation:** `SCHEMA.md` §13 SystemSettings `Meta` block
 (`db_table` only, no `verbose_name`/`verbose_name_plural` given).
-**Status:** 🚩 Reported, not fixed — cosmetic, `models.py` out of scope
-for Phase 2.
+**Status:** ✅ Fixed (Phase 3.4) — `models.py` was in scope for this later
+phase (it was Phase 2's admin-only scope that excluded it, not
+permanently off-limits). `Meta.verbose_name`/`verbose_name_plural` both
+set to `'System Settings'`; confirmed live via
+`SystemSettings._meta.verbose_name_plural` — `/admin/` now reads "System
+Settings", not "System settingss".
 
 ---
 
@@ -472,8 +485,18 @@ code.
         # submit_for_approval, approve, reject, receive_items only —
         # no cancel() method defined anywhere in this code block.
 ```
-**Status:** 🚩 Reported, not implemented — the state machine and the
-reference code disagree with each other within the same document.
+**Status:** ✅ Fixed (Phase 3.4) — `PurchaseService.cancel()` implemented:
+enforced against `_CANCELLABLE_STATUSES`, pure status change with no
+`InventoryService` call from any prior state (including PARTIAL — stock
+already received via `receive_items()` stays received, matching "does NOT
+affect inventory" literally). Since no `cancel()` reference code existed
+to copy, the implementation follows the state-machine diagram and
+business-rules table instead — the two places in the doc that actually
+agreed. Logs via `audit.PO_CANCELLED` but does not notify (no
+`po_cancelled` notification type is documented in `11_NOTIFICATIONS.md`
+either — matched literally, not an oversight). Covered by
+`PurchaseCancelTests` (draft/pending/approved/partial, plus rejection of
+already-received/already-cancelled).
 
 ### BUG-26 — No `docs/08_ADJUSTMENTS.md` exists at all
 **Root cause:** `INDEX.md`'s File Map lists `modules/08_ADJUSTMENTS.md`

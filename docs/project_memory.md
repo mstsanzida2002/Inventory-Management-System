@@ -20,8 +20,16 @@
 > applied** to `db.sqlite3` (was empty, safe to reset). Every
 > `created_by`/`approved_by`/`performed_by`/`recipient` FK now really
 > resolves to `frontend.User`. 53 tests passing (fixed 2 fallout issues —
-> see §12/§15). Still not built: real views/forms wiring the Phase 3
-> services to the UI (Phase 3.6 pages are static mocks, not wired to
+> see §12/§15). (7) **Phase 3.8** — switched the DB engine from SQLite to
+> PostgreSQL 18 (local, matching `TECH_STACK.md`). `db.sqlite3` is no
+> longer used at all. New `stockwell_dev` Postgres role/database created
+> locally; connection settings read from `.env` (`DB_NAME`/`DB_USER`/
+> `DB_PASSWORD`/`DB_HOST`/`DB_PORT`), never hardcoded. Existing migrations
+> replayed with zero changes needed. 53 tests still passing. Confirmed
+> `InventoryService`'s `select_for_update()` usage (07_INVENTORY.md's
+> requirement) is real and correctly wrapped in `@transaction.atomic` —
+> not a gap. Still not built: real views/forms wiring the Phase 3 services
+> to the UI (Phase 3.6 pages are static mocks, not wired to
 > `frontend/services.py`), API, RBAC, AI. See `docs/frontend_work.md` for
 > a frontend-only summary.
 >
@@ -48,8 +56,8 @@ of a real, migrated database schema, admin layer, and service layer —
 none of which any view calls yet.** The Django ORM models
 (`frontend/models.py` — 16 concrete models + a `TimeStampedModel` abstract
 base, matching `docs/SCHEMA.md` field-for-field — see §6) are migrated
-into `db.sqlite3`, `AUTH_USER_MODEL = 'frontend.User'` (Phase 3.7, see
-§5), and all 16 models are registered and browsable in
+into PostgreSQL (Phase 3.8, see §6), `AUTH_USER_MODEL = 'frontend.User'`
+(Phase 3.7, see §5), and all 16 models are registered and browsable in
 `frontend/admin.py` (see §5). But there is still no real authentication
 view logic, no API, and no AI implementation, and — critically — no view
 in `frontend/views.py` calls the ORM or the service layer at all.
@@ -66,7 +74,7 @@ wired-up application.
 |---|---|---|
 | Framework | Django 5.x | **Django 6.0.7** (newer than documented) |
 | API | DRF 3.15+ | Not installed |
-| Database | PostgreSQL 15+ | **SQLite** (`db.sqlite3`, Django default) — schema migrated and applied (§6) |
+| Database | PostgreSQL 15+ | **PostgreSQL 18** (local, Phase 3.8) — matches the documented engine. `db.sqlite3` no longer used (§6) |
 | Cache/queue | Redis 7+, Celery 5.x | Not installed |
 | ML | Scikit-learn 1.4+, Pandas, NumPy | Not installed |
 | Auth hashing | `django[argon2]` | Not installed (default PBKDF2 hasher in use) |
@@ -138,8 +146,17 @@ What is actually built and working:
   along the way (immutability, singleton enforcement, redundant indexes,
   a `Decimal`/`float` crash bug inherited from `SCHEMA.md`'s own reference
   code — full list in `docs/bugsfound.md`). 53 tests passing, migrations
-  applied to the real `db.sqlite3` (Phase 3.7, see §5/§6). Still nothing
-  calls any of this from a view — no views/forms exist yet (see §5).
+  applied to PostgreSQL (Phase 3.8, see §5/§6). Still nothing calls any of
+  this from a view — no views/forms exist yet (see §5).
+- ✅ **`select_for_update()` concurrency safety (verified Phase 3.8)** —
+  `InventoryService.increase_stock`/`decrease_stock` are both
+  `@transaction.atomic` and lock the `InventoryRecord` row before
+  reading, exactly as `07_INVENTORY.md` specifies. Confirmed no other
+  code path mutates `current_stock` unlocked — `PurchaseService`/
+  `AdjustmentService` both delegate to these two methods rather than
+  touching stock directly. SQLite silently no-ops `select_for_update()`;
+  Postgres actually enforces it, so this was worth confirming for real,
+  not just reading the code — it holds.
 - ✅ **Landing page** (`landing/index.html`) — full marketing page, hero,
   fabricated metrics, animated ticker, features grid, AI teaser section.
   Now uses the shared icon sprite for its feature icons (fixed — see §15).
@@ -261,9 +278,9 @@ inventory 3/
 │   │   DEMAND_FORECASTING.md, DEAD_STOCK_DETECTION.md
 │   └── project_memory.md       ← this file
 ├── manage.py
-├── requirements.txt             6 packages total — see §1 table (Pillow added in Backend Phase 1)
-├── db.sqlite3                   All tables migrated: Django's built-ins (auth, admin, sessions, contenttypes) plus all 16 `frontend` tables (Phase 3.7)
-├── .env / .env.example
+├── requirements.txt             8 packages total — see §1 table (Pillow added Phase 1, psycopg+psycopg-binary added Phase 3.8)
+├── db.sqlite3                   Stale/unused since Phase 3.8 (engine is now PostgreSQL) — gitignored, safe to delete
+├── .env / .env.example          Now also carries DB_NAME/DB_USER/DB_PASSWORD/DB_HOST/DB_PORT (Phase 3.8)
 └── .venv/
 ```
 
@@ -478,10 +495,15 @@ nothing calls.
 
 ## 6. Database
 
-- **Actual state (Phase 3.7)**: `db.sqlite3` was reset (confirmed empty of
-  real data first) and all migrations — `auth`/`admin`/`contenttypes`/
-  `sessions` plus a freshly-regenerated `frontend.0001_initial` — are
-  applied. `manage.py showmigrations` shows all `[X]`.
+- **Actual state (Phase 3.8)**: engine is PostgreSQL 18, local
+  `stockwell_dev` role/database, connection settings read from `.env`
+  (`DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT`). All migrations
+  — `auth`/`admin`/`contenttypes`/`sessions` plus `frontend.0001_initial`
+  (unchanged, no regeneration needed) — applied via `manage.py migrate`
+  against a fresh database. `manage.py showmigrations` shows all `[X]`.
+  `db.sqlite3` (used through Phase 3.7) is no longer read by the app at
+  all — the file is still on disk (gitignored, harmless) but stale;
+  safe to delete whenever convenient.
 - **Schema implementation status**: **all 16 models implemented in code**,
   verified programmatically (Django shell introspection of
   `model._meta.get_fields()`, `_meta.indexes`, `_meta.db_table`, and each
@@ -1167,6 +1189,18 @@ session history, not `git log`:
     (`employee_id` uniqueness, `notify_supervisors()`'s now-real
     `role`-based query) — 53/53 tests passing. `docs/bugsfound.md` updated
     (BUG-19 closed, BUG-11 given a follow-up note).
+20. **Phase 3.8: switch to PostgreSQL** — confirmed a local Postgres 18
+    server was actually installed and running (not just assumed from
+    pgAdmin's presence), created a dedicated `stockwell_dev` role +
+    database, added `psycopg[binary]` to `requirements.txt`, and switched
+    `DATABASES` in `settings.py` to read `DB_NAME`/`DB_USER`/
+    `DB_PASSWORD`/`DB_HOST`/`DB_PORT` from `.env` (no hardcoded
+    credentials). Existing migrations replayed against a fresh database
+    with zero regeneration needed. Re-verified BUG-19 (create+delete a
+    user) doesn't reoccur. 53/53 tests passing on Postgres. Confirmed
+    `InventoryService`'s `select_for_update()` usage (§2) is real,
+    correctly wrapped in `@transaction.atomic`, and the only path that
+    mutates stock — not a gap SQLite was silently hiding.
 
 ---
 
@@ -1341,12 +1375,13 @@ from decisions made and corrections applied during development:
   custom hand-built design system instead. This was a deliberate choice,
   not a mistake — don't "fix" it by pulling in Bootstrap, and don't be
   surprised the two disagree.
-- **`requirements.txt` has 6 packages, not the ~15 in `TECH_STACK.md`.**
+- **`requirements.txt` has 8 packages, not the ~15 in `TECH_STACK.md`.**
   DRF, Celery, Redis, scikit-learn, Argon2, WhiteNoise, Gunicorn, WeasyPrint
-  are all documented but **not installed** (Pillow was added in Backend
-  Phase 1 for `ImageField` support — that's the one addition so far). Any
-  task assuming a documented dependency is available should check
-  `requirements.txt` first rather than assuming.
+  are all documented but **not installed**. Pillow (Phase 1) and
+  psycopg+psycopg-binary (Phase 3.8, the Postgres switch) are the only
+  additions beyond Django's own base install so far. Any task assuming a
+  documented dependency is available should check `requirements.txt`
+  first rather than assuming.
 - **Django admin permission methods (`has_add_permission`,
   `has_change_permission`, etc.) are called on every admin page load for
   every registered model — not lazily, only when that model's own page is

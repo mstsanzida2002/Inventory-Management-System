@@ -10,7 +10,7 @@
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Products</h2>
-      <p class="text-slate">1,284 products across 36 categories and 42 suppliers.</p>
+      <p class="text-slate">{{ counts.total }} product{{ counts.total|pluralize }} across {{ categories|length }} categor{{ categories|length|pluralize:"y,ies" }} and {{ suppliers|length }} supplier{{ suppliers|length|pluralize }}.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-secondary" type="button">
@@ -29,28 +29,28 @@
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-box"></use></svg>
       <div>
-        <div class="stat-strip-value">1,284</div>
+        <div class="stat-strip-value">{{ counts.total }}</div>
         <div class="stat-strip-label">Total products</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-package-check"></use></svg>
       <div>
-        <div class="stat-strip-value">1,254</div>
+        <div class="stat-strip-value">{{ counts.in_stock }}</div>
         <div class="stat-strip-label">In stock</div>
       </div>
     </div>
     <div class="stat-strip-item is-warning">
       <svg class="icon icon-lg"><use href="#icon-alert-triangle"></use></svg>
       <div>
-        <div class="stat-strip-value">23</div>
+        <div class="stat-strip-value">{{ counts.low_stock }}</div>
         <div class="stat-strip-label">Low stock</div>
       </div>
     </div>
     <div class="stat-strip-item is-danger">
       <svg class="icon icon-lg"><use href="#icon-alert-circle"></use></svg>
       <div>
-        <div class="stat-strip-value">7</div>
+        <div class="stat-strip-value">{{ counts.out_of_stock }}</div>
         <div class="stat-strip-label">Out of stock</div>
       </div>
     </div>
@@ -66,12 +66,9 @@
       <div class="flex gap-3" style="flex-wrap:wrap;">
         <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
           <option>All categories</option>
-          <option>Medical Supplies</option>
-          <option>Tools</option>
-          <option>Office Supplies</option>
-          <option>Safety Equipment</option>
-          <option>Housewares</option>
-          <option>Electronics</option>
+          {% for category in categories %}
+            <option>{{ category.name }}</option>
+          {% endfor %}
         </select>
         <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
           <option>All statuses</option>
@@ -97,17 +94,17 @@
             </tr>
           </thead>
           <tbody id="productsTableBody">
-
+            {% for product in products %}
             <tr>
               <td>
-                Nitrile Gloves, Box of 100
-                <div class="cell-sub">SKU-20194</div>
+                {{ product.name }}
+                <div class="cell-sub">{{ product.sku }}</div>
               </td>
-              <td>Medical Supplies</td>
-              <td>Northgate Distributors</td>
-              <td class="mono">0 units</td>
-              <td class="mono">$18.50</td>
-              <td><span class="badge badge-danger">Out of stock</span></td>
+              <td>{{ product.category.name }}</td>
+              <td>{{ product.supplier.company_name|default:"—" }}</td>
+              <td class="mono">{{ product.current_stock }} {{ product.get_unit_display }}</td>
+              <td class="mono">${{ product.selling_price }}</td>
+              <td><span class="badge {{ product.stock_badge }}">{{ product.stock_label }}</span></td>
               <td>
                 <div class="widget-actions">
                   <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
@@ -115,133 +112,13 @@
                 </div>
               </td>
             </tr>
-
+            {% empty %}
             <tr>
-              <td>
-                Cordless Drill, 18V
-                <div class="cell-sub">SKU-11832</div>
-              </td>
-              <td>Tools</td>
-              <td>Redline Hardware Co.</td>
-              <td class="mono">4 units</td>
-              <td class="mono">$89.99</td>
-              <td><span class="badge badge-warning">Low stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
+              <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                No products yet — click "Add product" to create the first one.
               </td>
             </tr>
-
-            <tr>
-              <td>
-                A4 Copy Paper, Ream
-                <div class="cell-sub">SKU-30456</div>
-              </td>
-              <td>Office Supplies</td>
-              <td>Paper Trail Ltd.</td>
-              <td class="mono">9 units</td>
-              <td class="mono">$4.25</td>
-              <td><span class="badge badge-warning">Low stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>
-                Safety Helmet, Class E
-                <div class="cell-sub">SKU-40217</div>
-              </td>
-              <td>Safety Equipment</td>
-              <td>Northgate Distributors</td>
-              <td class="mono">0 units</td>
-              <td class="mono">$22.00</td>
-              <td><span class="badge badge-danger">Out of stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>
-                Stainless Water Bottle, 750ml
-                <div class="cell-sub">SKU-50221</div>
-              </td>
-              <td>Housewares</td>
-              <td>Coastal Goods Supply</td>
-              <td class="mono">340 units</td>
-              <td class="mono">$12.75</td>
-              <td><span class="badge badge-success">In stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>
-                LED Desk Lamp
-                <div class="cell-sub">SKU-60214</div>
-              </td>
-              <td>Electronics</td>
-              <td>BrightPath Electronics</td>
-              <td class="mono">95 units</td>
-              <td class="mono">$27.40</td>
-              <td><span class="badge badge-success">In stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>
-                Industrial Shelving Unit
-                <div class="cell-sub">SKU-70118</div>
-              </td>
-              <td>Warehouse Equipment</td>
-              <td>Redline Hardware Co.</td>
-              <td class="mono">18 units</td>
-              <td class="mono">$145.00</td>
-              <td><span class="badge badge-success">In stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>
-                Wireless Barcode Scanner
-                <div class="cell-sub">SKU-80339</div>
-              </td>
-              <td>Electronics</td>
-              <td>BrightPath Electronics</td>
-              <td class="mono">27 units</td>
-              <td class="mono">$210.00</td>
-              <td><span class="badge badge-success">In stock</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
+            {% endfor %}
           </tbody>
         </table>
       </div>
@@ -249,7 +126,7 @@
 
     <div class="panel-body" style="padding-top:0;">
       <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing 1–8 of 1,284 products</p>
+        <p class="text-slate text-xs" style="margin:0;">Showing {{ counts.total }} of {{ counts.total }} products</p>
         <div class="flex gap-2">
           <button class="btn btn-secondary" type="button" disabled>Previous</button>
           <button class="btn btn-secondary" type="button">Next</button>
@@ -272,7 +149,9 @@
         </button>
       </div>
 
-      <form class="modal-body" id="addProductForm" novalidate>
+      <form class="modal-body" id="addProductForm" method="post" action="{% url 'frontend:products' %}" enctype="multipart/form-data" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addProductFormError" hidden></div>
         <div class="form-grid">
 
           <div class="field field-full">
@@ -298,13 +177,9 @@
             <div class="select-wrap">
               <select class="input select" id="product-category" name="category">
                 <option value="" selected disabled>Select category</option>
-                <option>Medical Supplies</option>
-                <option>Tools</option>
-                <option>Office Supplies</option>
-                <option>Safety Equipment</option>
-                <option>Housewares</option>
-                <option>Electronics</option>
-                <option>Warehouse Equipment</option>
+                {% for category in categories %}
+                  <option value="{{ category.pk }}">{{ category.name }}</option>
+                {% endfor %}
               </select>
               <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
             </div>
@@ -318,15 +193,13 @@
           </div>
 
           <div class="field">
-            <label class="form-label" for="product-supplier">Supplier <span class="optional-tag">(optional)</span></label>
+            <label class="form-label" for="product-supplier">Supplier<span class="required-mark">*</span></label>
             <div class="select-wrap">
               <select class="input select" id="product-supplier" name="supplier">
-                <option value="" selected>No supplier assigned</option>
-                <option>Northgate Distributors</option>
-                <option>Redline Hardware Co.</option>
-                <option>Paper Trail Ltd.</option>
-                <option>Coastal Goods Supply</option>
-                <option>BrightPath Electronics</option>
+                <option value="" selected disabled>Select supplier</option>
+                {% for supplier in suppliers %}
+                  <option value="{{ supplier.pk }}">{{ supplier.company_name }}</option>
+                {% endfor %}
               </select>
               <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
             </div>
@@ -338,14 +211,9 @@
             <div class="select-wrap">
               <select class="input select" id="product-unit" name="unit">
                 <option value="" selected>Select unit</option>
-                <option>Piece</option>
-                <option>Box</option>
-                <option>Pack</option>
-                <option>Case</option>
-                <option>Kilogram</option>
-                <option>Litre</option>
-                <option>Dozen</option>
-                <option>Set</option>
+                {% for value, label in unit_choices %}
+                  <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
               </select>
               <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
             </div>
@@ -362,12 +230,6 @@
             <label class="form-label" for="product-selling-price">Selling price<span class="required-mark">*</span></label>
             <input class="input input-plain" type="number" id="product-selling-price" name="selling_price" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
             <div class="field-error" id="product-selling-price-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="product-initial-stock">Initial stock<span class="required-mark">*</span></label>
-            <input class="input input-plain" type="number" id="product-initial-stock" name="initial_stock" placeholder="0" step="1" min="0" inputmode="numeric">
-            <div class="field-error" id="product-initial-stock-error" role="alert"></div>
           </div>
 
           <div class="field">
@@ -394,11 +256,11 @@
               <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
               <span class="file-drop-text">
                 <span class="file-drop-title">Click to upload an image</span>
-                <div class="file-drop-filename" id="product-image-filename">PNG or JPG, up to 5MB</div>
+                <div class="file-drop-filename" id="product-image-filename">PNG, JPG, or WEBP, up to 5MB</div>
               </span>
               <img class="file-drop-preview" id="product-image-preview" alt="" hidden>
             </label>
-            <input type="file" class="sr-only" id="product-image" name="image" accept="image/png,image/jpeg">
+            <input type="file" class="sr-only" id="product-image" name="image" accept="image/png,image/jpeg,image/webp">
             <div class="field-error" id="product-image-error" role="alert"></div>
           </div>
 

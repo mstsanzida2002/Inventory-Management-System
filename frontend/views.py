@@ -33,12 +33,26 @@ from django.contrib.auth import (
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
+from django.views import View
 
 from frontend import audit
-from frontend.models import NotificationType, SystemSettings, User
+from frontend.forms import ProductForm
+from frontend.mixins import AnyStaffMixin
+from frontend.models import (
+    Category,
+    NotificationType,
+    Product,
+    Supplier,
+    SystemSettings,
+    UnitOfMeasurement,
+    User,
+)
 from frontend.notifications import notify_user
+from frontend.services import InventoryService
 
 
 def landing(request):
@@ -170,8 +184,74 @@ def profile_view(request):
 def dashboard(request):
     return render(request, "dashboard/dashboard.html")
 
-def products(request):
-    return render(request, "products/products.html", {"active_nav": "products"})
+class ProductListCreateView(AnyStaffMixin, View):
+    """docs/03_PRODUCTS.md's product_list_view/product_create_view,
+    combined into one view against the one existing /products/ route (this
+    project has no separate products:list/products:create URL split, and
+    the Add Product modal already posts back to the same page). AnyStaffMixin
+    (frontend/mixins.py, Phase 4) mirrors 03_PRODUCTS.md's own
+    @staff_required on both — the doc guards read and write the same way,
+    so both are guarded here too, not just create.
+
+    GET renders the real product list (§2 of this phase); POST is the
+    Add Product modal's real endpoint, called via fetch() from
+    product-form.js's onSubmit (Phase 5.5 — modal-form.js now natively
+    supports a Promise-returning onSubmit, see that file's header)."""
+
+    def get(self, request):
+        products = list(
+            Product.objects.select_related("category", "supplier").order_by("-created_at")
+        )
+        counts = {"total": 0, "in_stock": 0, "low_stock": 0, "out_of_stock": 0}
+        for product in products:
+            # Mirrors product-form.js's old client-side deriveStatus() and
+            # InventoryRecord.update_status()'s thresholds — read from
+            # Product.current_stock/reorder_level (kept in sync by
+            # InventoryService, the only code path allowed to write them)
+            # rather than joining InventoryRecord, since legacy rows
+            # created before this phase (e.g. via /admin/) may have no
+            # InventoryRecord at all.
+            if product.current_stock <= 0:
+                product.stock_label, product.stock_badge = "Out of stock", "badge-danger"
+                counts["out_of_stock"] += 1
+            elif product.reorder_level and product.current_stock <= product.reorder_level:
+                product.stock_label, product.stock_badge = "Low stock", "badge-warning"
+                counts["low_stock"] += 1
+            else:
+                product.stock_label, product.stock_badge = "In stock", "badge-success"
+                counts["in_stock"] += 1
+            counts["total"] += 1
+
+        context = {
+            "active_nav": "products",
+            "products": products,
+            "counts": counts,
+            "categories": Category.objects.filter(is_active=True).order_by("name"),
+            "suppliers": Supplier.objects.filter(is_active=True).order_by("company_name"),
+            "unit_choices": UnitOfMeasurement.choices,
+        }
+        return render(request, "products/products.html", context)
+
+    def post(self, request):
+        form = ProductForm(request.POST, request.FILES)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        with transaction.atomic():
+            product = form.save(commit=False)
+            product.save()
+            # Phase 5.5 correction: creating a product means a catalog entry
+            # now exists, not that stock arrived — no InventoryMovement is
+            # written here. See InventoryService.initialize_for_product()'s
+            # docstring and docs/bugsfound.md's Phase 5.5 entry. Stock only
+            # moves for real once a Purchase Order is received.
+            InventoryService.initialize_for_product(product)
+            audit.log_action(
+                request.user, audit.PRODUCT_CREATED, "products",
+                affected_id=product.pk, status="success", request=request,
+            )
+
+        return JsonResponse({"success": True})
 
 def categories(request):
     return render(request, "categories/categories.html", {"active_nav": "categories"})

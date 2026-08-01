@@ -63,6 +63,10 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-28 | `login_view`'s `is_active` check is unreachable dead code as written | `01_AUTH.md` (`login_view` reference code) | ✅ Fixed (Phase 4) |
 | BUG-29 | `ACCOUNT_LOCKED`/`PASSWORD_CHANGED` documented as audit actions but never called in the doc's own reference code | `01_AUTH.md` (Audit Actions table vs. `login_view`/`profile_update_view` code) | ✅ Fixed (Phase 4) |
 | BUG-30 | `profile_update_view`'s password change bypasses `AUTH_PASSWORD_VALIDATORS` entirely | `01_AUTH.md` (`profile_update_view` reference code) | ✅ Fixed (Phase 4) |
+| BUG-31 | Product mock UI labeled Supplier optional / Unit & Reorder level required, backwards from `SCHEMA.md`/`03_PRODUCTS.md` | `SCHEMA.md` §4 Product vs. Phase 3's hand-built `products.html` modal | ✅ Fixed (Phase 5) |
+| BUG-32 | `modal-form.js`'s blur handler clears a required+non-negative field's visible error even while the value is still negative | N/A — implementation bug (pre-existing in the shared modal architecture, first exercised by Phase 5's negative-price test) | 🚩 Reported (cosmetic — submit-time `validateAll()` still blocks it) |
+| BUG-33 | `modal-form.js` evaluates `extraValidate()` unconditionally, even when standard field validation already failed | N/A — implementation bug (pre-existing architecture; only became costly once an `extraValidate` hook did real network work, in Phase 5) | ✅ Moot (Phase 5.5 — see entry) |
+| BUG-34 | Product creation wrote a real `InventoryMovement` with no true cause, violating this project's own prior architecture decision | `docs/project_memory.md` §13 ("No 'Add Inventory Transaction' modal" decision) — Phase 5's own implementation | ✅ Fixed (Phase 5.5) |
 
 ---
 
@@ -617,3 +621,132 @@ requirement.
 validate_password(new_password, user)` is now called first; a
 `ValidationError` is caught and its messages surfaced the same way any
 other validator failure would be, before `set_password()` ever runs.
+
+### BUG-31 — Product mock UI's optional/required labels didn't match the schema
+**Root cause:** `SCHEMA.md`'s `Product.supplier` FK has no `blank=True`
+(and `03_PRODUCTS.md`'s business rules table says "Supplier | Required,
+must be active"), but the Phase 3 mock modal labeled it "(optional)" with
+a "No supplier assigned" default option. `unit`/`reorder_level` have
+model-level `default=`s but, like every other field, no `blank=True` —
+Django's `ModelForm` makes a field required based on `blank`, not on
+whether it has a default, so both would have been wrongly required by a
+literal `ModelForm` despite the mock UI already (correctly, as it turns
+out) treating them as optional-with-a-fallback.
+**Source Documentation:** `SCHEMA.md` §4 Product vs. the mock
+`products/products.html` built earlier in the project, before any backend
+enforcement existed to catch the mismatch.
+**Status:** ✅ Fixed (Phase 5) — Supplier's label/options updated to
+required, matching the schema; `unit`/`reorder_level` made explicitly
+optional on `ProductForm` with a `clean_*` fallback to the same default
+the model itself declares (`PIECE` / `10`).
+
+### BUG-32 — `modal-form.js`'s blur handler can clear a still-invalid field's error
+**Root cause:** For a field in both `requiredFieldIds` and
+`nonNegativeFieldIds` (e.g. Purchase price), `modal-form.js` wires
+`validateRequired` to `blur` and `validateNonNegative` to `input`. Typing
+a negative number fires `input` and correctly shows "cannot be negative."
+But moving focus to the *next* field fires `blur` on this one, which
+re-runs only `validateRequired` — and since the field is non-empty, that
+call clears the error, even though the value is still negative.
+**Source Documentation:** N/A — implementation bug in `modal-form.js`/
+`form-validation.js` (shared architecture, unchanged since it was first
+built for the Product modal). Pre-existing; Phase 5 is simply the first
+time a negative-value-then-tab-away sequence was actually tested.
+**Status:** 🚩 Reported, not fixed — this phase's brief kept
+`modal-form.js`/`form-validation.js` exactly as-is. Cosmetic only:
+`validateAll()` re-checks non-negativity at submit time regardless of
+what's currently displayed, so a still-negative value cannot actually be
+submitted — confirmed live (see `docs/project_memory.md` §15 Phase 5
+verification notes).
+
+### BUG-33 — `modal-form.js` runs `extraValidate()` even when standard validation already failed
+**Root cause:** The submit handler computes
+`isStandardValid = validateAll()` and
+`isExtraValid = config.extraValidate()` as two unconditional statements,
+then combines them — `extraValidate()` always runs, even on an obviously
+invalid submit (e.g. every required field still empty). Harmless for
+Purchase/Sale's line-items check (pure client-side), but Phase 5's
+`extraValidate` performs the real product-creation request, so this meant
+a real (synchronous, main-thread-blocking) server round-trip on every
+submit click, not just valid-looking ones.
+**Source Documentation:** N/A — implementation bug in `modal-form.js`
+(shared architecture, unchanged since Purchase/Sale first added
+`extraValidate` for line-items).
+**Status:** ✅ Worked around (Phase 5) — `product-form.js`'s
+`extraValidate` now checks for any `.has-error` field left by
+`validateAll()` and returns `false` immediately without touching the
+network if one exists, rather than changing `modal-form.js` itself.
+**Update (Phase 5.5):** moot for Products specifically — `onSubmit` is
+only ever called *after* `validateAll()`/`extraValidate()` both already
+passed (it's inside modal-form.js's own `if (!isStandardValid ||
+!isExtraValid) return;` gate), so moving the real request from
+`extraValidate` into `onSubmit` (needed anyway for BUG-34/the async fix,
+see below) structurally eliminates the wasted-request problem for this
+form — the `.has-error` workaround was deleted, not carried forward. The
+underlying characteristic in `modal-form.js` (`extraValidate()` itself
+still evaluates unconditionally) is unchanged and would still bite any
+future module that puts expensive work directly in `extraValidate`
+instead of `onSubmit`.
+
+### BUG-34 — Product creation wrote a real `InventoryMovement` with no true cause
+**Root cause:** Phase 5's `ProductListCreateView.post()` called
+`InventoryService.increase_stock(product, quantity=<initial_stock from
+the form>, movement_type=MovementType.ADJUSTMENT, ...)` for every new
+product, to satisfy the Phase 3 mock UI's pre-existing "Initial stock"
+field. `increase_stock()`'s entire contract — enforced by every other
+call site in the project — is "log a real movement with a real cause";
+`MovementType` only has 4 documented values (purchase/sale/adjustment/
+return), none of which describe "a catalog entry was created," and
+`ADJUSTMENT` was chosen only because it was the least-wrong of the four,
+not because it was accurate. Creating a product means a catalog entry
+now exists — it does not mean physical stock arrived, which only
+happens for real once a Purchase Order is received. This directly
+violated a decision this project had already made and written down for
+itself: `docs/project_memory.md` §13's "No 'Add Inventory Transaction'
+modal" entry, present since before Phase 5, explicitly states every
+inventory endpoint is GET-only and `InventoryMovement` rows are created
+only as an internal side effect of purchase-receive/sale/
+adjustment-approval — never via a direct user form. Phase 5 built
+exactly the direct-user-form path that decision had already ruled out,
+without cross-checking against it.
+**Source Documentation:**
+```
+docs/project_memory.md §13 (pre-existing, written before Phase 5):
+    "No 'Add Inventory Transaction' modal... every inventory endpoint
+    is documented as GET-only, and InventoryMovement rows are explicitly
+    described as created only as an internal side effect of
+    purchase-receive/sale/adjustment-approval — never via a direct user
+    form."
+
+frontend/views.py, ProductListCreateView.post() (Phase 5, before the fix):
+    InventoryService.increase_stock(
+        product=product, quantity=form.cleaned_data["initial_stock"],
+        movement_type=MovementType.ADJUSTMENT, reference_type="Product",
+        reference_id=product.pk, performed_by=request.user,
+        notes="Initial stock recorded at product creation.",
+    )
+
+03_PRODUCTS.md's own product_create_view, by contrast, creates
+InventoryRecord with the implied current_stock=0 default and nothing
+else — no quantity parameter, no movement, matching the §13 decision.
+```
+**Status:** ✅ Fixed (Phase 5.5). Presented as an explicit decision
+rather than resolved silently, since the Add Product modal's "Initial
+stock" field implied an undocumented "onboard with existing stock"
+workflow with no support in `03_PRODUCTS.md`/`07_INVENTORY.md`/
+`SCHEMA.md` — chose to remove the field entirely (over adding a 5th
+documented `MovementType`) so every product's first real stock arrives
+the same way every other module's stock does: through a received
+Purchase Order. `frontend/services.py` gained
+`InventoryService.initialize_for_product(product)` — creates the
+`InventoryRecord` at `current_stock=0` (reusing
+`InventoryRecord.update_status()` for a correctly-computed `out_of_stock`
+status) and writes **no** `InventoryMovement` row, since a zero-to-zero
+change is not a movement. Kept as its own method rather than calling
+`increase_stock(quantity=0)`, since that method's contract (write a real
+movement) doesn't apply here regardless of quantity. The 3 Phase 5 test
+products that had gone through the old path — with their now-incorrectly-
+labeled `InventoryMovement`/`AuditLog` rows — were deleted from the dev
+DB rather than left in place; fresh verification products were created
+through the corrected path instead (see
+`docs/project_memory.md` §15, Phase 5.5 entry).

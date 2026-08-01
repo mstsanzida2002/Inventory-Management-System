@@ -148,6 +148,11 @@
 .form-alert-success { background: var(--c-success-tint); color: var(--c-success); }
 .form-alert-warning { background: var(--c-warning-tint); color: #9C6B12; }
 .form-alert-info { background: var(--c-indigo-tint); color: var(--c-indigo); }
+/* Cascade trap (see dashboard.css/§9 note): .form-alert sets display:flex,
+   which beats the UA [hidden]{display:none} rule. Needed now that Phase 5
+   toggles a .form-alert-error via the `hidden` attribute from JS
+   (product-form.js's server-error banner), not just Django {% if %}. */
+.form-alert[hidden] { display: none; }
 
 /* ------------------------------------------------- Labeled form fields --
    .field (from above) doubles as the wrapper for plain, icon-less inputs

@@ -43,8 +43,45 @@
 > §12 for 4 documentation inconsistencies found and resolved this phase.
 > Still not built: real views/forms wiring the rest of the Phase 3
 > services to the UI (Phase 3.6 pages are still static mocks), API,
-> password reset, AI. See `docs/frontend_work.md` for a frontend-only
-> summary.
+> password reset, AI. (10) **Backend Phase 5** — Products is the first
+> fully real module: `ProductForm` (server-side unique SKU/barcode,
+> non-negative price/qty, active-only Category/Supplier, file-type/size
+> image validation), a real `ProductListCreateView` (GET lists the real
+> queryset, POST creates), `AnyStaffMixin` applied to both GET and POST
+> (any logged-in role; logged-out redirects to login). `MEDIA_ROOT`/
+> `MEDIA_URL` configured and dev-served; product images now actually
+> upload and are servable (BUG-10, Phase 1, only ever installed Pillow —
+> never wired this up). Every other view (Categories, Suppliers,
+> Purchases, Sales, ...) is still the original one-line `render()`,
+> unguarded — Products is the pattern Phase 6/7 will copy. **(11) Phase
+> 5.5 correction**: Phase 5's product creation originally called
+> `InventoryService.increase_stock()`, writing a real `InventoryMovement`
+> row for every new product — violating this file's own §13 architecture
+> decision that movements only ever happen as a purchase-receive/sale/
+> adjustment-approval side effect, never via a direct user form. Fixed:
+> product creation now calls the new `InventoryService.
+> initialize_for_product()`, creating the `InventoryRecord` at
+> `current_stock=0` with **no** movement row — still closing the original
+> gap (every product has an `InventoryRecord` the moment it exists, so
+> `SaleService` never hits a missing-record error), just without
+> fabricating a cause for a movement that didn't happen. The "Initial
+> stock" field was removed from the Add Product modal entirely; a
+> product's first real stock now only ever arrives via a received
+> Purchase Order, like every other module. Also: `modal-form.js` gained a
+> documented Promise-returning `onSubmit` contract, and `product-form.js`
+> moved off its synchronous-XHR workaround onto `fetch()` — see §5. 4 new
+> findings across both phases — `docs/bugsfound.md` BUG-31 through
+> BUG-34 — see §12. **(12) Post-Phase-5.5 check**: confirmed BUG-33 itself
+> (`extraValidate()` always running, even after standard validation
+> already failed) is still present in `modal-form.js` — Phase 5.5 only
+> moved Products' real work out of `extraValidate` into `onSubmit`, it
+> never touched the shared control flow. Purchase/Sale's `extraValidate`
+> (line-items check) is unaffected today since it's synchronous, but will
+> hit the same problem the moment Phase 7 gives it any server-side work —
+> flagged for whoever wires those modules next (see §12). Also added the
+> regression test that didn't exist for the Phase 5.5 fix itself — 80
+> tests passing (was 75).
+> See `docs/frontend_work.md` for a frontend-only summary.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
 > file wins for "what exists today."** The other docs win for "what the
@@ -205,8 +242,16 @@ What is actually built and working:
   `Log out`) — no longer hardcoded to "Amara Tenzin".
 - ✅ **Dashboard page** (`dashboard/dashboard.html`) — KPI cards, Chart.js
   sales/inventory charts, static preview panels.
-- ✅ **Product module** — list page + working "Add Product" modal (the
-  first one built; the template all later modals copy).
+- ✅ **Product module (real, Phase 5)** — list page renders the real
+  `Product` queryset (with real Category/Supplier FK display, computed
+  stock-status badge); "Add Product" modal posts to a real
+  `ProductListCreateView` guarded by `AnyStaffMixin`, with server-side
+  `ProductForm` validation (unique SKU/barcode, non-negative price/qty,
+  active-only Category/Supplier, image type/size) and a real
+  `InventoryRecord` created via `InventoryService` on every product. The
+  template/JS pattern (modal.js/form-validation.js/dom-utils.js/
+  modal-form.js + product-form.js) this module established is still the
+  one every later module copies — see §5/§12/§15.
 - ✅ **Category module** — grid-card list + working "Add Category" modal.
 - ✅ **Supplier module** — list page + working "Add Supplier" modal.
 - ✅ **Purchase module** — list page + working "Add Purchase" modal with
@@ -282,13 +327,14 @@ inventory 3/
 ├── frontend/                  The ONLY Django app. Holds both the backend schema and the entire UI.
 │   ├── models.py              16 concrete models + TimeStampedModel abstract base (Backend Phase 1), matching docs/SCHEMA.md exactly. Migrated (Phase 3.7).
 │   ├── admin.py                All 16 models registered (Backend Phase 2) — list_display/search_fields/list_filter/ordering configured. Data-browsing works (Phase 3.7, see §5).
-│   ├── views.py               login/logout_view/profile_view are real (Phase 4); every other view is still one-line render() — see §5
-│   ├── urls.py                app_name="frontend"; 19 registered routes (17 + logout/profile from Phase 4, see §5)
+│   ├── views.py               login/logout_view/profile_view real (Phase 4); ProductListCreateView real (Phase 5); every other view still one-line render() — see §5
+│   ├── forms.py                Phase 5 — ProductForm (first real ModelForm in the project)
+│   ├── urls.py                app_name="frontend"; 19 registered routes (products/ now points at ProductListCreateView.as_view(), Phase 5, see §5)
 │   ├── decorators.py          Phase 4 — require_role/admin_required/supervisor_required/staff_required (RBAC, function-based views)
-│   ├── mixins.py               Phase 4 — RoleRequiredMixin/AdminRequiredMixin/SupervisorRequiredMixin/AnyStaffMixin (RBAC, class-based views)
-│   ├── validators.py          Phase 4 — StrongPasswordValidator (AUTH_PASSWORD_VALIDATORS)
+│   ├── mixins.py               Phase 4 — RoleRequiredMixin/AdminRequiredMixin/SupervisorRequiredMixin/AnyStaffMixin (RBAC, class-based views); AnyStaffMixin's first real use is Phase 5's ProductListCreateView
+│   ├── validators.py          Phase 4 — StrongPasswordValidator; Phase 5 — validate_product_image (AUTH_PASSWORD_VALIDATORS / ProductForm.image)
 │   ├── apps.py                Stock Django scaffolding
-│   ├── tests.py                75 tests (Phase 3/3.4/3.5/4), all passing — see §2/§15
+│   ├── tests.py                80 tests (Phase 3/3.4/3.5/4/5.5), all passing — see §2/§15. Phase 5 itself added none (verified live instead); Phase 5.5 added 5 — InventoryServiceTests.test_initialize_for_product_creates_zero_stock_record_with_no_movement + ProductCreateViewTests (new class, first real /products/ view test)
 │   ├── migrations/             0001_initial.py, applied to PostgreSQL (Phase 3.7 switch, Phase 3.8 engine — see §5/§6)
 │   ├── templates/
 │   │   ├── base.html                  Public-site root layout (landing + login)
@@ -392,7 +438,18 @@ new "Add X" flow):**
   Config keys: `formId`, `modalId`, `fieldLabels`, `requiredFieldIds`,
   `nonNegativeFieldIds`, `resettableFieldIds`, `onSubmit`, `onReset`,
   `onInit`, `extraValidate` (hook used by Purchase/Sale to also validate
-  their line-items editor before allowing submit).
+  their line-items editor before allowing submit). **Phase 5.5**:
+  `onSubmit` now has a documented Promise contract — if it returns a
+  value with a `.then` (i.e. it used `fetch()`/`async`), the modal stays
+  open and unreset until that promise settles, closing only if the
+  resolved value isn't `false`/`{success:false}`; a plain (non-Promise)
+  return keeps the exact old behavior (always closes immediately). Added
+  because Phase 5's Product modal needed a real async round-trip and the
+  only way to keep the modal open on a server-side validation failure
+  (e.g. duplicate SKU) was a page-freezing synchronous XHR inside
+  `extraValidate` — see `docs/bugsfound.md`'s Phase 5.5 entry. Every
+  future "Add X" module (Phase 6/7/8) should use this contract for real
+  submits rather than reinventing a workaround.
 - `dom-utils.js` → `window.DomUtils.buildActionButton(label, iconId)`:
   shared `.pill-btn` builder used when a new table row is appended
   client-side.
@@ -488,33 +545,47 @@ nothing calls.
   `ai/forecasting/`, `ai/slow-moving/`, the 5 Phase 3.6 routes —
   `reports/`, `notifications/`, `users/`, `audit-log/`, `settings/` —
   plus `login/`) and 2 new real ones (Phase 4): `logout/`, `profile/`.
-- **Views (Phase 4 — auth views are real)**: `frontend/views.py`'s
-  `login`/`logout_view`/`profile_view` are real: POST handling, ORM
-  queries/writes (`User.objects.get`, lockout fields, `set_password`),
-  `frontend.audit.log_action()`/`frontend.notifications.notify_user()`
-  calls, session management. Every *other* view (Products, Purchases,
-  Sales, ...) is still the original one-line `render(request,
-  "<template>", {"active_nav": "<name>"})` — no forms, no querysets, no
-  auth checks, no ORM usage. Nothing calls the RBAC decorator/mixin
-  (below) yet either — see §12.
-- **RBAC (Phase 4 — mechanism only)**: `frontend/decorators.py`
+- **Views (Phase 4 auth + Phase 5 Products are real)**: `frontend/views.py`'s
+  `login`/`logout_view`/`profile_view` (Phase 4) and, as of Phase 5,
+  `ProductListCreateView` (a class-based `AnyStaffMixin` + `View`: GET
+  renders the real `Product` queryset, POST validates via `ProductForm`
+  and, in one transaction, creates the product and calls
+  `InventoryService.initialize_for_product()` — see §6's Phase 5.5 note —
+  returning JSON for the modal's `fetch()`-based submit, Phase 5.5). Every
+  *other* view (Categories, Suppliers, Purchases, Sales, ...) is still the
+  original one-line `render(request, "<template>",
+  {"active_nav": "<name>"})` — no forms, no querysets, no auth checks, no
+  ORM usage.
+- **RBAC (Phase 4 mechanism, Phase 5 first real use)**: `frontend/decorators.py`
   (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
   and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
   `SupervisorRequiredMixin`/`AnyStaffMixin`) — translated from
-  `02_RBAC.md`'s `apps/rbac/decorators.py`/`apps/rbac/mixins.py`. Proven
-  against throwaway views in `frontend/tests.py` only; not applied to any
-  real view (see §12). DRF's `BasePermission` classes (`IsAdmin` etc.)
-  from the same doc were explicitly out of scope — DRF isn't installed.
+  `02_RBAC.md`'s `apps/rbac/decorators.py`/`apps/rbac/mixins.py`. Phase 4
+  proved it only against throwaway views; Phase 5 is the first real
+  consumer — `AnyStaffMixin` guards `ProductListCreateView`, matching
+  `03_PRODUCTS.md`'s own reference code guarding both its list and create
+  views the same way. Every other real view is still unguarded (see §12).
+  DRF's `BasePermission` classes (`IsAdmin` etc.) from the same doc were
+  explicitly out of scope — DRF isn't installed.
+- **Forms (Phase 5 — first real ModelForm)**: `frontend/forms.py`'s
+  `ProductForm` — server-side enforcement of what the JS modal previously
+  only checked client-side (unique SKU/barcode via Django's automatic
+  `ModelForm` uniqueness check, non-negative purchase/selling price),
+  restricts Category/Supplier choices to `is_active=True`, validates
+  uploaded images via `frontend/validators.py`'s new
+  `validate_product_image` (`SECURITY.md`'s allowed-extensions/max-size
+  rule). Also reconciled two required/optional mismatches between
+  `SCHEMA.md` and the Phase 3 mock UI — see `docs/bugsfound.md` BUG-31.
 - **Validators (Phase 4)**: `frontend/validators.py`'s
   `StrongPasswordValidator` — translated from `SECURITY.md`'s
   `apps/authentication/validators.py`, registered in
   `AUTH_PASSWORD_VALIDATORS` alongside Django's 4 built-in validators.
-- **Forms**: still no Django Form/ModelForm classes — `01_AUTH.md`'s own
-  reference code doesn't use them either (raw `request.POST.get(...)`),
-  and Phase 4's views/forms were translated faithfully to that pattern.
-  `accounts/login.html`'s dead `{% if form.* %}` template conditionals
-  (referencing a `form` object the view never passed) were removed
-  earlier — see §15 — now genuinely moot since real POST handling exists.
+- Phase 4's auth views (`login`/`profile_view`) still use raw
+  `request.POST.get(...)`, matching `01_AUTH.md`'s own reference code —
+  `ProductForm` (above) is the first real `ModelForm` in the project, not
+  a retrofit onto auth. `accounts/login.html`'s dead `{% if form.* %}`
+  template conditionals (referencing a `form` object the view never
+  passed) were removed earlier — see §15.
 - **Services / API**: `frontend/services.py` (Phase 3) is the only
   service-layer code; nothing in Phase 4 calls it (auth isn't part of the
   stock-mutation service layer). `docs/API_CONTRACTS.md` documents 60
@@ -605,6 +676,20 @@ nothing calls.
   NULL` constraint and fail loudly, not silently create a row with an
   unset/wrong role. Worth re-checking if a future phase ever bulk-creates
   or imports users outside the ORM — not a bug today, nothing to fix.
+
+  **Product creation → `InventoryRecord` (corrected Phase 5.5)**: every
+  `Product` gets a matching `InventoryRecord` the moment it's created,
+  via the new `InventoryService.initialize_for_product()`
+  (`frontend/services.py`) — `current_stock=0`, `reorder_level` copied
+  from the product, `status` computed by the existing
+  `InventoryRecord.update_status()` (→ `out_of_stock` for zero stock).
+  Unlike `increase_stock()`/`decrease_stock()`, this method writes **no**
+  `InventoryMovement` row — Phase 5 originally called `increase_stock()`
+  here instead, which forced a real movement into the immutable ledger
+  with no true cause (see `docs/bugsfound.md`'s Phase 5.5 entry); a
+  product's first real stock now only ever arrives via a received
+  Purchase Order (`PurchaseService.receive_items()` → `increase_stock()`),
+  same as every other module.
 
 - **Redundancies found in SCHEMA.md itself** (implemented literally, not
   fixed — not this session's call to resolve, flagged for whoever owns the
@@ -825,7 +910,7 @@ re-enabled, nothing left disabled.
 - ✅ Profile (`/profile/`, Phase 4 — new page, not in the sidebar; reached
   via the topbar user-menu dropdown only)
 - ✅ Dashboard
-- ✅ Products (list + Add modal)
+- ✅ Products (real, Phase 5 — list + Add modal against the live DB, RBAC-guarded)
 - ✅ Categories (list + Add modal)
 - ✅ Suppliers (list + Add modal)
 - ✅ Purchases (list + Add modal, line-items)
@@ -920,14 +1005,25 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
 kept together here rather than scattered, since they were all found in
 the same phase):
 
-- **RBAC mechanism exists but is applied nowhere real yet.**
-  `frontend/decorators.py`/`frontend/mixins.py` are proven correct against
-  throwaway views only. Every existing page view (Products, Purchases,
-  Sales, Users & Roles, Settings, ...) is still a bare `render()` with no
-  `@login_required` and no role check — open to anyone, logged in or not,
-  until Phase 5/6/7 wires each module in. This is a real, current security
-  gap for anyone who deploys this build past localhost, not just an
-  incompleteness note.
+- **RBAC mechanism now applied to one real module — Products (Phase 5).**
+  `AnyStaffMixin` guards `ProductListCreateView` (GET and POST); logged-out
+  requests redirect to login, confirmed live. Every *other* page view
+  (Categories, Suppliers, Purchases, Sales, Users & Roles, Settings, ...)
+  is still a bare `render()` with no `@login_required` and no role check —
+  open to anyone, logged in or not, until Phase 6/7 wires each module in
+  the same way. This remains a real, current security gap for every module
+  except Products.
+- **Phase 5 verification surfaced two pre-existing quirks in the shared
+  modal architecture** (`modal-form.js`/`form-validation.js`), neither
+  introduced this phase — see `docs/bugsfound.md` BUG-32/33 for full
+  detail: (1) a field that's both required and non-negative can show a
+  blank error on blur even while its value is still negative (cosmetic —
+  submit-time re-validation still blocks it, confirmed live); (2)
+  `extraValidate()` runs unconditionally even when standard validation
+  already failed, which only became costly once Product's `extraValidate`
+  started doing real server work — worked around locally in
+  `product-form.js` (skip the request if a `.has-error` field already
+  exists), not by changing the shared files.
 - **4 documentation inconsistencies found and resolved, source disclosed
   rather than silently picked:**
   1. `MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION`: `01_AUTH.md`'s business
@@ -1067,6 +1163,13 @@ inert but undeleted for the same reason.
   of purchase-receive/sale/adjustment-approval — never via a direct user
   form. Building a create form here would have invented an undocumented
   workflow, so it was deliberately skipped and reported rather than guessed.
+  **Phase 5 briefly violated this decision without noticing** — the new
+  Add Product modal's "Initial stock" field was wired to a real
+  `InventoryMovement` via `InventoryService.increase_stock()`, a direct
+  user-form-triggered movement this exact bullet had already ruled out.
+  **Corrected Phase 5.5**: the field was removed; product creation now
+  only ever produces a zero-stock `InventoryRecord` with no movement — see
+  §5/§6 and `docs/bugsfound.md`'s Phase 5.5 entry for the full story.
 - **9999-day sentinel not reproduced verbatim in Slow-Moving UI copy.**
   The documented classifier uses `days_since = 9999` internally for
   never-sold products; showing that number to a user reads as a leaked
@@ -1141,6 +1244,31 @@ inert but undeleted for the same reason.
   there needs to fail open, not just be "probably fine." Found and fixed
   within this same phase, before it could ship as a latent landmine (see
   §12/§18).
+- **SKU auto-generation format (`PRD-YYYYMMDD-XXXX`) has no source in any
+  doc — disclosed, not silently invented (Phase 5, disclosure added
+  Phase 5.5).** `03_PRODUCTS.md` documents this exact format
+  (`generate_sku()`) and the mock UI's own "SKU (optional)" label/
+  placeholder (`SKU-00000`) already implied auto-generation before any
+  backend existed — so the *feature* (auto-generate when blank) traces to
+  both; the specific *format* traces only to `03_PRODUCTS.md`'s reference
+  code, reused verbatim in `ProductForm._generate_sku()`
+  (`frontend/forms.py`) rather than inventing a different one. Flagged
+  here per this project's standing practice (§17 had already listed this
+  exact gap) of giving every deliberate doc deviation its own explicit
+  entry rather than leaving it to only exist in chat/session history —
+  same treatment as the 9999-day sentinel and the single period toggle
+  above. No retry-on-collision loop, matching `PurchaseOrder`/
+  `SaleTransaction`'s identical random-suffix pattern (§6).
+- **`InventoryService.initialize_for_product()` added as its own method
+  (Phase 5.5) rather than reusing `increase_stock()` with `quantity=0`.**
+  `increase_stock()`'s whole contract is "log a real movement with a real
+  cause" — every call site writes an `InventoryMovement` row unconditionally.
+  Product creation has no real cause (no stock physically moved), so
+  reusing it — even at `quantity=0` — would still write a movement row
+  describing an event that didn't happen. A distinctly-named method that
+  writes no movement at all keeps the ledger honest and keeps
+  `InventoryService` as the single place `InventoryRecord` rows are
+  created or mutated either way (see §5/§6).
 
 ---
 
@@ -1392,6 +1520,92 @@ session history, not `git log`:
     admin styling, not a `TemplateDoesNotExist` crash. Disabled anyway,
     since a real (Stockwell-styled) reset flow is still deferred either
     way. No code logic changed — CSS/template + doc corrections only.
+24. **Backend Phase 5: Products, end to end** — `ProductForm`, a real
+    `ProductListCreateView` (`AnyStaffMixin`-guarded GET+POST), and
+    `products/products.html` wired to the real DB, keeping the existing
+    modal.js/form-validation.js/dom-utils.js/modal-form.js architecture
+    untouched — only `product-form.js`'s `extraValidate`/`onSubmit` point
+    at the real endpoint now (a synchronous XHR inside `extraValidate`,
+    not `fetch` in `onSubmit`, since `modal-form.js` closes/resets the
+    modal unconditionally right after `onSubmit()` runs — see
+    `product-form.js`'s file header). Every created product gets a real
+    `InventoryRecord` via `InventoryService.increase_stock()` in the same
+    transaction as the product save. `MEDIA_ROOT`/`MEDIA_URL` configured
+    and dev-served (BUG-10 never finished this in Phase 1). Verified live
+    with Playwright end to end: logged-out `/products/` redirects to
+    login; empty submit shows inline required-field errors and keeps the
+    modal open; a negative price is blocked at submit time (client-side
+    display of that block has a cosmetic pre-existing gap — BUG-32);
+    duplicate SKU is rejected server-side with a visible inline error,
+    modal stays open; a valid submit creates the product, reloads, the
+    row persists after a fresh reload; ESC and overlay-click still close
+    the modal; reopening shows a clean form; an uploaded image saves to
+    `media/products/` and is servable at `/media/products/<name>`; the
+    product's `InventoryRecord`/`InventoryMovement`/`AuditLog` rows all
+    exist afterward. Found 3 new issues — 2 pre-existing in the shared
+    modal architecture (not fixed, kept out of scope), 1 in the Phase 3
+    mock UI's required/optional labels (fixed) — see `docs/bugsfound.md`
+    BUG-31/32/33. **Corrected in Phase 5.5 (item 25 below)**: the
+    `InventoryService.increase_stock()` call this item describes turned
+    out to violate this document's own §13 architecture decision — see
+    item 25 and `docs/bugsfound.md`'s Phase 5.5 entry (BUG-34).
+25. **Phase 5.5: correct the inventory business rule + fix
+    `modal-form.js`'s async gap.** Two fixes, one dev-DB cleanup, one
+    disclosure:
+    - **Inventory rule**: Phase 5's `increase_stock()` call (item 24)
+      wrote a real `InventoryMovement` for every new product with no true
+      cause — none of the 4 documented `movement_type`s describe "a
+      product was catalogued." The Add Product modal's "Initial stock"
+      field (a Phase 3 mock-UI holdover) was the actual source of the
+      quantity being passed — flagged as a real decision rather than
+      silently resolved; chose (per explicit direction) to remove the
+      field entirely rather than invent a 5th documented movement type.
+      Added `InventoryService.initialize_for_product()` (§5/§6): creates
+      the `InventoryRecord` at `current_stock=0`, correct `out_of_stock`
+      status, zero `InventoryMovement` rows. Matches `03_PRODUCTS.md`'s
+      own reference code and this file's pre-existing §13 decision
+      exactly. Deleted the 3 Phase 5 test products that had gone through
+      the old, incorrect path (with their now-inconsistent
+      `InventoryMovement`/`AuditLog` rows) rather than leaving mislabeled
+      ledger entries sitting in the dev DB.
+    - **`modal-form.js` async gap**: added a documented Promise contract
+      to `onSubmit` (§4) — an async `onSubmit` now keeps the modal open
+      until it settles, closing only on success — so `product-form.js`
+      could drop its synchronous-XHR-inside-`extraValidate` workaround
+      for a real `fetch()`. Every future "Add X" module gets this for
+      free once it's wired to a real endpoint. Confirmed live: the POST
+      to `/products/` now shows as a `fetch` request, and the page
+      remains fully interactive (JS keeps running, the DOM stays
+      scriptable) while a request is in flight — throttled the request to
+      1.5s via CDP and confirmed the page didn't hang for that window.
+    - **SKU auto-generation disclosure** (§13, §17): no code change —
+      gave the `PRD-YYYYMMDD-XXXX` format its own explicit architecture-
+      decision entry, closing the exact gap §17 had already flagged.
+    - Re-verified live end to end after both fixes: empty submit, valid
+      submit, duplicate SKU, ESC/overlay-click all still behave exactly
+      as Phase 5 verified — this was a correctness/architecture fix, not
+      a UX change. 75/75 tests still passing throughout.
+26. **Post-Phase-5.5 check: was BUG-33 actually fixed, and was the
+    inventory-rule fix covered by a test?** Two direct questions, answered
+    by reading code rather than restating the item-25 summary:
+    - **BUG-33**: confirmed still present in `modal-form.js` —
+      `extraValidate()` is called unconditionally either way (see the
+      submit handler's two unconditional statements, `isStandardValid`
+      and `isExtraValid`). Item 25's "moot for Products" claim holds only
+      for Products (its real work moved to `onSubmit`, which *is* gated);
+      Purchase/Sale's `extraValidate` is unaffected today only because
+      it's still synchronous — it will reproduce the same problem the
+      moment either gets server-side work inside `extraValidate` instead
+      of `onSubmit`. Not fixed at the source; flagged for Phase 7.
+    - **Test coverage**: none existed for the item-25 fix. Added
+      `InventoryServiceTests.test_initialize_for_product_creates_zero_stock_record_with_no_movement`
+      (service-level) and a new `ProductCreateViewTests` class (4 tests,
+      real HTTP round-trip through `/products/` — the original bug was in
+      the *view*, not the service, so a service-only test wouldn't have
+      caught it). Verified the new test actually guards the regression by
+      temporarily reverting `views.py` to call `increase_stock()` again —
+      it failed loudly (`1 != 0`) — then restored the fix. 80/80 tests
+      passing.
 
 ---
 
@@ -1400,15 +1614,20 @@ session history, not `git log`:
 Highest priority first:
 
 1. **Wire the RBAC decorator/mixin (§5, Phase 4) and the service layer
-   into real module views, together, module by module** (Products first) —
-   these two used to be separate priorities; they're the same unit of
-   work now, since every module view needs both a permission check
-   (`02_RBAC.md`'s permission matrix) and a real queryset at the same
-   time. Replace static hardcoded rows module by module. The 5 Phase 3.6
-   pages (§11) join this same backlog — they're mocks like everything
-   else. Until this happens, every page except login/logout/profile
-   remains open to anyone (§12) — treat this as a security gap, not just
-   an incompleteness note.
+   into real module views, together, module by module** — Products is
+   done (Phase 5, see §2/§5/§12/§15); Categories, Suppliers, Purchases,
+   Sales, Inventory, and Adjustments are next, in that order, following
+   the exact pattern Phase 5 established. Replace static hardcoded rows
+   module by module. The 5 Phase 3.6 pages (§11) join this same backlog —
+   they're mocks like everything else. Until this happens, every page
+   except login/logout/profile/Products remains open to anyone (§12) —
+   treat this as a security gap, not just an incompleteness note.
+   **When wiring Purchase/Sale to a real endpoint**: their existing
+   `extraValidate` (line-items check) still has BUG-33's unconditional-
+   evaluation problem (§15, item 26) — put any server-side work in
+   `onSubmit` (which `modal-form.js` correctly gates and now supports
+   async via the Phase 5.5 Promise contract, §4/§5), not in
+   `extraValidate`.
 2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
    (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
    `12_SEARCH.md`, `14_SETTINGS.md`).
@@ -1440,12 +1659,14 @@ Grouped by module, per the documentation:
   anywhere), template-level role conditionals (`{% if
   request.user.role == ... %}` — trivial once views pass real `request.user`
   context, not attempted yet), DRF `BasePermission` classes (needs DRF).
-- **Products/Categories**: real CRUD, SKU auto-generation (already coded
-  as a `save()` pattern for PO/invoice numbers; Product's SKU generation
-  isn't in SCHEMA.md's `Product.save()` — only PO/invoice auto-numbering
-  is documented that way, so Product SKU generation would need its own
-  documented rule before implementing), soft-delete, image upload
-  validation.
+- **Products**: real CRUD — ✅ **create + list done** (Phase 5, §2/§5),
+  SKU auto-generation implemented per `03_PRODUCTS.md`'s own documented
+  format and disclosed as its own architecture decision (§13, Phase 5.5 —
+  this bullet's "needs its own documented rule" gap is resolved), image
+  upload validation done (§5). Still pending: edit/deactivate views,
+  soft-delete (`is_active = False`, per `03_PRODUCTS.md`'s business
+  rules — no deactivate view exists yet, only create/list).
+- **Categories**: real CRUD — still just the Phase 3 mock, not started.
 - **Suppliers**: real CRUD (no dedicated doc exists — see §12; work from
   `SCHEMA.md` + the existing `suppliers.html` UI).
 - **Purchases/Sales/Inventory/Adjustments services**: ✅ **done**

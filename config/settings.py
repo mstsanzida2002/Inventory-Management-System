@@ -172,6 +172,14 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Media files (user uploads: Product.image, User.profile_image,
+# SystemSettings.company_logo). BUG-10 (Phase 1) only installed Pillow to
+# satisfy manage.py check's ImageField requirement — it never configured
+# these, so nothing was actually servable until now (Phase 5). Dev-only
+# serving is wired in config/urls.py, gated on DEBUG.
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 

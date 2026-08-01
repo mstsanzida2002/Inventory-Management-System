@@ -107,6 +107,28 @@ class InventoryServiceTests(ServiceTestCase):
         self.assertEqual(movement.stock_before, 0)
         self.assertEqual(movement.stock_after, 50)
 
+    def test_initialize_for_product_creates_zero_stock_record_with_no_movement(self):
+        """Phase 5.5 regression test (docs/bugsfound.md BUG-34): product
+        creation must never write an InventoryMovement — a zero-to-zero
+        change is not a movement, and none of MovementType's 4 documented
+        values describe 'a product was catalogued'. Proves
+        initialize_for_product() creates a real InventoryRecord at
+        current_stock=0 with the correct out_of_stock status, and writes
+        NO InventoryMovement row at all — this would fail loudly if
+        increase_stock() (or any other movement-writing call) were ever
+        reintroduced at product-creation time."""
+        record = InventoryService.initialize_for_product(self.product)
+
+        self.assertEqual(record.current_stock, 0)
+        self.assertEqual(record.status, InventoryStatus.OUT_OF_STOCK)
+        self.assertEqual(record.reorder_level, self.product.reorder_level)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.current_stock, 0)
+        self.assertEqual(
+            InventoryMovement.objects.filter(product=self.product).count(), 0,
+            "product creation must never write an InventoryMovement row",
+        )
+
     def test_increase_stock_updates_status_and_valuation(self):
         """Proves: status auto-recalculates and total_value = stock × purchase_price."""
         record = self.give_stock(50)
@@ -1025,3 +1047,87 @@ class RBACDecoratorMixinTests(TestCase):
         response = _MixinAdminOnlyView.as_view()(req)
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('frontend:login'), response.url)
+
+
+# ------------------------------------------------------------------ Products
+# Phase 5/5.5: frontend.views.ProductListCreateView, the real /products/
+# endpoint. Real HTTP round-trips through frontend/urls.py, like AuthTestCase
+# above — not direct function calls.
+
+class ProductCreateViewTests(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='pstaff', email='pstaff@example.com', password='x',
+            employee_id='EMP-4001', full_name='Product Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Gadgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='Gadget Supply', company_name='Gadget Supply Co',
+            contact_person='Sam', email='gadget@example.com', phone='555-0111',
+            address='1 Gadget Way', is_active=True,
+        )
+
+    def valid_payload(self, **overrides):
+        payload = {
+            'name': 'Test Gadget',
+            'category': self.category.pk,
+            'supplier': self.supplier.pk,
+            'purchase_price': '10.00',
+            'selling_price': '20.00',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_create_requires_login(self):
+        response = self.client.post(reverse('frontend:products'), self.valid_payload())
+        self.assertRedirects(response, f"{reverse('frontend:login')}?next={reverse('frontend:products')}")
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_valid_submit_creates_product_with_zero_stock_and_no_movement(self):
+        """Phase 5.5 regression test (docs/bugsfound.md BUG-34), end to
+        end through the real view — not just the service method in
+        isolation, since the original bug was in ProductListCreateView.post()
+        calling the wrong InventoryService method, not in the service layer
+        itself. Would fail loudly if increase_stock() (or any other
+        movement-writing call) were ever reintroduced here."""
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get('success'))
+
+        product = Product.objects.get(name='Test Gadget')
+        self.assertEqual(product.current_stock, 0)
+
+        record = InventoryRecord.objects.get(product=product)
+        self.assertEqual(record.current_stock, 0)
+        self.assertEqual(record.status, InventoryStatus.OUT_OF_STOCK)
+
+        self.assertEqual(
+            InventoryMovement.objects.filter(reference_type='Product', reference_id=product.pk).count(), 0,
+            "creating a product must never write an InventoryMovement row",
+        )
+        self.assertTrue(AuditLog.objects.filter(action='PRODUCT_CREATED', affected_id=product.pk).exists())
+
+    def test_duplicate_sku_rejected_with_no_product_created(self):
+        self.client.login(username='pstaff', password='x')
+        self.client.post(reverse('frontend:products'), self.valid_payload(sku='SKU-DUP-1'))
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(name='Second Gadget', sku='SKU-DUP-1'))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('sku', response.json().get('errors', {}))
+        self.assertEqual(Product.objects.filter(name='Second Gadget').count(), 0)
+
+    def test_no_initial_stock_field_accepted_or_required(self):
+        """The Add Product form no longer has an 'Initial stock' field
+        (Phase 5.5) — posting one must simply be ignored, not cause an
+        error or influence current_stock."""
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:products'),
+            self.valid_payload(initial_stock='999'),
+        )
+        self.assertEqual(response.status_code, 200)
+        product = Product.objects.get(name='Test Gadget')
+        self.assertEqual(product.current_stock, 0)

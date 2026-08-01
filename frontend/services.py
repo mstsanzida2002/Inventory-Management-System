@@ -52,6 +52,32 @@ class InventoryService:
 
     @classmethod
     @transaction.atomic
+    def initialize_for_product(cls, product):
+        """Create the InventoryRecord for a newly-catalogued product, at
+        zero stock, with NO InventoryMovement row (Phase 5.5 — see
+        docs/bugsfound.md's Phase 5.5 entry). Creating a product means a
+        catalog entry now exists, not that stock arrived — that only
+        happens for real when a Purchase Order is received (increase_stock(),
+        called from PurchaseService.receive_items()). A zero-to-zero change
+        is not a movement, so unlike increase_stock()/decrease_stock() this
+        deliberately writes nothing to the immutable ledger — their whole
+        contract ("log a real movement with a real cause") doesn't apply to
+        "nothing happened yet." Matches 03_PRODUCTS.md's own
+        product_create_view, which creates InventoryRecord with the implied
+        current_stock=0 default and nothing else, and
+        docs/project_memory.md §13's existing architecture decision that
+        InventoryMovement rows are only ever an internal side effect of
+        purchase-receive/sale/adjustment-approval."""
+        record, _ = InventoryRecord.objects.get_or_create(
+            product=product,
+            defaults={'current_stock': 0, 'reorder_level': product.reorder_level},
+        )
+        record.update_status()
+        record.save()
+        return record
+
+    @classmethod
+    @transaction.atomic
     def increase_stock(cls, product, quantity, movement_type, reference_type,
                         reference_id, performed_by, notes=''):
         """Add stock. Used by: purchase receipt, approved increase-adjustment."""

@@ -12,13 +12,26 @@
 
 ---
 
+## Design Notes — Revisions From the Original Spec (disclosed)
+
+Two corrections to the original reference code, both disclosed rather than silently changed:
+
+1. **`calculate_turnover_rate()` divided sales by a current-stock snapshot, not a period average, despite its own docstring's claim.** The original `avg_stock = InventoryRecord.objects.get(product=product).current_stock` reads today's stock level, not an average over the 90-day window the function claims to use. A product that sat at 500 units for 85 days and then sold down to 5 in the final week would score a misleadingly extreme turnover rate under the old code, purely because of when the classifier happened to run. `calculate_average_stock()` (new, below) reconstructs a genuine time-weighted average from the `InventoryMovement` ledger's `stock_after` values instead.
+2. **The Classification Logic table said `fast` requires "turnover rate above threshold," but `classify_product()`'s own reference code never checked it** — the `if`/`elif`/`else` block was, and still is, purely recency-based (`days_since` against `slow_threshold`/`dead_threshold`). Rather than leave that contradiction in place, the table below has been corrected to describe what the code actually does: turnover rate is computed and surfaced (in `InventoryClassification.turnover_rate` and the recommendation text) as context, but is not itself a classification gate. Making turnover an actual gate would need a new configurable field (e.g. `SystemSettings.min_turnover_rate_fast`) — a schema change outside this file's scope, so it's flagged here as a future enhancement rather than implemented.
+
+Everything else in this document — the Celery task, the post-sale signal, the API views, the serializer, and the dashboard chart — is unchanged.
+
+**Possible future enhancement (not implemented here):** a single global `slow_moving_threshold_days`/`dead_stock_threshold_days` pair may not fit every category well (perishables and durable goods naturally turn over at very different rates) — a per-`Category` override would need its own schema addition and is worth considering once real sales data across categories exists to validate against.
+
+---
+
 ## Classification Logic
 
 | Class | Criteria |
 |---|---|
-| `fast` | Sold within last N days AND turnover rate above threshold |
-| `slow` | Last sold between `slow_threshold` and `dead_threshold` days ago |
-| `dead` | Not sold for more than `dead_threshold` days OR zero sales ever |
+| `fast` | Last sold within `slow_moving_threshold_days`. Turnover rate is calculated and shown for context (see Design Notes) but does not itself gate this classification. |
+| `slow` | Last sold between `slow_moving_threshold_days` and `dead_stock_threshold_days` days ago |
+| `dead` | Not sold for more than `dead_stock_threshold_days` days, or zero sales ever |
 
 Default thresholds (configurable in `SystemSettings`):
 - `slow_moving_threshold_days = 60`
@@ -35,29 +48,68 @@ from datetime import timedelta
 from django.db.models import Sum, Max
 from apps.settings_manager.models import SystemSettings
 from apps.ai.classification.models import InventoryClassification, StockClassification
-from apps.inventory.models import InventoryRecord
+from apps.inventory.models import InventoryRecord, InventoryMovement
 from apps.products.models import Product
 from apps.sales.models import SaleItem
 
 
+def calculate_average_stock(product, period_start, period_end):
+    """
+    Time-weighted average stock over [period_start, period_end],
+    reconstructed from the InventoryMovement ledger's stock_after values —
+    not a single point-in-time InventoryRecord.current_stock snapshot. A
+    product that held 500 units for most of the window and only sold down
+    near the end would otherwise be judged entirely on whichever stock
+    level happened to be true the moment this function ran.
+    """
+    try:
+        current_stock = InventoryRecord.objects.get(product=product).current_stock
+    except InventoryRecord.DoesNotExist:
+        return 0.0
+
+    movements = list(
+        InventoryMovement.objects.filter(product=product, created_at__lte=period_end)
+        .order_by('created_at')
+        .values('created_at', 'stock_after')
+    )
+
+    before = [m for m in movements if m['created_at'] < period_start]
+    during = [m for m in movements if m['created_at'] >= period_start]
+
+    stock_at_start = before[-1]['stock_after'] if before else current_stock
+
+    checkpoints = [(period_start, stock_at_start)]
+    checkpoints += [(m['created_at'], m['stock_after']) for m in during]
+    checkpoints.append((period_end, current_stock))
+
+    total_seconds = (period_end - period_start).total_seconds()
+    if total_seconds <= 0:
+        return float(stock_at_start)
+
+    weighted_sum = 0.0
+    for (t_start, stock), (t_end, _) in zip(checkpoints, checkpoints[1:]):
+        weighted_sum += stock * (t_end - t_start).total_seconds()
+
+    return weighted_sum / total_seconds
+
+
 def calculate_turnover_rate(product, days=90):
     """
-    Turnover rate = total units sold in period / average stock over period.
-    Returns float (higher = faster moving).
+    Turnover rate = total units sold in period / time-weighted average
+    stock held over the period. Returns float (higher = faster moving).
     """
-    period_start = timezone.now().date() - timedelta(days=days)
+    period_end = timezone.now()
+    period_start = period_end - timedelta(days=days)
+
     total_sold = SaleItem.objects.filter(
         product=product,
-        transaction__transaction_date__gte=period_start,
+        transaction__transaction_date__gte=period_start.date(),
         transaction__status='completed'
     ).aggregate(total=Sum('quantity'))['total'] or 0
 
-    try:
-        avg_stock = InventoryRecord.objects.get(product=product).current_stock
-    except InventoryRecord.DoesNotExist:
-        avg_stock = 0
+    avg_stock = calculate_average_stock(product, period_start, period_end)
 
-    if avg_stock == 0:
+    if avg_stock <= 0:
         return 0.0
     return round(total_sold / avg_stock, 4)
 
@@ -91,7 +143,8 @@ def classify_product(product, settings_obj=None):
     else:
         days_since = (today - last_sold).days
 
-    # Classification logic
+    # Classification logic — recency-based; turnover is informational
+    # (see Design Notes at the top of this file)
     if days_since >= dead_threshold:
         classification = StockClassification.DEAD
         recommendation = (

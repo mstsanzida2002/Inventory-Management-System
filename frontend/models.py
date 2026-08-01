@@ -91,6 +91,27 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def is_staff_member(self):
         return self.role == UserRole.STAFF
 
+    # Not in SCHEMA.md's User code block. AbstractBaseUser (unlike
+    # AbstractUser) provides neither get_full_name() nor get_short_name()
+    # — Phase 3.6's dashboard topbar template already calls both
+    # (`request.user.get_full_name`, `request.user.get_initials`) against
+    # mock/anonymous data, silently falling through to its `|default`
+    # values. Added now (Phase 4) so those calls resolve to the real,
+    # logged-in user instead of always showing the placeholder name.
+    def get_full_name(self):
+        return self.full_name
+
+    def get_short_name(self):
+        return self.full_name.split(' ')[0] if self.full_name else self.username
+
+    def get_initials(self):
+        parts = self.full_name.split()
+        if len(parts) >= 2:
+            return (parts[0][0] + parts[-1][0]).upper()
+        if parts:
+            return parts[0][:2].upper()
+        return self.username[:2].upper()
+
 
 # ----------------------------------------------------------------- 2. Category
 

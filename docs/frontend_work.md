@@ -7,9 +7,12 @@ in `docs/bugsfound.md`. This file is just the frontend headline list.
 
 ---
 
-## Pages shipped (17)
+## Pages shipped (18)
 
-**Public**: Landing, Login (UI only).
+**Public**: Landing, Login (real, Phase 4 — backend task, but touched the
+template: Django messages rendering, no other changes).
+**Account**: Profile (new, Phase 4 — not in the sidebar, reached only via
+the topbar user-menu dropdown).
 **Core**: Dashboard, Products, Categories, Suppliers, Purchases, Sales,
 Inventory (read-only), Adjustments.
 **Intelligence**: Demand Forecasting, Slow-Moving & Dead Stock.
@@ -17,7 +20,8 @@ Inventory (read-only), Adjustments.
 Settings.
 
 All 15 sidebar links resolve to a real page — nothing disabled, nothing
-404s.
+404s. Topbar user menu (Phase 4) is now a working dropdown showing the
+real logged-in user, not a decorative button.
 
 ## Design system
 
@@ -58,6 +62,11 @@ modal implementations anywhere.
   (`dashboard.css` + `dashboard.js`), used by the topbar bell.
 - **Reports/Audit Log** — first pages combining `table-filter.js` across
   multiple mock tables per page.
+- **Real login (Phase 4)** — first page wired to a real backend view.
+  Added Django-messages rendering (`.form-alert` component, new) to
+  `login.html`; the topbar user-menu button became a real dropdown
+  (`My Profile`/`Log out`) reusing the existing `.dropdown` pattern from
+  the notification bell — no new JS needed.
 
 ## Known frontend debt (see `docs/bugsfound.md` for full detail)
 
@@ -67,5 +76,5 @@ modal implementations anywhere.
   always use `{% comment %}`.
 - `line_total` calc duplicated across JS and the (now-existing) backend —
   not reconciled yet.
-- Everything is still static mock data — no page reads from the real
-  service layer or database yet (that's the next phase).
+- Everything except Login/Logout/Profile (Phase 4) is still static mock
+  data — no other page reads from the real service layer or database yet.

@@ -99,6 +99,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 8},
     },
     {
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
@@ -106,12 +107,52 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
+    # Phase 4 — SECURITY.md's StrongPasswordValidator (uppercase, lowercase,
+    # digit, special char), stacked on top of the 4 built-in validators above.
+    {
+        'NAME': 'frontend.validators.StrongPasswordValidator',
+    },
+]
+
+# Password hashing (Phase 4) — SECURITY.md item 1 / 01_AUTH.md's "Password
+# hashing: Argon2" business rule. Argon2 first so it's used for every new/
+# changed password; the rest stay listed so Django can still verify (and
+# transparently upgrade) any password hashed with them previously.
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+    'django.contrib.auth.hashers.BCryptSHA256PasswordHasher',
 ]
 
 # Custom user model (Phase 3.7) — SCHEMA.md §1 User. Must be set before the
 # first migration; every FK in frontend/models.py already targets
 # settings.AUTH_USER_MODEL in anticipation of this.
 AUTH_USER_MODEL = 'frontend.User'
+
+# Real login lives at frontend:login, not Django's default /accounts/login/
+# (project_memory.md §12 bug #1) — this is what @login_required and
+# LoginRequiredMixin (and frontend/mixins.py's RoleRequiredMixin, which
+# extends it) redirect unauthenticated users to.
+LOGIN_URL = 'frontend:login'
+
+# Account lockout (Phase 4) — 01_AUTH.md's business rules table describes
+# these as "configurable," but SCHEMA.md's SystemSettings model has no
+# matching fields; only ENVIRONMENT.md documents them, as env vars. Used
+# as specified there rather than adding SystemSettings fields to work
+# around the gap — see docs/project_memory.md for the full note.
+MAX_LOGIN_ATTEMPTS = int(os.environ.get('MAX_LOGIN_ATTEMPTS', '5'))
+LOCKOUT_DURATION = int(os.environ.get('LOCKOUT_DURATION', '300'))
+
+# Session/CSRF cookie hardening (Phase 4) — 01_AUTH.md: "Session cookie:
+# HttpOnly + Secure + SameSite=Lax". *_SECURE is tied to DEBUG rather than
+# hardcoded True, since a Secure cookie is never sent back over plain HTTP
+# local dev — this project has no separate dev/production settings module
+# (see docs/project_memory.md §13) to split it into instead.
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
 
 
 # Internationalization

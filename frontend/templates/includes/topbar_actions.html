@@ -57,12 +57,21 @@
 
   <div class="topbar-divider"></div>
 
-  <button class="topbar-user" type="button">
-    <div class="avatar">{{ request.user.get_initials|default:"AT" }}</div>
-    <div class="topbar-user-info">
-      <div class="name">{{ request.user.get_full_name|default:"Amara Tenzin" }}</div>
-      <div class="role">{{ request.user.role|default:"System Administrator" }}</div>
+  <div class="dropdown" id="userMenuDropdown">
+    <button class="topbar-user" type="button" aria-expanded="false" data-dropdown-toggle>
+      <div class="avatar">{{ request.user.get_initials|default:"AT" }}</div>
+      <div class="topbar-user-info">
+        <div class="name">{{ request.user.get_full_name|default:"Amara Tenzin" }}</div>
+        <div class="role">{{ request.user.get_role_display|default:"System Administrator" }}</div>
+      </div>
+      <svg class="icon"><use href="#icon-chevron-down"></use></svg>
+    </button>
+    <div class="dropdown-menu dropdown-menu-right" role="menu">
+      <a href="{% url 'frontend:profile' %}" class="dropdown-menu-footer" role="menuitem">My Profile</a>
+      <form method="post" action="{% url 'frontend:logout' %}">
+        {% csrf_token %}
+        <button type="submit" class="dropdown-menu-footer" style="width:100%; border:none; background:none; cursor:pointer;" role="menuitem">Log out</button>
+      </form>
     </div>
-    <svg class="icon"><use href="#icon-chevron-down"></use></svg>
-  </button>
+  </div>
 </div>

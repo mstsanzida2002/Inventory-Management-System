@@ -6,32 +6,26 @@ notify_user()/notify_supervisors() are the ONLY code path allowed to
 create Notification rows — per 11_NOTIFICATIONS.md's own instruction
 ("Never create Notification objects directly in other modules").
 
-Two deliberate, disclosed simplifications vs. the documented design:
+One deliberate, disclosed simplification vs. the documented design: email
+is sent SYNCHRONOUSLY via Django's send_mail(), not via a Celery task's
+.delay(). Celery isn't installed and isn't being added until it's
+explicitly needed (see docs/project_memory.md §1) — this trades away
+background execution, not correctness. Swap _maybe_send_email()'s body
+for a .delay() call once a Celery task exists; nothing else in this
+module needs to change.
 
-1. Email is sent SYNCHRONOUSLY via Django's send_mail(), not via a Celery
-   task's .delay(). Celery isn't installed and isn't being added until
-   it's explicitly needed (see docs/project_memory.md §1) — this trades
-   away background execution, not correctness. Swap _maybe_send_email()'s
-   body for a .delay() call once a Celery task exists; nothing else in
-   this module needs to change.
-
-2. notify_supervisors() is documented to filter recipients by
-   `role__in=[UserRole.ADMIN, UserRole.SUPERVISOR]`. As of Phase 3.7,
-   AUTH_USER_MODEL == frontend.User, so that field exists and this is the
-   query that actually runs — the role__in filter is real, not
-   hypothetical. The is_staff=True OR is_superuser=True branch below is
-   dead in practice today (FieldError can no longer be raised here) but is
-   left in place as a defensive fallback rather than deleted outright,
-   since removing it is a behavior decision for Phase 4 (RBAC), not this
-   phase's scope.
+Phase 4 decision: notify_supervisors()'s `role__in=[...]` query used to
+have an `is_staff=True OR is_superuser=True` fallback for the pre-Phase-3.7
+window when `role` didn't exist on the active AUTH_USER_MODEL. Removed
+outright (not kept as defense-in-depth) now that RBAC is being built for
+real — `role` is a required field on frontend.User, the only user model
+this project will ever run against, so the fallback branch was
+unreachable dead code, not a meaningful safety net.
 """
 from django.conf import settings as django_settings
-from django.contrib.auth import get_user_model
-from django.core.exceptions import FieldError
 from django.core.mail import send_mail
-from django.db.models import Q
 
-from frontend.models import Notification, SystemSettings, UserRole
+from frontend.models import Notification, SystemSettings, User, UserRole
 
 
 def notify_user(user, notification_type, title, message, link='', is_critical=False):
@@ -49,17 +43,10 @@ def notify_user(user, notification_type, title, message, link='', is_critical=Fa
 
 
 def notify_supervisors(notification_type, title, message, link='', is_critical=False):
-    """Notify all active supervisors and admins. See module docstring
-    point 2 for the temporary is_staff/is_superuser fallback."""
-    User = get_user_model()
-    try:
-        recipients = list(User.objects.filter(
-            role__in=[UserRole.ADMIN, UserRole.SUPERVISOR], is_active=True,
-        ))
-    except FieldError:
-        recipients = list(User.objects.filter(
-            Q(is_staff=True) | Q(is_superuser=True), is_active=True,
-        ))
+    """Notify all active supervisors and admins."""
+    recipients = list(User.objects.filter(
+        role__in=[UserRole.ADMIN, UserRole.SUPERVISOR], is_active=True,
+    ))
 
     notifications = []
     for user in recipients:

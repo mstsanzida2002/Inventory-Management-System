@@ -46,24 +46,6 @@ class InsufficientStockError(Exception):
     pass
 
 
-def _user_display_name(user):
-    """05_PURCHASES.md's reference code interpolates `user.full_name`
-    directly — that field only exists on frontend.User, not the
-    currently-active AUTH_USER_MODEL (django.contrib.auth.models.User,
-    which has no `full_name`; only `get_full_name()`). Same category of
-    gap as notify_supervisors()'s role fallback in frontend/notifications.py
-    — a disclosed simplification until AUTH_USER_MODEL switches, not a
-    documented rule. Delete this once the switch happens and `full_name`
-    resolves for real."""
-    full_name = getattr(user, 'full_name', '')
-    if full_name:
-        return full_name
-    get_full_name = getattr(user, 'get_full_name', None)
-    if callable(get_full_name) and get_full_name():
-        return get_full_name()
-    return user.username
-
-
 class InventoryService:
     """The only place InventoryRecord/Product stock fields and
     InventoryMovement rows are written. docs/07_INVENTORY.md."""
@@ -184,7 +166,7 @@ class PurchaseService:
         po.save(update_fields=['status', 'updated_at'])
         notify_supervisors(
             NotificationType.PO_PENDING, f'PO {po.po_number} Awaiting Approval',
-            f'{_user_display_name(submitted_by)} submitted {po.po_number} for approval.',
+            f'{submitted_by.full_name} submitted {po.po_number} for approval.',
             link=f'/purchases/{po.pk}/',
         )
         audit.log_action(submitted_by, audit.PO_SUBMITTED, 'purchases', affected_id=po.pk, status='success')

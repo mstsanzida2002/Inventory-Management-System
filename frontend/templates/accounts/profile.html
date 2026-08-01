@@ -1,0 +1,94 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}My Profile{% endblock %}
+{% block page_eyebrow %}Account{% endblock %}
+{% block page_title %}My Profile{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+    Phase 4 — real view (frontend.views.profile_view), not a mock. Fields
+    match 01_AUTH.md's profile_update_view reference code exactly:
+    full_name, contact_number, profile_image, new_password. No confirm-
+    password field — the doc's own reference code doesn't have one either,
+    and validate_password() (server-side) is the actual enforcement point.
+  {% endcomment %}
+
+  {% if messages %}
+    {% for message in messages %}
+      <div class="form-alert form-alert-{{ message.tags }}" role="alert">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">My Profile</h2>
+      <p class="text-slate">Update your personal details or change your password.</p>
+    </div>
+  </div>
+
+  <form method="post" enctype="multipart/form-data" novalidate>
+    {% csrf_token %}
+
+    <div class="panel" style="margin-bottom: var(--sp-6);">
+      <div class="panel-header">
+        <div>
+          <h3>Personal information</h3>
+          <p class="panel-sub">{{ user.employee_id }} &middot; {{ user.get_role_display }}</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="profile-full-name">Full name</label>
+            <input class="input input-plain" type="text" id="profile-full-name" name="full_name" value="{{ user.full_name }}">
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="profile-username">Username</label>
+            <input class="input input-plain" type="text" id="profile-username" value="{{ user.username }}" disabled>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="profile-email">Email</label>
+            <input class="input input-plain" type="email" id="profile-email" value="{{ user.email }}" disabled>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="profile-contact-number">Contact number <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="profile-contact-number" name="contact_number" value="{{ user.contact_number }}">
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="profile-image">Profile photo <span class="optional-tag">(optional)</span></label>
+            <input type="file" id="profile-image" name="profile_image" accept="image/png,image/jpeg,image/webp">
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: var(--sp-6);">
+      <div class="panel-header">
+        <h3>Change password</h3>
+        <p class="panel-sub">Leave blank to keep your current password.</p>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field field-full">
+            <label class="form-label" for="profile-new-password">New password</label>
+            <input class="input input-plain" type="password" id="profile-new-password" name="new_password" autocomplete="new-password">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" type="submit">
+      <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+      Save changes
+    </button>
+  </form>
+
+{% endblock %}

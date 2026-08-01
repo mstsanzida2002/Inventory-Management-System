@@ -3,16 +3,25 @@ Tests for the Phase 3 service layer (frontend/services.py), verified against
 docs/05_PURCHASES.md, docs/06_SALES.md, docs/07_INVENTORY.md, and this task's
 own instructions for AdjustmentService (no dedicated doc exists). Phase 3.5
 adds tests for the audit/notification retrofit (frontend/audit.py,
-frontend/notifications.py).
+frontend/notifications.py). Phase 4 adds tests for real auth (login/logout/
+profile, frontend/views.py) and the RBAC decorator/mixin (frontend/decorators.py,
+frontend/mixins.py).
 """
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.http import HttpResponse
+from django.test import TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+from django.views import View
 
 from frontend import audit
+from frontend.decorators import admin_required, staff_required
+from frontend.mixins import AdminRequiredMixin
 from frontend.models import (
     AdjustmentStatus,
     AdjustmentType,
@@ -759,3 +768,260 @@ class EmailNotificationTests(ServiceTestCase):
         # The in-system Notification itself must still be created —
         # disabling email is not the same as disabling notifications.
         self.assertTrue(Notification.objects.filter(recipient=self.user, type=NotificationType.PO_APPROVED).exists())
+
+
+class AuthTestCase(TestCase):
+    """Phase 4: real login/logout/lockout against frontend.User, per
+    docs/01_AUTH.md. Uses Django's test Client (self.client) — these are
+    real HTTP round-trips through frontend/urls.py + frontend/views.py,
+    not direct function calls."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='jdoe', email='jdoe@example.com', password='Correct-Horse1!',
+            employee_id='EMP-2001', full_name='Jane Doe', role=UserRole.STAFF,
+        )
+
+    def login_url(self):
+        return reverse('frontend:login')
+
+
+class LoginTests(AuthTestCase):
+
+    def test_login_with_username_succeeds(self):
+        response = self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'Correct-Horse1!'})
+        self.assertRedirects(response, reverse('frontend:dashboard'))
+        self.assertTrue(response.wsgi_request.user.is_authenticated)  # unused after redirect; real check below
+        # Session is authenticated for the *next* request:
+        dash = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(dash.wsgi_request.user.username, 'jdoe')
+
+    def test_login_with_email_succeeds(self):
+        response = self.client.post(self.login_url(), {'username': 'jdoe@example.com', 'password': 'Correct-Horse1!'})
+        self.assertRedirects(response, reverse('frontend:dashboard'))
+        dash = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(dash.wsgi_request.user.username, 'jdoe')
+
+    def test_login_success_writes_audit_row_and_resets_lockout_fields(self):
+        self.user.failed_login_attempts = 2
+        self.user.save(update_fields=['failed_login_attempts'])
+
+        self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'Correct-Horse1!'})
+
+        self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.LOGIN_SUCCESS, status='success').exists())
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_login_attempts, 0)
+        self.assertIsNone(self.user.locked_until)
+
+    def test_login_applies_session_timeout_from_system_settings(self):
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.session_timeout_seconds = 1800
+        settings_obj.save()
+
+        self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'Correct-Horse1!'})
+
+        self.assertEqual(self.client.session.get_expiry_age(), 1800)
+
+    def test_wrong_password_increments_failed_attempts_and_logs_failure(self):
+        self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'wrong'})
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_login_attempts, 1)
+        self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.LOGIN_FAILED, status='failure').exists())
+
+    def test_unknown_identifier_logs_failure_with_no_user(self):
+        self.client.post(self.login_url(), {'username': 'nobody-here', 'password': 'whatever'})
+        entry = AuditLog.objects.get(action=audit.LOGIN_FAILED, user__isnull=True)
+        self.assertEqual(entry.details.get('identifier'), 'nobody-here')
+
+    @override_settings(MAX_LOGIN_ATTEMPTS=3, LOCKOUT_DURATION=120)
+    def test_lockout_triggers_after_configured_max_attempts(self):
+        for _ in range(3):
+            self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'wrong'})
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_login_attempts, 0, "counter resets once locked")
+        self.assertIsNotNone(self.user.locked_until)
+        expected = timezone.now() + timedelta(seconds=120)
+        self.assertAlmostEqual(self.user.locked_until.timestamp(), expected.timestamp(), delta=5)
+        self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.ACCOUNT_LOCKED).exists())
+
+        # Correct password is still rejected while locked — proves the
+        # lockout, not just the attempt counter, blocks the login.
+        response = self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'Correct-Horse1!'})
+        self.assertContains(response, 'Account locked')
+
+    @override_settings(MAX_LOGIN_ATTEMPTS=3, LOCKOUT_DURATION=120)
+    def test_login_succeeds_again_once_lockout_duration_has_elapsed(self):
+        for _ in range(3):
+            self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'wrong'})
+        self.user.refresh_from_db()
+        self.assertIsNotNone(self.user.locked_until)
+
+        # Simulate LOCKOUT_DURATION having elapsed, rather than sleeping
+        # for real in a test.
+        self.user.locked_until = timezone.now() - timedelta(seconds=1)
+        self.user.save(update_fields=['locked_until'])
+
+        response = self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'Correct-Horse1!'})
+        self.assertRedirects(response, reverse('frontend:dashboard'))
+
+    def test_inactive_user_is_blocked_without_incrementing_failed_attempts(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        response = self.client.post(self.login_url(), {'username': 'jdoe', 'password': 'Correct-Horse1!'})
+
+        self.assertContains(response, 'inactive')
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_login_attempts, 0, "a deactivated account's correct password is not a failed attempt")
+
+
+class LogoutTests(AuthTestCase):
+
+    def test_logout_writes_audit_row_and_ends_session(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        self.client.post(reverse('frontend:logout'))
+
+        self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.LOGOUT, status='success').exists())
+        dash = self.client.get(reverse('frontend:dashboard'))
+        self.assertFalse(dash.wsgi_request.user.is_authenticated)
+
+    def test_logout_requires_login(self):
+        response = self.client.post(reverse('frontend:logout'))
+        self.assertRedirects(response, f"{reverse('frontend:login')}?next={reverse('frontend:logout')}")
+
+
+class ProfileUpdateTests(AuthTestCase):
+
+    def test_profile_fields_update_and_log_action_fires(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        self.client.post(reverse('frontend:profile'), {'full_name': 'Jane A. Doe', 'contact_number': '555-0199'})
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.full_name, 'Jane A. Doe')
+        self.assertEqual(self.user.contact_number, '555-0199')
+        self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.PROFILE_UPDATED, status='success').exists())
+
+    def test_password_change_hashes_new_password_logs_and_notifies(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        self.client.post(reverse('frontend:profile'), {
+            'full_name': self.user.full_name, 'new_password': 'New-Password9!',
+        })
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('New-Password9!'))
+        self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED, status='success').exists())
+        self.assertTrue(Notification.objects.filter(recipient=self.user, type=NotificationType.PASSWORD_CHANGED).exists())
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_weak_new_password_rejected_by_strong_password_validator(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.post(reverse('frontend:profile'), {
+            'full_name': self.user.full_name, 'new_password': 'alllowercase1',
+        })
+
+        self.assertContains(response, 'uppercase')
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Correct-Horse1!'), "password must be unchanged")
+        self.assertFalse(AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED).exists())
+
+    def test_session_stays_alive_after_password_change(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        self.client.post(reverse('frontend:profile'), {
+            'full_name': self.user.full_name, 'new_password': 'Another-One2!',
+        })
+        # update_session_auth_hash() should have kept this session valid —
+        # a follow-up authenticated request must not be bounced to login.
+        dash = self.client.get(reverse('frontend:dashboard'))
+        self.assertTrue(dash.wsgi_request.user.is_authenticated)
+
+
+# ------------------------------------------------------ RBAC decorator/mixin
+# Throwaway view + CBV, per this task's own instruction: "applied to
+# nothing yet except a throwaway test view/CBV to prove each works." Not
+# registered in frontend/urls.py — exercised here directly via Django's
+# RequestFactory, never shipped as a real route.
+
+@admin_required
+def _decorator_admin_only_view(request):
+    return HttpResponse('decorator ok')
+
+
+@staff_required
+def _decorator_any_staff_view(request):
+    return HttpResponse('staff ok')
+
+
+class _MixinAdminOnlyView(AdminRequiredMixin, View):
+    def get(self, request):
+        return HttpResponse('mixin ok')
+
+
+class RBACDecoratorMixinTests(TestCase):
+    """Proves frontend/decorators.py and frontend/mixins.py both actually
+    gate by role, against throwaway views registered nowhere in urls.py."""
+
+    def setUp(self):
+        self.factory_admin = User.objects.create_user(
+            username='admin1', email='admin1@example.com', password='x',
+            employee_id='EMP-3001', full_name='Admin One', role=UserRole.ADMIN,
+        )
+        self.factory_staff = User.objects.create_user(
+            username='staffer1', email='staffer1@example.com', password='x',
+            employee_id='EMP-3002', full_name='Staff One', role=UserRole.STAFF,
+        )
+
+    def _request(self, path, user):
+        from django.test import RequestFactory
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.contrib.sessions.middleware import SessionMiddleware
+
+        req = RequestFactory().get(path)
+        SessionMiddleware(lambda r: None).process_request(req)
+        req.session.save()
+        req.user = user
+        req._messages = FallbackStorage(req)
+        return req
+
+    # ---- decorator ----
+    def test_decorator_allows_matching_role(self):
+        req = self._request('/_test/admin-only/', self.factory_admin)
+        response = _decorator_admin_only_view(req)
+        self.assertEqual(response.status_code, 200)
+
+    def test_decorator_blocks_wrong_role_and_redirects_to_dashboard(self):
+        req = self._request('/_test/admin-only/', self.factory_staff)
+        response = _decorator_admin_only_view(req)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('frontend:dashboard'))
+
+    def test_decorator_blocks_unauthenticated_and_redirects_to_login(self):
+        from django.contrib.auth.models import AnonymousUser
+        req = self._request('/_test/admin-only/', AnonymousUser())
+        response = _decorator_admin_only_view(req)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('frontend:login'))
+
+    def test_decorator_allows_any_of_multiple_permitted_roles(self):
+        req = self._request('/_test/any-staff/', self.factory_staff)
+        response = _decorator_any_staff_view(req)
+        self.assertEqual(response.status_code, 200)
+
+    # ---- mixin ----
+    def test_mixin_allows_matching_role(self):
+        req = self._request('/_test/admin-only-cbv/', self.factory_admin)
+        response = _MixinAdminOnlyView.as_view()(req)
+        self.assertEqual(response.status_code, 200)
+
+    def test_mixin_blocks_wrong_role_and_redirects_to_dashboard(self):
+        req = self._request('/_test/admin-only-cbv/', self.factory_staff)
+        response = _MixinAdminOnlyView.as_view()(req)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('frontend:dashboard'))
+
+    def test_mixin_blocks_unauthenticated_and_redirects_to_login(self):
+        from django.contrib.auth.models import AnonymousUser
+        req = self._request('/_test/admin-only-cbv/', AnonymousUser())
+        response = _MixinAdminOnlyView.as_view()(req)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('frontend:login'), response.url)

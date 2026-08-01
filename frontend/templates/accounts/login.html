@@ -32,6 +32,12 @@
           <h1 class="auth-heading">Welcome back</h1>
           <p class="auth-subheading">Log in with the credentials your administrator assigned you.</p>
 
+          {% if messages %}
+            {% for message in messages %}
+              <div class="form-alert form-alert-{{ message.tags }}" role="alert">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+
           <form method="post" action="{% url 'frontend:login' %}" class="auth-form" novalidate>
             {% csrf_token %}
 

@@ -28,10 +28,23 @@
 > replayed with zero changes needed. 53 tests still passing. Confirmed
 > `InventoryService`'s `select_for_update()` usage (07_INVENTORY.md's
 > requirement) is real and correctly wrapped in `@transaction.atomic` —
-> not a gap. Still not built: real views/forms wiring the Phase 3 services
-> to the UI (Phase 3.6 pages are static mocks, not wired to
-> `frontend/services.py`), API, RBAC, AI. See `docs/frontend_work.md` for
-> a frontend-only summary.
+> not a gap. (8) **Phase 3.9** — found `docs/bugsfound.md` was stale, not
+> the code: BUG-13/20/21/22/25 were all genuinely fixed back in Phase 3.4;
+> corrected the doc, plus two stale facts in this file (§3 migrations
+> line, §5 route count). (9) **Backend Phase 4** — real authentication
+> against `frontend.User`: login (username OR email), logout, account
+> lockout (env-configured), session timeout (`SystemSettings.
+> session_timeout_seconds`), Argon2 hashing, `StrongPasswordValidator`,
+> a profile view (name/contact/photo/password change). RBAC mechanism
+> built (`frontend/decorators.py`, `frontend/mixins.py`) and proven
+> against throwaway views — **not yet applied to any real module view**
+> (Products/Purchases/Sales/etc. stay open to any authenticated-or-not
+> visitor until Phase 5/6/7 wires it in, see §12). 75 tests passing. See
+> §12 for 4 documentation inconsistencies found and resolved this phase.
+> Still not built: real views/forms wiring the rest of the Phase 3
+> services to the UI (Phase 3.6 pages are still static mocks), API,
+> password reset, AI. See `docs/frontend_work.md` for a frontend-only
+> summary.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
 > file wins for "what exists today."** The other docs win for "what the
@@ -51,22 +64,28 @@ slow-moving/dead-stock detection). The full design targets three roles
 (System Administrator, Inventory Supervisor, Inventory Staff) operating
 against a Django REST Framework API consumed by server-rendered templates.
 
-**Current development stage: front-end mock / UI prototype, sitting on top
-of a real, migrated database schema, admin layer, and service layer —
-none of which any view calls yet.** The Django ORM models
-(`frontend/models.py` — 16 concrete models + a `TimeStampedModel` abstract
-base, matching `docs/SCHEMA.md` field-for-field — see §6) are migrated
-into PostgreSQL (Phase 3.8, see §6), `AUTH_USER_MODEL = 'frontend.User'`
-(Phase 3.7, see §5), and all 16 models are registered and browsable in
-`frontend/admin.py` (see §5). But there is still no real authentication
-view logic, no API, and no AI implementation, and — critically — no view
-in `frontend/views.py` calls the ORM or the service layer at all.
-Everything user-facing is the same complete, polished, static-data Django
-template + vanilla-JS/CSS front end as before — every "Add X" button opens
-a real modal with real client-side validation, but nothing persists and
-nothing computes. Treat this repo as a high-fidelity clickable prototype
-with a working, tested backend sitting unconnected beside it, not a
-wired-up application.
+**Current development stage: real authentication, sitting in front of an
+otherwise still-mostly-mock front-end / UI prototype.** The Django ORM
+models (`frontend/models.py` — 16 concrete models + a `TimeStampedModel`
+abstract base, matching `docs/SCHEMA.md` field-for-field — see §6) are
+migrated into PostgreSQL (Phase 3.8, see §6), `AUTH_USER_MODEL =
+'frontend.User'` (Phase 3.7, see §5), and all 16 models are registered
+and browsable in `frontend/admin.py` (see §5). **Phase 4 made login real**
+— `frontend/views.py`'s `login`/`logout_view`/`profile_view` genuinely
+call the ORM (`User.objects.get`, lockout fields, `set_password`) and the
+service-layer-adjacent modules (`frontend/audit.py`, `frontend/
+notifications.py`). But there is still no API, no AI implementation, and
+— critically — every *other* view in `frontend/views.py` (Products,
+Purchases, Sales, ...) is still a one-line `render()` that doesn't touch
+the ORM, the Phase 3 service layer, or the new RBAC decorator/mixin at
+all. Everything past the login page is still the same complete, polished,
+static-data Django template + vanilla-JS/CSS front end as before — every
+"Add X" button opens a real modal with real client-side validation, but
+nothing persists and nothing computes. Treat this repo as a real,
+working front door (login/logout/lockout/RBAC-mechanism) opening onto a
+high-fidelity clickable prototype with a working, tested backend still
+sitting unconnected behind it — closer to wired-up than before Phase 4,
+but not there yet.
 
 **Technology stack — documented (intended) vs. actual (installed):**
 
@@ -160,15 +179,30 @@ What is actually built and working:
 - ✅ **Landing page** (`landing/index.html`) — full marketing page, hero,
   fabricated metrics, animated ticker, features grid, AI teaser section.
   Now uses the shared icon sprite for its feature icons (fixed — see §15).
-- ✅ **Login page UI** (`accounts/login.html`) — styled split-panel form,
-  password-visibility toggle, now posts to the correct `frontend:login`
-  route consistently (routing bug fixed — see §15). ⚠️ Still no real
-  Django auth view logic behind it (Phase 4) — the data layer it needs
-  (`AUTH_USER_MODEL`, migrations) is ready as of Phase 3.7 (see §12).
+- ✅ **Real authentication (Phase 4)** — `accounts/login.html` now posts to
+  a real `login` view: username OR email, Argon2 hashing, account lockout
+  (`MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION` env vars), session timeout from
+  `SystemSettings.session_timeout_seconds`, `StrongPasswordValidator`.
+  Real `logout` (POST, topbar dropdown) and `profile` view (name/contact/
+  photo/password change, `validate_password()` enforced). `LOGIN_SUCCESS`/
+  `LOGIN_FAILED`/`ACCOUNT_LOCKED`/`LOGOUT`/`PROFILE_UPDATED`/
+  `PASSWORD_CHANGED` all write real `AuditLog` rows; password change also
+  fires a real `Notification` + email. Verified live against the real
+  Postgres dev DB, not just the test suite — see §12/§15.
+- ✅ **RBAC mechanism (Phase 4)** — `frontend/decorators.py`
+  (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
+  and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
+  `SupervisorRequiredMixin`/`AnyStaffMixin`), both proven against
+  throwaway views in `frontend/tests.py`. **Not applied to any real view
+  yet** — every other page (Products, Purchases, Sales, ...) stays open
+  to anyone, authenticated or not, until Phase 5/6/7 wires it in per
+  module (see §12).
 - ✅ **Dashboard shell** (`dashboard_base.html` + `sidebar.html` +
   `topbar_actions.html`) — sidebar nav (all 15 links now live, none
-  disabled — Phase 3.6, see §15), topbar search/user menu, and a working
-  notification-bell dropdown (`.dropdown` component, `dashboard.js`).
+  disabled — Phase 3.6, see §15), topbar search, a working
+  notification-bell dropdown, and (Phase 4) a working user-menu dropdown
+  showing the real logged-in user's name/role/initials (`My Profile`,
+  `Log out`) — no longer hardcoded to "Amara Tenzin".
 - ✅ **Dashboard page** (`dashboard/dashboard.html`) — KPI cards, Chart.js
   sales/inventory charts, static preview panels.
 - ✅ **Product module** — list page + working "Add Product" modal (the
@@ -248,16 +282,20 @@ inventory 3/
 ├── frontend/                  The ONLY Django app. Holds both the backend schema and the entire UI.
 │   ├── models.py              16 concrete models + TimeStampedModel abstract base (Backend Phase 1), matching docs/SCHEMA.md exactly. Migrated (Phase 3.7).
 │   ├── admin.py                All 16 models registered (Backend Phase 2) — list_display/search_fields/list_filter/ordering configured. Data-browsing works (Phase 3.7, see §5).
-│   ├── views.py               One-line render() functions per page, no business logic, no ORM usage yet
-│   ├── urls.py                app_name="frontend"; 17 registered routes (12 + 5 from Phase 3.6, see §5)
-│   ├── apps.py / tests.py     Stock Django scaffolding, tests.py unused
+│   ├── views.py               login/logout_view/profile_view are real (Phase 4); every other view is still one-line render() — see §5
+│   ├── urls.py                app_name="frontend"; 19 registered routes (17 + logout/profile from Phase 4, see §5)
+│   ├── decorators.py          Phase 4 — require_role/admin_required/supervisor_required/staff_required (RBAC, function-based views)
+│   ├── mixins.py               Phase 4 — RoleRequiredMixin/AdminRequiredMixin/SupervisorRequiredMixin/AnyStaffMixin (RBAC, class-based views)
+│   ├── validators.py          Phase 4 — StrongPasswordValidator (AUTH_PASSWORD_VALIDATORS)
+│   ├── apps.py                Stock Django scaffolding
+│   ├── tests.py                75 tests (Phase 3/3.4/3.5/4), all passing — see §2/§15
 │   ├── migrations/             0001_initial.py, applied to PostgreSQL (Phase 3.7 switch, Phase 3.8 engine — see §5/§6)
 │   ├── templates/
 │   │   ├── base.html                  Public-site root layout (landing + login)
 │   │   ├── dashboard_base.html        Authenticated-app root layout (all other pages)
 │   │   ├── includes/                  Shared partials: icons.html (SVG sprite), sidebar.html, topbar_actions.html, navbar.html (public nav), footer.html (public footer)
 │   │   ├── landing/index.html
-│   │   ├── accounts/login.html
+│   │   ├── accounts/login.html, profile.html (profile.html is new, Phase 4)
 │   │   ├── dashboard/dashboard.html
 │   │   ├── products/products.html
 │   │   ├── categories/categories.html
@@ -278,7 +316,7 @@ inventory 3/
 │   │   DEMAND_FORECASTING.md, DEAD_STOCK_DETECTION.md
 │   └── project_memory.md       ← this file
 ├── manage.py
-├── requirements.txt             8 packages total — see §1 table (Pillow added Phase 1, psycopg+psycopg-binary added Phase 3.8)
+├── requirements.txt             9 packages total — see §1 table (Pillow added Phase 1, psycopg+psycopg-binary added Phase 3.8, argon2-cffi added Phase 4)
 ├── db.sqlite3                   Stale/unused since Phase 3.8 (engine is now PostgreSQL) — gitignored, safe to delete
 ├── .env / .env.example          Now also carries DB_NAME/DB_USER/DB_PASSWORD/DB_HOST/DB_PORT (Phase 3.8)
 └── .venv/
@@ -323,20 +361,18 @@ inert-but-wasteful on non-chart pages, not broken.
   `accounts/login.html`, and now also `landing/index.html` (fixed — it
   previously inlined its own raw SVGs; see §15). Add new icons here, never
   inline raw SVG markup on a page.
-- `includes/sidebar.html` — left nav, present on all 10 dashboard pages.
-  Reads `active_nav` context var (default `"dashboard"`). Nav hrefs are
-  hardcoded strings, not `{% url %}` tags (the file's own comment
-  acknowledges this is a placeholder to fix later). 5 of 15 links
-  (Reports, Notifications, Users & Roles, Audit Log, Settings) point to
-  routes that don't exist yet; they now render as disabled, non-navigable
-  `<span class="nav-item nav-item-disabled">` elements (`aria-disabled`,
-  `tabindex="-1"`, `title="Coming soon"`, no `href`) instead of live-404ing
-  links — fixed, see §15.
-- `includes/topbar_actions.html` — search box (non-functional), notification
-  bell (decorative), user menu. Deliberately has no `{% block %}` tags
-  (blocks don't resolve through nested includes). Always shows the
-  `request.user...|default:"Amara Tenzin"` fallback since there's no real
-  auth.
+- `includes/sidebar.html` — left nav, present on all 17 dashboard-shell
+  pages. Reads `active_nav` context var (default `"dashboard"`). Nav
+  hrefs are hardcoded strings, not `{% url %}` tags (the file's own
+  comment acknowledges this is a placeholder to fix later). All 15
+  sidebar links are live routes as of Phase 3.6 — none disabled anymore
+  (see §15).
+- `includes/topbar_actions.html` — search box (non-functional, still),
+  notification bell (decorative, still). User menu (Phase 4) is a real
+  dropdown showing `request.user.get_full_name`/`get_initials`/
+  `get_role_display` (falls back to "Amara Tenzin" only for a genuinely
+  anonymous visitor on a not-yet-login-gated page — see §12), with
+  working `My Profile`/`Log out` links.
 - `includes/navbar.html` / `includes/footer.html` — public marketing
   nav/footer, used only by `landing/index.html`. Both now consistently link
   to `{% url 'frontend:login' %}` (fixed — footer previously pointed to
@@ -446,20 +482,42 @@ nothing calls.
 - **URLs**: `config/urls.py` registers 3 top-level patterns: `/admin/`,
   `/accounts/` (Django's built-in `django.contrib.auth.urls`, namespaced
   `accounts`), and `/` (includes `frontend.urls`, namespaced `frontend`).
-  `frontend/urls.py` registers 17 routes, all GET-rendered templates:
-  `""` (landing), `login/`, `dashboard/`, `products/`, `categories/`,
+  `frontend/urls.py` registers 19 routes: the 17 GET-rendered template
+  routes (`""` landing, `dashboard/`, `products/`, `categories/`,
   `suppliers/`, `purchases/`, `sales/`, `inventory/`, `adjustments/`,
-  `ai/forecasting/`, `ai/slow-moving/`, plus the 5 Phase 3.6 routes
-  (`reports/`, `notifications/`, `users/`, `audit-log/`, `settings/`).
-- **Views**: every view in `frontend/views.py` is still a one-line
-  `render(request, "<template>", {"active_nav": "<name>"})` — no forms, no
-  querysets, no auth checks, no POST handling, no ORM usage at all. Models
-  existing does not change this; nothing calls them yet.
-- **Forms**: no Django Form/ModelForm classes exist. `accounts/login.html`'s
-  dead `{% if form.* %}` template conditionals (referencing a `form` object
-  the view never passed) were removed — see §15 — since there's still no
-  real form/auth wiring to justify keeping them.
-- **Services / API**: none exist. `docs/API_CONTRACTS.md` documents 60
+  `ai/forecasting/`, `ai/slow-moving/`, the 5 Phase 3.6 routes —
+  `reports/`, `notifications/`, `users/`, `audit-log/`, `settings/` —
+  plus `login/`) and 2 new real ones (Phase 4): `logout/`, `profile/`.
+- **Views (Phase 4 — auth views are real)**: `frontend/views.py`'s
+  `login`/`logout_view`/`profile_view` are real: POST handling, ORM
+  queries/writes (`User.objects.get`, lockout fields, `set_password`),
+  `frontend.audit.log_action()`/`frontend.notifications.notify_user()`
+  calls, session management. Every *other* view (Products, Purchases,
+  Sales, ...) is still the original one-line `render(request,
+  "<template>", {"active_nav": "<name>"})` — no forms, no querysets, no
+  auth checks, no ORM usage. Nothing calls the RBAC decorator/mixin
+  (below) yet either — see §12.
+- **RBAC (Phase 4 — mechanism only)**: `frontend/decorators.py`
+  (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
+  and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
+  `SupervisorRequiredMixin`/`AnyStaffMixin`) — translated from
+  `02_RBAC.md`'s `apps/rbac/decorators.py`/`apps/rbac/mixins.py`. Proven
+  against throwaway views in `frontend/tests.py` only; not applied to any
+  real view (see §12). DRF's `BasePermission` classes (`IsAdmin` etc.)
+  from the same doc were explicitly out of scope — DRF isn't installed.
+- **Validators (Phase 4)**: `frontend/validators.py`'s
+  `StrongPasswordValidator` — translated from `SECURITY.md`'s
+  `apps/authentication/validators.py`, registered in
+  `AUTH_PASSWORD_VALIDATORS` alongside Django's 4 built-in validators.
+- **Forms**: still no Django Form/ModelForm classes — `01_AUTH.md`'s own
+  reference code doesn't use them either (raw `request.POST.get(...)`),
+  and Phase 4's views/forms were translated faithfully to that pattern.
+  `accounts/login.html`'s dead `{% if form.* %}` template conditionals
+  (referencing a `form` object the view never passed) were removed
+  earlier — see §15 — now genuinely moot since real POST handling exists.
+- **Services / API**: `frontend/services.py` (Phase 3) is the only
+  service-layer code; nothing in Phase 4 calls it (auth isn't part of the
+  stock-mutation service layer). `docs/API_CONTRACTS.md` documents 60
   intended DRF endpoints across 11 groups; none are implemented. DRF is not
   even installed.
 - **Admin (Backend Phase 2 — done)**: all 16 models registered in
@@ -720,16 +778,17 @@ whenever adding a new element whose visibility is toggled via `hidden`.
 
 ## 10. Current Features
 
+**Fully completed and real (Phase 4):** login, logout, account lockout,
+session timeout, profile update/password change — see §2/§12.
+
 **Fully completed (UI + client-side validation, no persistence):**
-Landing page, login page UI, dashboard shell + charts, Product/Category/
-Supplier/Purchase/Sale/Adjustment "Add" modals, Inventory list (read-only
-by design), Demand Forecasting page, Slow-Moving & Dead Stock page.
+Landing page, dashboard shell + charts, Product/Category/Supplier/
+Purchase/Sale/Adjustment "Add" modals, Inventory list (read-only by
+design), Demand Forecasting page, Slow-Moving & Dead Stock page.
 
 **Fully completed (schema + admin layer):** all 16 documented models,
-matching SCHEMA.md exactly — see §6. All 16 registered in Django admin
-with sensible list/search/filter config — see §5. Neither layer is
-migrated yet, so nothing in either is actually usable for browsing real
-data (admin list views 500; see §12).
+matching SCHEMA.md exactly — see §6, migrated to PostgreSQL since
+Phase 3.7/3.8. All 16 registered and browsable in Django admin — see §5.
 
 **Partially completed:**
 - Search/filter controls exist visually on most list pages (Products,
@@ -740,11 +799,6 @@ data (admin list views 500; see §12).
   (Previous disabled, Next does nothing).
 - Approve/reject buttons exist on Purchase/Adjustment pending rows but
   have no click handlers.
-- Login form renders and validates client-side, posts to the correct route
-  now (`frontend:login`, fixed — see §15), but there's still no real
-  Django auth behind it — no auth view logic (Phase 4). Migrations +
-  `AUTH_USER_MODEL` are resolved (§15), so the data layer this needs is
-  ready; nothing in the login view uses it yet.
 
 **No longer missing**: Reports, Notifications, Audit Log, Users & Roles,
 Settings all got real mock pages in Phase 3.6 (§11) — sidebar links
@@ -755,7 +809,9 @@ re-enabled, nothing left disabled.
 ## 11. Current UI Pages
 
 - ✅ Landing
-- ✅ Login (UI only, not functionally wired — see §12)
+- ✅ Login (real, Phase 4 — username/email, lockout, session timeout)
+- ✅ Profile (`/profile/`, Phase 4 — new page, not in the sidebar; reached
+  via the topbar user-menu dropdown only)
 - ✅ Dashboard
 - ✅ Products (list + Add modal)
 - ✅ Categories (list + Add modal)
@@ -848,12 +904,75 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
 - `InventoryClassification.classified_at` duplicates the inherited
   `updated_at` (see §6).
 
-**Unfinished pages**: Reports, Notifications, Audit Log, Users & Roles,
-Settings — not started.
+**Open items from Backend Phase 4** (real, verified, but with real gaps —
+kept together here rather than scattered, since they were all found in
+the same phase):
 
-**Missing backend**: no API, no real auth views/RBAC (Phase 4), no Celery,
-no AI execution. Migrations + `AUTH_USER_MODEL` resolved Phase 3.7 (§15);
-the service layer (§5) exists but nothing calls it from a view yet.
+- **RBAC mechanism exists but is applied nowhere real yet.**
+  `frontend/decorators.py`/`frontend/mixins.py` are proven correct against
+  throwaway views only. Every existing page view (Products, Purchases,
+  Sales, Users & Roles, Settings, ...) is still a bare `render()` with no
+  `@login_required` and no role check — open to anyone, logged in or not,
+  until Phase 5/6/7 wires each module in. This is a real, current security
+  gap for anyone who deploys this build past localhost, not just an
+  incompleteness note.
+- **4 documentation inconsistencies found and resolved, source disclosed
+  rather than silently picked:**
+  1. `MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION`: `01_AUTH.md`'s business
+     rules table calls these "configurable" but `SCHEMA.md`'s
+     `SystemSettings` has no matching fields — only `ENVIRONMENT.md`
+     documents them, as env vars. Used as env vars (`MAX_LOGIN_ATTEMPTS`/
+     `LOCKOUT_DURATION` in `.env`, read in `config/settings.py`); no
+     `SystemSettings` fields added to work around the gap, per this
+     phase's explicit instruction.
+  2. `01_AUTH.md`'s own `login_view` reference code checks
+     `if not user.is_active` *after* a successful `authenticate()` call —
+     but Django's default `ModelBackend` already refuses to authenticate
+     an inactive user (returns `None`), making that branch unreachable
+     dead code as written. Fixed: the `is_active` check now happens
+     *before* `authenticate()`, giving a correct "inactive" message
+     without also incrementing the failed-attempt counter for a
+     deactivated account's otherwise-correct password.
+  3. `01_AUTH.md`'s Audit Actions table lists `ACCOUNT_LOCKED` and
+     `PASSWORD_CHANGED`, but neither is actually called anywhere in the
+     module's own reference code (`login_view` only logs
+     `LOGIN_FAILED` even on the attempt that triggers a lock;
+     `profile_update_view` never logs a password change at all). Both are
+     now actually called — `ACCOUNT_LOCKED` when a lockout triggers,
+     `PASSWORD_CHANGED` when a password change succeeds — matching the
+     documented action table over the doc's own incomplete example code.
+  4. `01_AUTH.md`'s `profile_update_view` reference code calls
+     `user.set_password(new_password)` directly, never calling
+     `validate_password()` — skipping `AUTH_PASSWORD_VALIDATORS`
+     (including the new `StrongPasswordValidator`) entirely for this one
+     path. Fixed: `validate_password()` is now called first; a weak
+     password is rejected with the same messages the validators would
+     give anywhere else, before `set_password()` ever runs.
+- **Two fallbacks explicitly deferred to this phase (project_memory.md
+  §13/§17) are now removed, not kept as defense-in-depth**: `frontend/
+  notifications.py`'s `notify_supervisors()` `is_staff`/`is_superuser`
+  fallback, and `frontend/services.py`'s `_user_display_name()` helper
+  (deleted entirely, call site now reads `submitted_by.full_name`
+  directly). Both existed only to cover the pre-Phase-3.7 window where
+  `role`/`full_name` didn't exist on the active `AUTH_USER_MODEL` — now
+  permanently resolved, since `frontend.User` (with both fields required,
+  non-blank) is the only user model this project will ever run against.
+  Kept as "dead code defense-in-depth" would have meant carrying
+  unreachable branches with no realistic failure mode they still guard
+  against.
+- **Pre-existing, still out of scope**: `accounts/login.html`'s "Forgot
+  password?" link points to `accounts:password_reset`
+  (`django.contrib.auth.urls`, still included in `config/urls.py` — must
+  stay included, or the `{% url %}` tag itself would crash the whole
+  login page with `NoReverseMatch`). Clicking it 500s
+  (`TemplateDoesNotExist: registration/password_reset_form.html`) — this
+  predates Phase 4, and password reset is explicitly out of scope for it
+  (see docs/project_memory.md's own Phase 4 task framing).
+
+**Missing backend**: no API, no AI execution, no Celery. RBAC not wired
+into any real module view yet (above). Migrations + `AUTH_USER_MODEL`
+resolved Phase 3.7 (§15); the service layer (§5) exists and login/logout/
+profile now call the ORM directly, but every other view still doesn't.
 
 **Temporary/mock implementations**: every table on every list page is
 hardcoded static HTML rows, not server-rendered from a queryset. "Run
@@ -1214,6 +1333,31 @@ session history, not `git log`:
     unrelated stale spots: §3's migrations line and §5's route count
     (12 → 17, missing the 5 Phase 3.6 routes). No code changes — all 5
     fixes were already real. 53/53 tests still passing.
+22. **Backend Phase 4: Authentication & RBAC** — real `login`/
+    `logout_view`/`profile_view` against `frontend.User`: username-or-email
+    identifier, Argon2 hashing (`django[argon2]`), `StrongPasswordValidator`
+    (`frontend/validators.py`), account lockout and session timeout, both
+    verified live against the real Postgres dev DB (not just tests) —
+    lockout blocked a subsequently-*correct* password, session expiry
+    matched a changed `SystemSettings.session_timeout_seconds` exactly.
+    RBAC mechanism built (`frontend/decorators.py`, `frontend/mixins.py`,
+    translated from `02_RBAC.md`) and proven against throwaway views —
+    explicitly not wired into any real module view yet (see §12, next
+    priority). Found and fixed 4 doc/reference-code inconsistencies in
+    `01_AUTH.md` (env-var lockout config vs. `SystemSettings`, an
+    unreachable `is_active` check, `ACCOUNT_LOCKED`/`PASSWORD_CHANGED`
+    action-table entries never actually called, `set_password()` bypassing
+    `validate_password()`) — see §12 for the full list and what changed.
+    Closed 2 fallbacks explicitly deferred to this phase since Phase 3.5/
+    3.7 (`notify_supervisors()`'s `is_staff`/`is_superuser` branch,
+    `_user_display_name()`'s `get_full_name()` chain) — both removed
+    outright, not kept as defense-in-depth, since they guarded a state
+    (`AUTH_USER_MODEL` ≠ `frontend.User`) that can no longer occur. Added
+    `User.get_full_name()`/`get_short_name()`/`get_initials()` (methods
+    only, no migration) so the Phase 3.6 topbar's existing template calls
+    resolve to the real user instead of always falling back to mock data;
+    wired the topbar user-menu into a working dropdown (`My Profile`/
+    `Log out`). 75 tests passing (was 53).
 
 ---
 
@@ -1221,17 +1365,24 @@ session history, not `git log`:
 
 Highest priority first:
 
-1. **Wire real views/forms to the now-complete service layer** (§2) —
-   the data layer (`AUTH_USER_MODEL`, migrations, both resolved Phase 3.7,
-   §15) is finally ready for this. Replace static hardcoded rows module by
-   module (Products first). The 5 Phase 3.6 pages (§11) join this same
-   backlog — they're mocks like everything else.
+1. **Wire the RBAC decorator/mixin (§5, Phase 4) and the service layer
+   into real module views, together, module by module** (Products first) —
+   these two used to be separate priorities; they're the same unit of
+   work now, since every module view needs both a permission check
+   (`02_RBAC.md`'s permission matrix) and a real queryset at the same
+   time. Replace static hardcoded rows module by module. The 5 Phase 3.6
+   pages (§11) join this same backlog — they're mocks like everything
+   else. Until this happens, every page except login/logout/profile
+   remains open to anyone (§12) — treat this as a security gap, not just
+   an incompleteness note.
 2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
    (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
    `12_SEARCH.md`, `14_SETTINGS.md`).
-3. **Then** real auth views, DRF API layer, RBAC enforcement, Celery
-   (needed for the notification email `.delay()` upgrade — see §2), and
-   the real AI pipelines — in that order.
+3. **Then** password reset (deferred from Phase 4), DRF API layer + its
+   `BasePermission` classes (`02_RBAC.md`, deferred from Phase 4 — DRF
+   still isn't installed), Celery (needed for the notification email
+   `.delay()` upgrade — see §2), and the real AI pipelines — in that
+   order.
 
 ---
 
@@ -1244,12 +1395,17 @@ Grouped by module, per the documentation:
 - **Admin registration**: ✅ **done** (Backend Phase 2, §5) — all 16
   models registered, and now actually usable for data-browsing (migrations
   applied Phase 3.7, see §12). Still pending: seed data.
-- **Auth**: the custom `User` model is now the active `AUTH_USER_MODEL`
-  (Phase 3.7). Still needed: real login/logout view logic, session
-  timeout, account lockout (5 attempts/300s), password reset via email,
-  Argon2 hashing, profile update.
-- **RBAC**: permission classes/decorators/mixins per the 3-role matrix in
-  `02_RBAC.md`; template-level role conditionals.
+- **Auth**: ✅ **done** (Backend Phase 4, §2/§5) — real login (username or
+  email)/logout/profile update against `frontend.User`, session timeout,
+  account lockout, Argon2 hashing, `StrongPasswordValidator`. Still
+  needed: password reset via email (explicitly deferred).
+- **RBAC**: ✅ **mechanism done** (Backend Phase 4, §5) —
+  decorators/mixins per the 3-role matrix in `02_RBAC.md`, proven against
+  throwaway views. Still needed: applying it to every real module view
+  (§16 top priority — this is the actual enforcement, not yet real
+  anywhere), template-level role conditionals (`{% if
+  request.user.role == ... %}` — trivial once views pass real `request.user`
+  context, not attempted yet), DRF `BasePermission` classes (needs DRF).
 - **Products/Categories**: real CRUD, SKU auto-generation (already coded
   as a `save()` pattern for PO/invoice numbers; Product's SKU generation
   isn't in SCHEMA.md's `Product.save()` — only PO/invoice auto-numbering
@@ -1388,11 +1544,12 @@ from decisions made and corrections applied during development:
   custom hand-built design system instead. This was a deliberate choice,
   not a mistake — don't "fix" it by pulling in Bootstrap, and don't be
   surprised the two disagree.
-- **`requirements.txt` has 8 packages, not the ~15 in `TECH_STACK.md`.**
-  DRF, Celery, Redis, scikit-learn, Argon2, WhiteNoise, Gunicorn, WeasyPrint
-  are all documented but **not installed**. Pillow (Phase 1) and
-  psycopg+psycopg-binary (Phase 3.8, the Postgres switch) are the only
-  additions beyond Django's own base install so far. Any task assuming a
+- **`requirements.txt` has 9 packages, not the ~15 in `TECH_STACK.md`.**
+  DRF, Celery, Redis, scikit-learn, WhiteNoise, Gunicorn, WeasyPrint are
+  all documented but **not installed**. Pillow (Phase 1),
+  psycopg+psycopg-binary (Phase 3.8, the Postgres switch), and
+  argon2-cffi (Phase 4, `PASSWORD_HASHERS`) are the only additions beyond
+  Django's own base install so far. Any task assuming a
   documented dependency is available should check `requirements.txt`
   first rather than assuming.
 - **Django admin permission methods (`has_add_permission`,

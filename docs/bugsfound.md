@@ -59,6 +59,10 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-24 | `PurchaseOrderItem.save()`: identical `Decimal * float TypeError` | `SCHEMA.md` §5 PurchaseOrderItem | ✅ Fixed |
 | BUG-25 | `PurchaseService.cancel()` documented but missing from the doc's own code sample | `05_PURCHASES.md` (state machine + business rules vs. Service Layer code block) | ✅ Fixed (Phase 3.4) |
 | BUG-26 | No `docs/08_ADJUSTMENTS.md` exists at all | `INDEX.md` references it; file missing from disk | 🚩 Reported |
+| BUG-27 | `MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION` have no `SystemSettings` fields despite being called "configurable" | `01_AUTH.md` business rules table vs. `SCHEMA.md` §13 SystemSettings (no matching fields) | ✅ Resolved (Phase 4) |
+| BUG-28 | `login_view`'s `is_active` check is unreachable dead code as written | `01_AUTH.md` (`login_view` reference code) | ✅ Fixed (Phase 4) |
+| BUG-29 | `ACCOUNT_LOCKED`/`PASSWORD_CHANGED` documented as audit actions but never called in the doc's own reference code | `01_AUTH.md` (Audit Actions table vs. `login_view`/`profile_update_view` code) | ✅ Fixed (Phase 4) |
+| BUG-30 | `profile_update_view`'s password change bypasses `AUTH_PASSWORD_VALIDATORS` entirely | `01_AUTH.md` (`profile_update_view` reference code) | ✅ Fixed (Phase 4) |
 
 ---
 
@@ -513,3 +517,103 @@ it directly blocked Phase 3). `AdjustmentService`'s shape
 in `SCHEMA.md` §8 plus this task's own explicit instruction — not guessed
 business rules, but also not backed by a dedicated spec the way Purchases
 and Sales are.
+
+### BUG-27 — `MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION` have no `SystemSettings` fields
+**Root cause:** `01_AUTH.md`'s business rules table describes account
+lockout thresholds as "configurable" (twice — once for the attempt count,
+once for the duration), which reads as a `SystemSettings`-managed value
+matching the pattern used for `session_timeout_seconds` right next to it
+in the same table. But `SCHEMA.md` §13 `SystemSettings` has no matching
+fields at all — only `ENVIRONMENT.md` documents these two as env vars
+(`MAX_LOGIN_ATTEMPTS`, `LOCKOUT_DURATION`).
+**Source Documentation:**
+```
+01_AUTH.md, Business Rules table:
+    | Account lockout | Temporary lock after N consecutive failed logins (configurable, default 5) |
+    | Lockout duration | Configurable (default 300 seconds) |
+
+SCHEMA.md §13 SystemSettings: no max_login_attempts/lockout_duration field anywhere.
+
+ENVIRONMENT.md, .env.example:
+    MAX_LOGIN_ATTEMPTS=5
+    LOCKOUT_DURATION=300
+```
+**Status:** ✅ Resolved (Phase 4) — used as env vars per `ENVIRONMENT.md`
+(`config/settings.py` reads `MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION` via
+`os.environ.get`, defaulting to 5/300), since that's the only source that
+actually defines them anywhere. No `SystemSettings` fields added to work
+around the gap — this task's own instruction was explicit about that.
+
+### BUG-28 — `login_view`'s `is_active` check is unreachable dead code
+**Root cause:** The reference code calls `authenticate()`, then — only if
+it returned a real user — checks `if not user.is_active`. Django's
+default `ModelBackend.authenticate()` already refuses to authenticate an
+inactive user internally (`user_can_authenticate()` checks
+`is_active` and returns `None` otherwise), so a non-`None` `user` from
+`authenticate()` is *already* guaranteed active. The `is_active` branch,
+placed after that point, can never execute as written.
+**Source Documentation:**
+```
+01_AUTH.md, login_view:
+    user = authenticate(request, username=user_obj.username, password=password)
+    if user is None:
+        ...
+    if not user.is_active:   # unreachable: authenticate() already filtered this out
+        messages.error(request, 'Your account is inactive. Contact administrator.')
+        ...
+```
+**Status:** ✅ Fixed (Phase 4) — moved the `is_active` check to before
+`authenticate()` is called (right after the lockout check), so a
+deactivated account gets the correct, specific message. This also fixes
+a secondary correctness issue the dead code masked: with the check
+unreachable, a deactivated user entering their *correct* password would
+have fallen into the `user is None` branch instead (since `authenticate()`
+returns `None` for them too) and had their `failed_login_attempts`
+incremented for a login that wasn't actually their mistake.
+
+### BUG-29 — `ACCOUNT_LOCKED`/`PASSWORD_CHANGED` documented but never called
+**Root cause:** `01_AUTH.md`'s own "Audit Actions for This Module" table
+lists both `ACCOUNT_LOCKED` ("Account locked after max attempts") and
+`PASSWORD_CHANGED` ("User changes password") as real action constants.
+Neither reference-code snippet in the same document actually calls
+`log_action()` with either one — `login_view` only ever logs
+`LOGIN_FAILED`, even on the specific attempt that triggers a lock;
+`profile_update_view` calls `notify_user()` for a password change but
+never calls `log_action()` for it at all.
+**Source Documentation:**
+```
+01_AUTH.md, Audit Actions table:
+    | ACCOUNT_LOCKED | Account locked after max attempts |
+    | PASSWORD_CHANGED | User changes password |
+
+01_AUTH.md, login_view: only ever calls log_action(..., 'LOGIN_FAILED', ...).
+01_AUTH.md, profile_update_view: calls notify_user(...) for password change,
+    never log_action(..., 'PASSWORD_CHANGED', ...).
+```
+**Status:** ✅ Fixed (Phase 4) — both now actually called: `ACCOUNT_LOCKED`
+fires alongside `LOGIN_FAILED` specifically on the attempt that triggers a
+lock; `PASSWORD_CHANGED` fires whenever `profile_view`'s password-change
+branch succeeds. This task's own deliverables list named both
+explicitly, so this wasn't a judgment call — the doc's action table won
+over its incomplete example code.
+
+### BUG-30 — `profile_update_view`'s password change bypasses `AUTH_PASSWORD_VALIDATORS`
+**Root cause:** The reference code calls `user.set_password(new_password)`
+directly from `request.POST`, with no call to Django's
+`validate_password()` anywhere in the path. Every validator in
+`AUTH_PASSWORD_VALIDATORS` — including `SECURITY.md`'s own
+`StrongPasswordValidator` — is silently skipped for this one code path,
+even though the same document lists password policy as a hard security
+requirement.
+**Source Documentation:**
+```
+01_AUTH.md, profile_update_view:
+    new_password = request.POST.get('new_password')
+    if new_password:
+        user.set_password(new_password)   # no validate_password() call anywhere
+        user.save()
+```
+**Status:** ✅ Fixed (Phase 4) — `django.contrib.auth.password_validation.
+validate_password(new_password, user)` is now called first; a
+`ValidationError` is caught and its messages surfaced the same way any
+other validator failure would be, before `set_password()` ever runs.

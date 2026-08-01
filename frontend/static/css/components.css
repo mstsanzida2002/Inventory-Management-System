@@ -130,6 +130,25 @@
   color: var(--c-slate);
 }
 
+/* -------------------------------------------------- Django messages ---
+   Phase 4 — first real use of Django's messages framework (auth errors/
+   success). Maps message.tags ('error'/'success'/'warning'/'info') to a
+   modifier class in the template: form-alert-{{ message.tags }}. */
+.form-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  margin-bottom: var(--sp-4);
+}
+.form-alert-error { background: var(--c-danger-tint); color: var(--c-danger); }
+.form-alert-success { background: var(--c-success-tint); color: var(--c-success); }
+.form-alert-warning { background: var(--c-warning-tint); color: #9C6B12; }
+.form-alert-info { background: var(--c-indigo-tint); color: var(--c-indigo); }
+
 /* ------------------------------------------------- Labeled form fields --
    .field (from above) doubles as the wrapper for plain, icon-less inputs
    used in forms — .input already provides border/radius/focus styling,

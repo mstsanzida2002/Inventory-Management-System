@@ -594,6 +594,18 @@ nothing calls.
   `makemigrations frontend` in the current single-app structure — this is
   what Phase 3.7 actually ran, producing one `0001_initial.py`.
 
+  **`User.role` DB constraint (checked Phase 4.5)**: `\d+ users` on the
+  real Postgres table confirms the column is `NOT NULL` with **no
+  SQL-level default** — `default=UserRole.STAFF` in `models.py` is
+  Python/ORM-only (applied when Django constructs a model instance, e.g.
+  `.objects.create()`), not a `DEFAULT` clause in the schema. Every user
+  created through the ORM always gets a role — safe. The one scenario
+  this doesn't cover: a raw-SQL insert or an external bulk-import path
+  that bypasses the ORM entirely and forgets `role` would hit the `NOT
+  NULL` constraint and fail loudly, not silently create a row with an
+  unset/wrong role. Worth re-checking if a future phase ever bulk-creates
+  or imports users outside the ORM — not a bug today, nothing to fix.
+
 - **Redundancies found in SCHEMA.md itself** (implemented literally, not
   fixed — not this session's call to resolve, flagged for whoever owns the
   schema design):
@@ -960,14 +972,23 @@ the same phase):
   Kept as "dead code defense-in-depth" would have meant carrying
   unreachable branches with no realistic failure mode they still guard
   against.
-- **Pre-existing, still out of scope**: `accounts/login.html`'s "Forgot
-  password?" link points to `accounts:password_reset`
-  (`django.contrib.auth.urls`, still included in `config/urls.py` — must
-  stay included, or the `{% url %}` tag itself would crash the whole
-  login page with `NoReverseMatch`). Clicking it 500s
-  (`TemplateDoesNotExist: registration/password_reset_form.html`) — this
-  predates Phase 4, and password reset is explicitly out of scope for it
-  (see docs/project_memory.md's own Phase 4 task framing).
+- **RESOLVED Phase 4.5**: `accounts/login.html`'s "Forgot password?" was a
+  live link to `accounts:password_reset` (`django.contrib.auth.urls`).
+  **Correcting this document's own earlier claim that it 500'd**: verified
+  live and it does not — `django.contrib.admin`'s bundled `registration/
+  password_reset_*.html` templates are found via `APP_DIRS=True` (a
+  lesser-known Django convenience: the admin app ships fallback templates
+  for the whole default reset flow, not just its own `/admin/` pages), so
+  all of `password_reset/`, `password_reset/done/`, and `reset/done/`
+  actually render `200` — just with Django-admin styling, not Stockwell's,
+  and full email-send behavior was never verified (out of scope). Either
+  way, a real reset flow — styled or not — is still explicitly deferred,
+  so the link was disabled the same way BUG-08 disabled the 5 sidebar
+  links: `<span aria-disabled="true" tabindex="-1" title="Coming soon">`,
+  no `href`. `config/urls.py`'s `django.contrib.auth.urls` include is now
+  fully unreferenced by any template (nothing left points at the
+  `accounts:` namespace) but was deliberately left in place — dead but
+  harmless, and removing it was outside this cleanup's explicit scope.
 
 **Missing backend**: no API, no AI execution, no Celery. RBAC not wired
 into any real module view yet (above). Migrations + `AUTH_USER_MODEL`
@@ -1358,6 +1379,19 @@ session history, not `git log`:
     resolve to the real user instead of always falling back to mock data;
     wired the topbar user-menu into a working dropdown (`My Profile`/
     `Log out`). 75 tests passing (was 53).
+23. **Phase 4.5: pre-Phase-5 safety check** — confirmed `User.role` is
+    `NOT NULL` with no DB-level default (§6) — safe via the ORM, a
+    documented risk only for a hypothetical raw-SQL bulk-import path.
+    Confirmed the weak-password regression test for BUG-30 already
+    existed and passes. Fixed the "Forgot password?" link on the login
+    page — disabled it the same way BUG-08 disabled the sidebar links
+    (`aria-disabled`, no `href`, "Coming soon"), and **corrected this
+    document's own earlier claim** that the route it pointed to 500'd:
+    verified live, it doesn't — `django.contrib.admin`'s bundled
+    `registration/` templates render the whole default reset flow with
+    admin styling, not a `TemplateDoesNotExist` crash. Disabled anyway,
+    since a real (Stockwell-styled) reset flow is still deferred either
+    way. No code logic changed — CSS/template + doc corrections only.
 
 ---
 

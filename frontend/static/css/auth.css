@@ -129,6 +129,17 @@
 }
 .auth-form .form-footer-row a { font-size: var(--fs-sm); font-weight: 500; }
 
+/* Phase 4.5 — same disabled-link treatment as sidebar.html's
+   .nav-item-disabled (BUG-08): visually present, not navigable, until
+   password reset is actually built (still deferred). */
+.auth-form .form-footer-row .auth-link-disabled {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--c-slate);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .auth-divider {
   display: flex; align-items: center; gap: var(--sp-3);
   color: var(--c-slate); font-size: var(--fs-xs);

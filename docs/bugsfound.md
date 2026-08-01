@@ -65,7 +65,7 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-30 | `profile_update_view`'s password change bypasses `AUTH_PASSWORD_VALIDATORS` entirely | `01_AUTH.md` (`profile_update_view` reference code) | ✅ Fixed (Phase 4) |
 | BUG-31 | Product mock UI labeled Supplier optional / Unit & Reorder level required, backwards from `SCHEMA.md`/`03_PRODUCTS.md` | `SCHEMA.md` §4 Product vs. Phase 3's hand-built `products.html` modal | ✅ Fixed (Phase 5) |
 | BUG-32 | `modal-form.js`'s blur handler clears a required+non-negative field's visible error even while the value is still negative | N/A — implementation bug (pre-existing in the shared modal architecture, first exercised by Phase 5's negative-price test) | 🚩 Reported (cosmetic — submit-time `validateAll()` still blocks it) |
-| BUG-33 | `modal-form.js` evaluates `extraValidate()` unconditionally, even when standard field validation already failed | N/A — implementation bug (pre-existing architecture; only became costly once an `extraValidate` hook did real network work, in Phase 5) | ✅ Moot (Phase 5.5 — see entry) |
+| BUG-33 | `modal-form.js` evaluates `extraValidate()` unconditionally, even when standard field validation already failed | N/A — implementation bug (pre-existing architecture; only became costly once an `extraValidate` hook did real network work, in Phase 5) | ✅ Fixed (Phase 5.6, in the shared file) |
 | BUG-34 | Product creation wrote a real `InventoryMovement` with no true cause, violating this project's own prior architecture decision | `docs/project_memory.md` §13 ("No 'Add Inventory Transaction' modal" decision) — Phase 5's own implementation | ✅ Fixed (Phase 5.5) |
 
 ---
@@ -682,11 +682,28 @@ passed (it's inside modal-form.js's own `if (!isStandardValid ||
 !isExtraValid) return;` gate), so moving the real request from
 `extraValidate` into `onSubmit` (needed anyway for BUG-34/the async fix,
 see below) structurally eliminates the wasted-request problem for this
-form — the `.has-error` workaround was deleted, not carried forward. The
-underlying characteristic in `modal-form.js` (`extraValidate()` itself
-still evaluates unconditionally) is unchanged and would still bite any
-future module that puts expensive work directly in `extraValidate`
-instead of `onSubmit`.
+form — the `.has-error` workaround was deleted, not carried forward. At
+this point the underlying characteristic in `modal-form.js`
+(`extraValidate()` itself still evaluates unconditionally) was still
+unchanged and would still have bitten any future module that puts
+expensive work directly in `extraValidate` instead of `onSubmit`.
+**Fixed for real (Phase 5.6):** `extraValidate()` is now short-circuited
+behind `isStandardValid` —
+`isExtraValid = isStandardValid && (config.extraValidate ? config.extraValidate() : true)`
+— so it never runs at all once a required/non-negative field has already
+failed, in `modal-form.js` itself, for every module. Verified live with a
+call-counting wrapper around `LineItems.validate()` (the concrete
+`extraValidate` every current Purchase/Sale form uses): with Purchase's
+required Supplier field left empty, the call count stayed at 0 after
+submit (previously would have been 1); filling it in brought the count to
+1, confirming `extraValidate` still runs normally once standard
+validation passes. Sale's form has no `requiredFieldIds` configured at
+all, so there was nothing to gate against — confirmed its call count is
+unchanged (still 1 per submit attempt) either way, i.e. no regression.
+Products no longer uses `extraValidate` at all (Phase 5.5), so this fix
+is invisible to it. Scope was `modal-form.js` only — no per-entity file
+needed to change, which is exactly the point: every module's `extraValidate`
+is correct now, including ones Phase 7 hasn't written yet.
 
 ### BUG-34 — Product creation wrote a real `InventoryMovement` with no true cause
 **Root cause:** Phase 5's `ProductListCreateView.post()` called

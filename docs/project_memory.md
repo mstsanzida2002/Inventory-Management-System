@@ -80,7 +80,18 @@
 > hit the same problem the moment Phase 7 gives it any server-side work —
 > flagged for whoever wires those modules next (see §12). Also added the
 > regression test that didn't exist for the Phase 5.5 fix itself — 80
-> tests passing (was 75).
+> tests passing (was 75). **(13) Phase 5.6**: fixed BUG-33 for real, in
+> `modal-form.js` itself — `extraValidate()` is now short-circuited behind
+> `isStandardValid`, so it never runs once a required/non-negative field
+> has already failed, for every module, not just Products. Verified live
+> with a call-counting wrapper around `LineItems.validate()`: Purchase's
+> empty-Supplier submit now calls it 0 times (was 1); filling Supplier in
+> brings it back to 1, confirming normal operation is unchanged. Sale has
+> no `requiredFieldIds` configured at all, so this fix is a no-op for it
+> today (nothing to gate against) — confirmed no regression either way.
+> Products was already unaffected (doesn't use `extraValidate` since
+> Phase 5.5). Scope was `modal-form.js` only, per this task's own
+> instruction — no per-entity file changed. 80/80 tests still passing.
 > See `docs/frontend_work.md` for a frontend-only summary.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
@@ -1606,6 +1617,29 @@ session history, not `git log`:
       temporarily reverting `views.py` to call `increase_stock()` again —
       it failed loudly (`1 != 0`) — then restored the fix. 80/80 tests
       passing.
+27. **Phase 5.6: fix BUG-33 at its source, in `modal-form.js`.** Item 26
+    confirmed it was still live in the shared file; this phase fixed the
+    actual control flow rather than continuing to work around it per
+    module. One-line change to the submit handler:
+    `isExtraValid = isStandardValid && (config.extraValidate ? config.extraValidate() : true)`
+    — `extraValidate()` is now short-circuited, never called once
+    `validateAll()` has already failed. Scope was `modal-form.js` only
+    (per this task's explicit instruction) — `product-form.js`/
+    `purchase-form.js`/`sale-form.js` were not touched, since the shared
+    file's contract becoming correct is exactly the point: every module
+    inherits it automatically, including ones that don't exist yet.
+    Verified live (not just by reading the code) with a call-counting
+    wrapper injected around `LineItems.validate()`: Purchase's
+    required-Supplier-empty submit dropped from 1 call to 0; filling
+    Supplier in restored the call, proving normal validation is
+    unaffected. Sale has no `requiredFieldIds` at all, so nothing changed
+    for it either way (no required field exists to short-circuit
+    against) — confirmed, not just assumed. Header comment updated with
+    the new ordering guarantee, alongside the existing Phase 5.5
+    `onSubmit` Promise-contract note. 80/80 tests passing (no test
+    exercises this JS path directly — coverage here is the live
+    verification above, matching how `modal.js`/`modal-form.js` have
+    always been verified, see §15 items throughout).
 
 ---
 
@@ -1622,12 +1656,15 @@ Highest priority first:
    they're mocks like everything else. Until this happens, every page
    except login/logout/profile/Products remains open to anyone (§12) —
    treat this as a security gap, not just an incompleteness note.
-   **When wiring Purchase/Sale to a real endpoint**: their existing
-   `extraValidate` (line-items check) still has BUG-33's unconditional-
-   evaluation problem (§15, item 26) — put any server-side work in
-   `onSubmit` (which `modal-form.js` correctly gates and now supports
-   async via the Phase 5.5 Promise contract, §4/§5), not in
-   `extraValidate`.
+   **When wiring Purchase/Sale to a real endpoint**: BUG-33 (§15, item 26)
+   is fixed at the source now (Phase 5.6, §15 item 27) — `extraValidate`
+   is safely short-circuited behind standard validation for every module,
+   so no workaround is needed there anymore. Still put any *async*
+   server-side work in `onSubmit`, not `extraValidate`, for a different,
+   still-true reason: `extraValidate` only supports a synchronous
+   true/false return (it runs, then the result is read immediately) —
+   only `onSubmit` supports the Phase 5.5 Promise contract (§4/§5) that
+   keeps the modal open until a real request settles.
 2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
    (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
    `12_SEARCH.md`, `14_SETTINGS.md`).

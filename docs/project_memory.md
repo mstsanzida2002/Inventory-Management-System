@@ -1783,6 +1783,10 @@ session history, not `git log`:
     still work. No new automated tests this phase either, matching
     Phase 5's own precedent — verified live instead. 80/80 tests still
     passing (none broken).
+29. **Phase 7.5: proactive `{# #}` comment audit** — swept all 25
+    templates for the BUG-03/BUG-36 multi-line-comment pattern ahead of
+    Phase 8. 40 `{# #}` instances across 14 files, every one closing on
+    its own line; zero multi-line, no fixes needed.
 
 ---
 

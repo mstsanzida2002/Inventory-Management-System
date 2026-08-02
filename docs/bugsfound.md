@@ -67,6 +67,7 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-32 | `modal-form.js`'s blur handler clears a required+non-negative field's visible error even while the value is still negative | N/A — implementation bug (pre-existing in the shared modal architecture, first exercised by Phase 5's negative-price test) | 🚩 Reported (cosmetic — submit-time `validateAll()` still blocks it) |
 | BUG-33 | `modal-form.js` evaluates `extraValidate()` unconditionally, even when standard field validation already failed | N/A — implementation bug (pre-existing architecture; only became costly once an `extraValidate` hook did real network work, in Phase 5) | ✅ Fixed (Phase 5.6, in the shared file) |
 | BUG-34 | Product creation wrote a real `InventoryMovement` with no true cause, violating this project's own prior architecture decision | `docs/project_memory.md` §13 ("No 'Add Inventory Transaction' modal" decision) — Phase 5's own implementation | ✅ Fixed (Phase 5.5) |
+| BUG-35 | Category/Supplier mock modals had fields with no schema backing (category parent/code; supplier code/city/country/postal_code/website/tax_id/notes) and mislabeled most of Supplier's genuinely-required fields as optional | `SCHEMA.md` §2 Category, §3 Supplier vs. Phase 3's hand-built `categories.html`/`suppliers.html` modals | ✅ Fixed (Phase 6) |
 
 ---
 
@@ -767,3 +768,55 @@ labeled `InventoryMovement`/`AuditLog` rows — were deleted from the dev
 DB rather than left in place; fresh verification products were created
 through the corrected path instead (see
 `docs/project_memory.md` §15, Phase 5.5 entry).
+
+### BUG-35 — Category/Supplier mock modals didn't match SCHEMA.md
+**Root cause:** Same class of bug as BUG-31, found applying the identical
+scrutiny to two more modules. Two directions of mismatch:
+1. **Fields with no schema backing.** `categories.html`'s mock modal had
+   "Parent category" (a full hierarchy — `Category` has no self-FK
+   anywhere in `SCHEMA.md`) and "Category code" (no such column).
+   `suppliers.html`'s mock modal had "Supplier code", "City", "Country",
+   "Postal code", "Website", "Tax ID", and "Notes" — none exist on
+   `Supplier`, and the model's single free-text `address` field doesn't
+   decompose into the mock's separate street/city/country/postal inputs.
+2. **Required fields mislabeled optional.** `Supplier.supplier_name`/
+   `company_name`/`contact_person`/`email`/`phone`/`address` all lack
+   `blank=True` — every one is required — but the mock UI marked
+   `contact_person`/`email`/`phone`/address's constituent fields
+   "(optional)". Also: the model has two distinct required name fields
+   (`supplier_name` and `company_name`, both used in `Supplier.__str__`),
+   but the mock had only one "Supplier name" input.
+**Source Documentation:**
+```
+SCHEMA.md §2 Category:
+    class Category(TimeStampedModel):
+        name = models.CharField(max_length=100, unique=True)
+        description = models.TextField(blank=True)
+        is_active = models.BooleanField(default=True)
+    # No parent FK, no code field, anywhere in this block.
+
+SCHEMA.md §3 Supplier:
+    class Supplier(TimeStampedModel):
+        supplier_name   = models.CharField(max_length=150)
+        company_name    = models.CharField(max_length=200)
+        contact_person  = models.CharField(max_length=100)
+        email           = models.EmailField(unique=True)
+        phone           = models.CharField(max_length=20)
+        address         = models.TextField()
+        is_active       = models.BooleanField(default=True)
+    # None of supplier_name/company_name/contact_person/email/phone/
+    # address has blank=True — all required. No code/city/country/
+    # postal_code/website/tax_id/notes field anywhere in this block.
+```
+**Status:** ✅ Fixed (Phase 6) — schema-less fields removed from both
+modals rather than invented as new model columns (no dedicated Suppliers
+doc exists to sanction inventing them — see BUG-17/BUG-26). Supplier's
+mock modal gained a new required "Company name" field (mapped to
+`company_name`) alongside the existing "Supplier name" field (mapped, by
+literal name match, to `supplier_name` — the least presumptive reading
+available without a dedicated doc to consult); `contact_person`/`email`/
+`phone`/`address` relabeled required to match the model; the four
+address-shaped inputs collapsed into the one real `address` field.
+Category's "Active/Inactive" status select and Supplier's already
+matched their models 1:1 (`is_active`) and needed no field changes,
+just backend wiring.

@@ -10,7 +10,7 @@
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Suppliers</h2>
-      <p class="text-slate">42 active suppliers feeding your catalog and purchase orders.</p>
+      <p class="text-slate">{{ counts.total }} supplier{{ counts.total|pluralize }} feeding your catalog and purchase orders.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-secondary" type="button">
@@ -29,29 +29,22 @@
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-truck"></use></svg>
       <div>
-        <div class="stat-strip-value">42</div>
+        <div class="stat-strip-value">{{ counts.total }}</div>
         <div class="stat-strip-label">Total suppliers</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-check-circle"></use></svg>
       <div>
-        <div class="stat-strip-value">36</div>
+        <div class="stat-strip-value">{{ counts.active }}</div>
         <div class="stat-strip-label">Active</div>
       </div>
     </div>
-    <div class="stat-strip-item is-warning">
-      <svg class="icon icon-lg"><use href="#icon-clock"></use></svg>
+    <div class="stat-strip-item is-danger">
+      <svg class="icon icon-lg"><use href="#icon-alert-circle"></use></svg>
       <div>
-        <div class="stat-strip-value">4</div>
-        <div class="stat-strip-label">Pending review</div>
-      </div>
-    </div>
-    <div class="stat-strip-item">
-      <svg class="icon icon-lg"><use href="#icon-trending-up"></use></svg>
-      <div>
-        <div class="stat-strip-value">6.2 days</div>
-        <div class="stat-strip-label">Avg. lead time</div>
+        <div class="stat-strip-value">{{ counts.inactive }}</div>
+        <div class="stat-strip-label">Inactive</div>
       </div>
     </div>
   </div>
@@ -66,7 +59,6 @@
       <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
         <option>All statuses</option>
         <option>Active</option>
-        <option>Pending</option>
         <option>Inactive</option>
       </select>
     </div>
@@ -86,14 +78,23 @@
             </tr>
           </thead>
           <tbody id="suppliersTableBody">
-
+            {% for supplier in suppliers %}
             <tr>
-              <td>Northgate Distributors</td>
-              <td>Elena Cross</td>
-              <td class="mono">elena@northgatedist.com</td>
-              <td class="mono">+1 (415) 555-0148</td>
-              <td class="mono">214</td>
-              <td><span class="badge badge-success">Active</span></td>
+              <td>
+                {{ supplier.company_name }}
+                <div class="cell-sub">{{ supplier.supplier_name }}</div>
+              </td>
+              <td>{{ supplier.contact_person|default:"—" }}</td>
+              <td class="mono">{{ supplier.email|default:"—" }}</td>
+              <td class="mono">{{ supplier.phone|default:"—" }}</td>
+              <td class="mono">{{ supplier.product_count }}</td>
+              <td>
+                {% if supplier.is_active %}
+                  <span class="badge badge-success">Active</span>
+                {% else %}
+                  <span class="badge badge-danger">Inactive</span>
+                {% endif %}
+              </td>
               <td>
                 <div class="widget-actions">
                   <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
@@ -101,112 +102,13 @@
                 </div>
               </td>
             </tr>
-
+            {% empty %}
             <tr>
-              <td>Redline Hardware Co.</td>
-              <td>Marcus Webb</td>
-              <td class="mono">marcus@redlinehw.com</td>
-              <td class="mono">+1 (312) 555-0199</td>
-              <td class="mono">96</td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
+              <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                No suppliers yet — click "Add supplier" to create the first one.
               </td>
             </tr>
-
-            <tr>
-              <td>Paper Trail Ltd.</td>
-              <td>Sofia Rinaldi</td>
-              <td class="mono">sofia@papertrail.co</td>
-              <td class="mono">+44 20 7946 0958</td>
-              <td class="mono">58</td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Coastal Goods Supply</td>
-              <td>Derek Osei</td>
-              <td class="mono">derek@coastalgoods.com</td>
-              <td class="mono">+1 (206) 555-0122</td>
-              <td class="mono">74</td>
-              <td><span class="badge badge-warning">Pending</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>BrightPath Electronics</td>
-              <td>Mei Lin</td>
-              <td class="mono">mei.lin@brightpath.io</td>
-              <td class="mono">+1 (669) 555-0177</td>
-              <td class="mono">130</td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Ironclad Safety Supply</td>
-              <td>Tomas Novak</td>
-              <td class="mono">tomas@ironcladsafety.eu</td>
-              <td class="mono">+420 22 888 3210</td>
-              <td class="mono">41</td>
-              <td><span class="badge badge-danger">Inactive</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Harborline Packaging</td>
-              <td>Priya Nair</td>
-              <td class="mono">priya@harborline.com</td>
-              <td class="mono">+1 (628) 555-0143</td>
-              <td class="mono">67</td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Summit Medical Wholesale</td>
-              <td>Grace Adeyemi</td>
-              <td class="mono">grace@summitmed.com</td>
-              <td class="mono">+1 (773) 555-0165</td>
-              <td class="mono">89</td>
-              <td><span class="badge badge-warning">Pending</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
+            {% endfor %}
           </tbody>
         </table>
       </div>
@@ -214,7 +116,7 @@
 
     <div class="panel-body" style="padding-top:0;">
       <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing 1–8 of 42 suppliers</p>
+        <p class="text-slate text-xs" style="margin:0;">Showing {{ counts.total }} of {{ counts.total }} suppliers</p>
         <div class="flex gap-2">
           <button class="btn btn-secondary" type="button" disabled>Previous</button>
           <button class="btn btn-secondary" type="button">Next</button>
@@ -237,35 +139,37 @@
         </button>
       </div>
 
-      <form class="modal-body" id="addSupplierForm" novalidate>
+      <form class="modal-body" id="addSupplierForm" method="post" action="{% url 'frontend:suppliers' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addSupplierFormError" hidden></div>
         <div class="form-grid">
 
           <div class="field">
             <label class="form-label" for="supplier-name">Supplier name<span class="required-mark">*</span></label>
-            <input class="input input-plain" type="text" id="supplier-name" name="name" placeholder="e.g. Northgate Distributors">
+            <input class="input input-plain" type="text" id="supplier-name" name="supplier_name" placeholder="e.g. Elena Cross Trading">
             <div class="field-error" id="supplier-name-error" role="alert"></div>
           </div>
 
           <div class="field">
-            <label class="form-label" for="supplier-code">Supplier code <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="supplier-code" name="code" placeholder="e.g. SUP-0142">
-            <div class="field-error" id="supplier-code-error" role="alert"></div>
+            <label class="form-label" for="supplier-company-name">Company name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="supplier-company-name" name="company_name" placeholder="e.g. Northgate Distributors">
+            <div class="field-error" id="supplier-company-name-error" role="alert"></div>
           </div>
 
           <div class="field">
-            <label class="form-label" for="supplier-contact-person">Contact person <span class="optional-tag">(optional)</span></label>
+            <label class="form-label" for="supplier-contact-person">Contact person<span class="required-mark">*</span></label>
             <input class="input input-plain" type="text" id="supplier-contact-person" name="contact_person" placeholder="e.g. Elena Cross">
             <div class="field-error" id="supplier-contact-person-error" role="alert"></div>
           </div>
 
           <div class="field">
-            <label class="form-label" for="supplier-email">Email <span class="optional-tag">(optional)</span></label>
+            <label class="form-label" for="supplier-email">Email<span class="required-mark">*</span></label>
             <input class="input input-plain" type="email" id="supplier-email" name="email" placeholder="e.g. elena@northgatedist.com">
             <div class="field-error" id="supplier-email-error" role="alert"></div>
           </div>
 
           <div class="field">
-            <label class="form-label" for="supplier-phone">Phone <span class="optional-tag">(optional)</span></label>
+            <label class="form-label" for="supplier-phone">Phone<span class="required-mark">*</span></label>
             <input class="input input-plain" type="tel" id="supplier-phone" name="phone" placeholder="e.g. +1 (415) 555-0148">
             <div class="field-error" id="supplier-phone-error" role="alert"></div>
           </div>
@@ -283,45 +187,9 @@
           </div>
 
           <div class="field field-full">
-            <label class="form-label" for="supplier-address">Address <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="supplier-address" name="address" placeholder="Street address">
+            <label class="form-label" for="supplier-address">Address<span class="required-mark">*</span></label>
+            <textarea class="textarea" id="supplier-address" name="address" rows="2" placeholder="Street, city, country..."></textarea>
             <div class="field-error" id="supplier-address-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="supplier-city">City <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="supplier-city" name="city" placeholder="e.g. San Francisco">
-            <div class="field-error" id="supplier-city-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="supplier-country">Country <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="supplier-country" name="country" placeholder="e.g. United States">
-            <div class="field-error" id="supplier-country-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="supplier-postal-code">Postal code <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="supplier-postal-code" name="postal_code" placeholder="e.g. 94103">
-            <div class="field-error" id="supplier-postal-code-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="supplier-website">Website <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="url" id="supplier-website" name="website" placeholder="e.g. https://northgatedist.com">
-            <div class="field-error" id="supplier-website-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="supplier-tax-id">Tax ID <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="supplier-tax-id" name="tax_id" placeholder="e.g. 94-3242891">
-            <div class="field-error" id="supplier-tax-id-error" role="alert"></div>
-          </div>
-
-          <div class="field field-full">
-            <label class="form-label" for="supplier-notes">Notes <span class="optional-tag">(optional)</span></label>
-            <textarea class="textarea" id="supplier-notes" name="notes" rows="3" placeholder="Internal notes about this supplier..."></textarea>
-            <div class="field-error" id="supplier-notes-error" role="alert"></div>
           </div>
 
         </div>

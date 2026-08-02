@@ -1,93 +1,103 @@
 /* ==========================================================================
-   SUPPLIER-FORM.JS — Add Supplier form: field config + turning a valid
-   submit into a new suppliers-table row. Shares its validation/reset/submit
-   flow with product-form.js and category-form.js via modal-form.js.
+   SUPPLIER-FORM.JS — Add Supplier form: field config and submitting to the
+   real /suppliers/ endpoint (Phase 6). Generic validation/reset/submit
+   wiring lives in modal-form.js; generic error-state helpers live in
+   form-validation.js. This file only knows supplier-specific things.
+
+   Submission happens in onSubmit via fetch(), following modal-form.js's
+   Promise-returning onSubmit contract (see category-form.js's header for
+   the same note — no sync-XHR workaround needed here either).
    ========================================================================== */
 
 (function () {
   "use strict";
 
+  var FV = window.FormValidation;
+
   var FORM_ID = "addSupplierForm";
   var MODAL_ID = "addSupplierModal";
-  var TABLE_BODY_ID = "suppliersTableBody";
 
   var FIELD_LABELS = {
-    "supplier-name": "Supplier name"
+    "supplier-name": "Supplier name",
+    "supplier-company-name": "Company name",
+    "supplier-contact-person": "Contact person",
+    "supplier-email": "Email",
+    "supplier-phone": "Phone",
+    "supplier-address": "Address"
   };
 
-  var REQUIRED_FIELD_IDS = ["supplier-name"];
+  var REQUIRED_FIELD_IDS = [
+    "supplier-name",
+    "supplier-company-name",
+    "supplier-contact-person",
+    "supplier-email",
+    "supplier-phone",
+    "supplier-address"
+  ];
+
+  // Django field name -> HTML field id, for server-side validation errors.
+  var SERVER_FIELD_MAP = {
+    supplier_name: "supplier-name",
+    company_name: "supplier-company-name",
+    contact_person: "supplier-contact-person",
+    email: "supplier-email",
+    phone: "supplier-phone",
+    address: "supplier-address"
+  };
 
   function getField(id) {
     return document.getElementById(id);
   }
 
-  function buildSupplierRow(data) {
-    var row = document.createElement("tr");
-
-    var nameCell = document.createElement("td");
-    nameCell.textContent = data.name;
-    row.appendChild(nameCell);
-
-    var contactCell = document.createElement("td");
-    contactCell.textContent = data.contactPerson || "—";
-    row.appendChild(contactCell);
-
-    var emailCell = document.createElement("td");
-    emailCell.className = "mono";
-    emailCell.textContent = data.email || "—";
-    row.appendChild(emailCell);
-
-    var phoneCell = document.createElement("td");
-    phoneCell.className = "mono";
-    phoneCell.textContent = data.phone || "—";
-    row.appendChild(phoneCell);
-
-    var productsCell = document.createElement("td");
-    productsCell.className = "mono";
-    productsCell.textContent = "0";
-    row.appendChild(productsCell);
-
-    var statusCell = document.createElement("td");
-    var badge = document.createElement("span");
-    var isActive = data.status === "Active";
-    badge.className = "badge " + (isActive ? "badge-success" : "badge-danger");
-    badge.textContent = data.status;
-    statusCell.appendChild(badge);
-    row.appendChild(statusCell);
-
-    var actionsCell = document.createElement("td");
-    var actionsWrap = document.createElement("div");
-    actionsWrap.className = "widget-actions";
-    actionsWrap.appendChild(DomUtils.buildActionButton("Edit supplier", "icon-edit"));
-    actionsWrap.appendChild(DomUtils.buildActionButton("Delete supplier", "icon-trash"));
-    actionsCell.appendChild(actionsWrap);
-    row.appendChild(actionsCell);
-
-    return row;
+  function clearFormError() {
+    var box = getField("addSupplierFormError");
+    if (box) { box.hidden = true; box.textContent = ""; }
   }
 
-  function addSupplierToTable(data) {
-    var tableBody = getField(TABLE_BODY_ID);
-    if (!tableBody) return;
-    tableBody.insertBefore(buildSupplierRow(data), tableBody.firstChild);
+  function showFormError(message) {
+    var box = getField("addSupplierFormError");
+    if (box) { box.hidden = false; box.textContent = message; }
   }
 
-  function collectFormData() {
-    return {
-      name: getField("supplier-name").value.trim(),
-      code: getField("supplier-code").value.trim(),
-      contactPerson: getField("supplier-contact-person").value.trim(),
-      email: getField("supplier-email").value.trim(),
-      phone: getField("supplier-phone").value.trim(),
-      status: getField("supplier-status").value,
-      address: getField("supplier-address").value.trim(),
-      city: getField("supplier-city").value.trim(),
-      country: getField("supplier-country").value.trim(),
-      postalCode: getField("supplier-postal-code").value.trim(),
-      website: getField("supplier-website").value.trim(),
-      taxId: getField("supplier-tax-id").value.trim(),
-      notes: getField("supplier-notes").value.trim()
-    };
+  function applyServerErrors(errors) {
+    Object.keys(errors).forEach(function (fieldName) {
+      var fieldId = SERVER_FIELD_MAP[fieldName];
+      var field = fieldId ? getField(fieldId) : null;
+      var entries = errors[fieldName];
+      var text = (entries && entries.length && entries[0].message) || "This field is invalid.";
+      if (field) {
+        FV.setFieldError(field, text);
+      } else {
+        showFormError(text);
+      }
+    });
+  }
+
+  function onSubmit(form) {
+    clearFormError();
+
+    return fetch(form.getAttribute("action"), {
+      method: "POST",
+      body: new FormData(form)
+    }).then(function (response) {
+      return response.json().catch(function () {
+        return null;
+      }).then(function (payload) {
+        if (response.ok) {
+          window.location.reload();
+          return true;
+        }
+        if (payload && payload.errors) {
+          applyServerErrors(payload.errors);
+        } else {
+          showFormError("Could not save this supplier. Please try again.");
+        }
+        return false;
+      });
+    }).catch(function () {
+      showFormError("Could not reach the server. Please try again.");
+      return false;
+    });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -98,7 +108,9 @@
       modalId: MODAL_ID,
       fieldLabels: FIELD_LABELS,
       requiredFieldIds: REQUIRED_FIELD_IDS,
-      onSubmit: function () { addSupplierToTable(collectFormData()); }
+      resettableFieldIds: Object.keys(FIELD_LABELS).concat(["supplier-status"]),
+      onReset: clearFormError,
+      onSubmit: onSubmit
     });
   });
 })();

@@ -92,6 +92,24 @@
 > Products was already unaffected (doesn't use `extraValidate` since
 > Phase 5.5). Scope was `modal-form.js` only, per this task's own
 > instruction — no per-entity file changed. 80/80 tests still passing.
+> **(14) Backend Phase 6** — Categories and Suppliers are real now too,
+> mechanically repeating Phase 5's pattern: `CategoryForm`/`SupplierForm`,
+> `CategoryListCreateView`/`SupplierListCreateView` (`AnyStaffMixin` on
+> GET+POST, `fetch()`-based `onSubmit` from the start — no sync-XHR
+> workaround needed this time, since `modal-form.js`'s Promise contract
+> already existed). Same BUG-31-style mismatch found again, bigger this
+> time: the mock `categories.html`/`suppliers.html` modals had fields
+> with no schema backing at all (category parent/code; supplier code/
+> city/country/postal_code/website/tax_id/notes) and mislabeled most of
+> Supplier's genuinely-required fields optional — fixed by trimming the
+> unbacked fields and correcting the required labels, not by inventing
+> new model columns (`docs/bugsfound.md` BUG-35). No approval workflow,
+> no InventoryService involvement — neither module touches stock. Same
+> live-verification approach as Phase 5 (no new automated tests this
+> phase either): logged-out blocked, empty submit blocked, duplicate
+> name/email rejected, Active/Inactive status confirmed mapping to
+> `is_active` correctly, persistence confirmed after reload, for both
+> modules. 80 tests still passing (none added or broken).
 > See `docs/frontend_work.md` for a frontend-only summary.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
@@ -263,8 +281,19 @@ What is actually built and working:
   template/JS pattern (modal.js/form-validation.js/dom-utils.js/
   modal-form.js + product-form.js) this module established is still the
   one every later module copies — see §5/§12/§15.
-- ✅ **Category module** — grid-card list + working "Add Category" modal.
-- ✅ **Supplier module** — list page + working "Add Supplier" modal.
+- ✅ **Category module (real, Phase 6)** — grid-card list renders the real
+  `Category` queryset (real product counts via `category.products.count()`);
+  "Add Category" modal posts to a real `CategoryListCreateView` guarded by
+  `AnyStaffMixin`, `CategoryForm` enforcing unique name server-side. No
+  parent/hierarchy or category-code fields — the mock had them, `SCHEMA.md`
+  doesn't (see §12 BUG-35).
+- ✅ **Supplier module (real, Phase 6)** — list page renders the real
+  `Supplier` queryset (real product counts, real Active/Inactive stat
+  strip); "Add Supplier" modal posts to a real `SupplierListCreateView`
+  guarded by `AnyStaffMixin`, `SupplierForm` enforcing unique email and
+  every genuinely-required field server-side. Mock fields with no schema
+  backing (code/city/country/postal_code/website/tax_id/notes) removed;
+  gained a "Company name" field the mock was missing (see §12 BUG-35).
 - ✅ **Purchase module** — list page + working "Add Purchase" modal with
   repeatable line-items editor.
 - ✅ **Sale module** — list page + working "Add Sale" modal with repeatable
@@ -338,9 +367,9 @@ inventory 3/
 ├── frontend/                  The ONLY Django app. Holds both the backend schema and the entire UI.
 │   ├── models.py              16 concrete models + TimeStampedModel abstract base (Backend Phase 1), matching docs/SCHEMA.md exactly. Migrated (Phase 3.7).
 │   ├── admin.py                All 16 models registered (Backend Phase 2) — list_display/search_fields/list_filter/ordering configured. Data-browsing works (Phase 3.7, see §5).
-│   ├── views.py               login/logout_view/profile_view real (Phase 4); ProductListCreateView real (Phase 5); every other view still one-line render() — see §5
-│   ├── forms.py                Phase 5 — ProductForm (first real ModelForm in the project)
-│   ├── urls.py                app_name="frontend"; 19 registered routes (products/ now points at ProductListCreateView.as_view(), Phase 5, see §5)
+│   ├── views.py               login/logout_view/profile_view real (Phase 4); ProductListCreateView (Phase 5), CategoryListCreateView/SupplierListCreateView (Phase 6) real; Purchases/Sales/Inventory/Adjustments still one-line render() — see §5
+│   ├── forms.py                Phase 5 — ProductForm; Phase 6 — CategoryForm/SupplierForm
+│   ├── urls.py                app_name="frontend"; 19 registered routes (products/, categories/, suppliers/ point at their List/CreateView.as_view(), see §5)
 │   ├── decorators.py          Phase 4 — require_role/admin_required/supervisor_required/staff_required (RBAC, function-based views)
 │   ├── mixins.py               Phase 4 — RoleRequiredMixin/AdminRequiredMixin/SupervisorRequiredMixin/AnyStaffMixin (RBAC, class-based views); AnyStaffMixin's first real use is Phase 5's ProductListCreateView
 │   ├── validators.py          Phase 4 — StrongPasswordValidator; Phase 5 — validate_product_image (AUTH_PASSWORD_VALIDATORS / ProductForm.image)
@@ -556,37 +585,48 @@ nothing calls.
   `ai/forecasting/`, `ai/slow-moving/`, the 5 Phase 3.6 routes —
   `reports/`, `notifications/`, `users/`, `audit-log/`, `settings/` —
   plus `login/`) and 2 new real ones (Phase 4): `logout/`, `profile/`.
-- **Views (Phase 4 auth + Phase 5 Products are real)**: `frontend/views.py`'s
-  `login`/`logout_view`/`profile_view` (Phase 4) and, as of Phase 5,
-  `ProductListCreateView` (a class-based `AnyStaffMixin` + `View`: GET
-  renders the real `Product` queryset, POST validates via `ProductForm`
-  and, in one transaction, creates the product and calls
-  `InventoryService.initialize_for_product()` — see §6's Phase 5.5 note —
-  returning JSON for the modal's `fetch()`-based submit, Phase 5.5). Every
-  *other* view (Categories, Suppliers, Purchases, Sales, ...) is still the
-  original one-line `render(request, "<template>",
-  {"active_nav": "<name>"})` — no forms, no querysets, no auth checks, no
-  ORM usage.
-- **RBAC (Phase 4 mechanism, Phase 5 first real use)**: `frontend/decorators.py`
+- **Views (Phase 4 auth + Phase 5/6 real modules)**: `frontend/views.py`'s
+  `login`/`logout_view`/`profile_view` (Phase 4); `ProductListCreateView`
+  (Phase 5 — GET renders the real `Product` queryset, POST validates via
+  `ProductForm` and, in one transaction, creates the product and calls
+  `InventoryService.initialize_for_product()` — see §6's Phase 5.5 note);
+  `CategoryListCreateView`/`SupplierListCreateView` (Phase 6, identical
+  shape — no `InventoryService` involvement, neither module touches
+  stock). All three are class-based `AnyStaffMixin` + `View`, all POST
+  handlers return JSON for the modal's `fetch()`-based submit (Phase 5.5
+  contract, used from the start for Categories/Suppliers — no sync-XHR
+  workaround needed). Every *other* view (Purchases, Sales, Inventory,
+  Adjustments, ...) is still the original one-line
+  `render(request, "<template>", {"active_nav": "<name>"})` — no forms,
+  no querysets, no auth checks, no ORM usage.
+- **RBAC (Phase 4 mechanism, real since Phase 5)**: `frontend/decorators.py`
   (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
   and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
   `SupervisorRequiredMixin`/`AnyStaffMixin`) — translated from
   `02_RBAC.md`'s `apps/rbac/decorators.py`/`apps/rbac/mixins.py`. Phase 4
-  proved it only against throwaway views; Phase 5 is the first real
-  consumer — `AnyStaffMixin` guards `ProductListCreateView`, matching
-  `03_PRODUCTS.md`'s own reference code guarding both its list and create
-  views the same way. Every other real view is still unguarded (see §12).
+  proved it only against throwaway views; `AnyStaffMixin` now guards
+  `ProductListCreateView` (Phase 5) and `CategoryListCreateView`/
+  `SupplierListCreateView` (Phase 6) — 3 of 7 real-module views. Purchases/
+  Sales/Inventory/Adjustments are still unguarded (see §12/§16).
   DRF's `BasePermission` classes (`IsAdmin` etc.) from the same doc were
   explicitly out of scope — DRF isn't installed.
-- **Forms (Phase 5 — first real ModelForm)**: `frontend/forms.py`'s
-  `ProductForm` — server-side enforcement of what the JS modal previously
-  only checked client-side (unique SKU/barcode via Django's automatic
-  `ModelForm` uniqueness check, non-negative purchase/selling price),
-  restricts Category/Supplier choices to `is_active=True`, validates
+- **Forms (Phase 5/6 — real ModelForms)**: `frontend/forms.py`'s
+  `ProductForm` (Phase 5) — server-side enforcement of what the JS modal
+  previously only checked client-side (unique SKU/barcode via Django's
+  automatic `ModelForm` uniqueness check, non-negative purchase/selling
+  price), restricts Category/Supplier choices to `is_active=True`, validates
   uploaded images via `frontend/validators.py`'s new
   `validate_product_image` (`SECURITY.md`'s allowed-extensions/max-size
   rule). Also reconciled two required/optional mismatches between
   `SCHEMA.md` and the Phase 3 mock UI — see `docs/bugsfound.md` BUG-31.
+  `CategoryForm`/`SupplierForm` (Phase 6) — same treatment, bigger mismatch:
+  the mock modals had fields with no schema backing at all (removed, not
+  invented as new columns) and mislabeled most of `Supplier`'s genuinely-
+  required fields optional (relabeled) — see BUG-35. Both forms also carry
+  a form-only `status` `ChoiceField` (Active/Inactive text, matching the
+  existing template `<select>`) that the view maps to `is_active`, the
+  same pattern as `ProductForm.initial_stock` being a form-only field
+  consumed by the view.
 - **Validators (Phase 4)**: `frontend/validators.py`'s
   `StrongPasswordValidator` — translated from `SECURITY.md`'s
   `apps/authentication/validators.py`, registered in
@@ -922,8 +962,8 @@ re-enabled, nothing left disabled.
   via the topbar user-menu dropdown only)
 - ✅ Dashboard
 - ✅ Products (real, Phase 5 — list + Add modal against the live DB, RBAC-guarded)
-- ✅ Categories (list + Add modal)
-- ✅ Suppliers (list + Add modal)
+- ✅ Categories (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded)
+- ✅ Suppliers (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded)
 - ✅ Purchases (list + Add modal, line-items)
 - ✅ Sales (list + Add modal, line-items)
 - ✅ Inventory (list only, read-only by design)
@@ -1016,14 +1056,15 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
 kept together here rather than scattered, since they were all found in
 the same phase):
 
-- **RBAC mechanism now applied to one real module — Products (Phase 5).**
-  `AnyStaffMixin` guards `ProductListCreateView` (GET and POST); logged-out
-  requests redirect to login, confirmed live. Every *other* page view
-  (Categories, Suppliers, Purchases, Sales, Users & Roles, Settings, ...)
-  is still a bare `render()` with no `@login_required` and no role check —
-  open to anyone, logged in or not, until Phase 6/7 wires each module in
-  the same way. This remains a real, current security gap for every module
-  except Products.
+- **RBAC mechanism now applied to 3 real modules — Products (Phase 5),
+  Categories, Suppliers (Phase 6).** `AnyStaffMixin` guards all three
+  List/CreateViews (GET and POST); logged-out requests redirect to login,
+  confirmed live for all three. Every *other* page view (Purchases, Sales,
+  Inventory, Adjustments, Users & Roles, Settings, ...) is still a bare
+  `render()` with no `@login_required` and no role check — open to anyone,
+  logged in or not, until Phase 7+ wires each module in the same way. This
+  remains a real, current security gap for every module except Products/
+  Categories/Suppliers.
 - **Phase 5 verification surfaced two pre-existing quirks in the shared
   modal architecture** (`modal-form.js`/`form-validation.js`), neither
   introduced this phase — see `docs/bugsfound.md` BUG-32/33 for full
@@ -1640,6 +1681,35 @@ session history, not `git log`:
     exercises this JS path directly — coverage here is the live
     verification above, matching how `modal.js`/`modal-form.js` have
     always been verified, see §15 items throughout).
+28. **Backend Phase 6: Categories & Suppliers.** Mechanical repetition of
+    Phase 5's pattern, as instructed — `CategoryForm`/`SupplierForm`,
+    `CategoryListCreateView`/`SupplierListCreateView` (`AnyStaffMixin` on
+    GET+POST), real queryset rendering, `fetch()`-based `onSubmit` used
+    from the start (no sync-XHR workaround needed — `modal-form.js`'s
+    Promise contract already existed by this phase). Neither module has
+    an approval workflow or touches `InventoryService`. Found the same
+    class of mock-UI/schema mismatch as BUG-31, bigger this time:
+    `categories.html`'s mock had a "Parent category" hierarchy and
+    "Category code" with no schema backing at all; `suppliers.html`'s
+    mock had `code`/`city`/`country`/`postal_code`/`website`/`tax_id`/
+    `notes` fields with no schema backing, and mislabeled nearly every
+    genuinely-required `Supplier` field as optional. Fixed by trimming
+    the unbacked fields from both templates and correcting the required
+    labels — not by inventing new model columns, per this phase's
+    explicit instruction (`docs/bugsfound.md` BUG-35). Supplier's single
+    mock "name" field also couldn't cover both of the model's two
+    required name fields (`supplier_name`/`company_name`) — mapped the
+    existing field to `supplier_name` by literal name match and added a
+    new "Company name" field for `company_name`, disclosed as a judgment
+    call rather than picked silently. Verified live end to end for both
+    modules: logged-out blocked, empty submit blocked with inline errors,
+    duplicate name (Category)/duplicate email (Supplier) rejected with a
+    visible error and the modal staying open, Active/Inactive status
+    confirmed mapping to `is_active` correctly in the DB, valid submit
+    persists after a fresh reload, ESC/overlay-click/clean-reopen all
+    still work. No new automated tests this phase either, matching
+    Phase 5's own precedent — verified live instead. 80/80 tests still
+    passing (none broken).
 
 ---
 
@@ -1648,13 +1718,16 @@ session history, not `git log`:
 Highest priority first:
 
 1. **Wire the RBAC decorator/mixin (§5, Phase 4) and the service layer
-   into real module views, together, module by module** — Products is
-   done (Phase 5, see §2/§5/§12/§15); Categories, Suppliers, Purchases,
-   Sales, Inventory, and Adjustments are next, in that order, following
-   the exact pattern Phase 5 established. Replace static hardcoded rows
-   module by module. The 5 Phase 3.6 pages (§11) join this same backlog —
-   they're mocks like everything else. Until this happens, every page
-   except login/logout/profile/Products remains open to anyone (§12) —
+   into real module views, together, module by module** — Products
+   (Phase 5), Categories, Suppliers (Phase 6) are done, see §2/§5/§12/§15;
+   Purchases, Sales, Inventory, and Adjustments are next, in that order,
+   following the exact pattern Phase 5/6 established — these four
+   involve `InventoryService`/approval workflows, unlike Categories/
+   Suppliers, so expect that part to need real thought again, not pure
+   repetition. Replace static hardcoded rows module by module. The 5
+   Phase 3.6 pages (§11) join this same backlog — they're mocks like
+   everything else. Until this happens, every page except login/logout/
+   profile/Products/Categories/Suppliers remains open to anyone (§12) —
    treat this as a security gap, not just an incompleteness note.
    **When wiring Purchase/Sale to a real endpoint**: BUG-33 (§15, item 26)
    is fixed at the source now (Phase 5.6, §15 item 27) — `extraValidate`
@@ -1703,9 +1776,12 @@ Grouped by module, per the documentation:
   upload validation done (§5). Still pending: edit/deactivate views,
   soft-delete (`is_active = False`, per `03_PRODUCTS.md`'s business
   rules — no deactivate view exists yet, only create/list).
-- **Categories**: real CRUD — still just the Phase 3 mock, not started.
-- **Suppliers**: real CRUD (no dedicated doc exists — see §12; work from
-  `SCHEMA.md` + the existing `suppliers.html` UI).
+- **Categories**: real CRUD — ✅ **create + list done** (Phase 6, §2/§5).
+  Still pending: edit/deactivate views.
+- **Suppliers**: real CRUD — ✅ **create + list done** (Phase 6, §2/§5; no
+  dedicated doc exists — see §12; built from `SCHEMA.md` + the existing
+  `suppliers.html` UI, reconciled per BUG-35). Still pending: edit/
+  deactivate views.
 - **Purchases/Sales/Inventory/Adjustments services**: ✅ **done**
   (Backend Phase 3/3.4, §2) — `PurchaseService`, `SaleService`,
   `InventoryService`, `AdjustmentService`, all with audit/notification

@@ -40,7 +40,7 @@ from django.utils import timezone
 from django.views import View
 
 from frontend import audit
-from frontend.forms import ProductForm
+from frontend.forms import CategoryForm, ProductForm, SupplierForm
 from frontend.mixins import AnyStaffMixin
 from frontend.models import (
     Category,
@@ -253,11 +253,63 @@ class ProductListCreateView(AnyStaffMixin, View):
 
         return JsonResponse({"success": True})
 
-def categories(request):
-    return render(request, "categories/categories.html", {"active_nav": "categories"})
+class CategoryListCreateView(AnyStaffMixin, View):
+    """Phase 6 — same shape as Phase 5's ProductListCreateView. GET
+    renders the real Category queryset (with each category's real product
+    count); POST creates via CategoryForm, called from category-form.js's
+    onSubmit using the Phase 5.5 fetch()/Promise contract directly (no
+    sync-XHR-in-extraValidate workaround needed this time — that
+    workaround only ever existed because modal-form.js didn't support
+    async onSubmit yet when Phase 5 shipped; it does now)."""
 
-def suppliers(request):
-    return render(request, "suppliers/suppliers.html", {"active_nav": "suppliers"})
+    def get(self, request):
+        categories = list(Category.objects.order_by("name"))
+        for category in categories:
+            category.product_count = category.products.count()
+        context = {"active_nav": "categories", "categories": categories}
+        return render(request, "categories/categories.html", context)
+
+    def post(self, request):
+        form = CategoryForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        category = form.save(commit=False)
+        category.is_active = form.cleaned_data["status"] != "Inactive"
+        category.save()
+        audit.log_action(
+            request.user, audit.CATEGORY_CREATED, "products",
+            affected_id=category.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class SupplierListCreateView(AnyStaffMixin, View):
+    """Phase 6 — same shape as Phase 5's ProductListCreateView."""
+
+    def get(self, request):
+        suppliers = list(Supplier.objects.order_by("company_name"))
+        counts = {"total": 0, "active": 0, "inactive": 0}
+        for supplier in suppliers:
+            supplier.product_count = supplier.products.count()
+            counts["total"] += 1
+            counts["active" if supplier.is_active else "inactive"] += 1
+        context = {"active_nav": "suppliers", "suppliers": suppliers, "counts": counts}
+        return render(request, "suppliers/suppliers.html", context)
+
+    def post(self, request):
+        form = SupplierForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        supplier = form.save(commit=False)
+        supplier.is_active = form.cleaned_data["status"] != "Inactive"
+        supplier.save()
+        audit.log_action(
+            request.user, audit.SUPPLIER_CREATED, "suppliers",
+            affected_id=supplier.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
 
 def purchases(request):
     return render(request, "purchases/purchases.html", {"active_nav": "purchases"})

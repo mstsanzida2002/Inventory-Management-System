@@ -1,15 +1,23 @@
 /* ==========================================================================
-   CATEGORY-FORM.JS — Add Category form: field config + turning a valid
-   submit into a new category card. Shares its validation/reset/submit
-   flow with product-form.js and supplier-form.js via modal-form.js.
+   CATEGORY-FORM.JS — Add Category form: field config and submitting to the
+   real /categories/ endpoint (Phase 6). Generic validation/reset/submit
+   wiring lives in modal-form.js; generic error-state helpers live in
+   form-validation.js. This file only knows category-specific things.
+
+   Submission happens in onSubmit via fetch(), following modal-form.js's
+   Promise-returning onSubmit contract (documented in that file's header,
+   added Phase 5.5) — unlike Phase 5's original product-form.js, this
+   never needed a synchronous-XHR-in-extraValidate workaround, since that
+   contract already existed by the time this module was built.
    ========================================================================== */
 
 (function () {
   "use strict";
 
+  var FV = window.FormValidation;
+
   var FORM_ID = "addCategoryForm";
   var MODAL_ID = "addCategoryModal";
-  var GRID_ID = "categoriesGrid";
 
   var FIELD_LABELS = {
     "category-name": "Category name"
@@ -17,64 +25,65 @@
 
   var REQUIRED_FIELD_IDS = ["category-name"];
 
+  // Django field name -> HTML field id, for server-side validation errors.
+  var SERVER_FIELD_MAP = {
+    name: "category-name",
+    description: "category-description"
+  };
+
   function getField(id) {
     return document.getElementById(id);
   }
 
-  function buildCategoryCard(data) {
-    var card = document.createElement("div");
-    card.className = "card-flat";
-
-    var topRow = document.createElement("div");
-    topRow.className = "flex items-center justify-between gap-3";
-    topRow.style.marginBottom = "var(--sp-4)";
-
-    var icon = document.createElement("span");
-    icon.className = "kpi-icon tint-indigo";
-    icon.innerHTML = '<svg class="icon"><use href="#icon-tag"></use></svg>';
-    topRow.appendChild(icon);
-
-    var actions = document.createElement("div");
-    actions.className = "flex gap-2";
-    actions.appendChild(DomUtils.buildActionButton("Edit category", "icon-edit"));
-    actions.appendChild(DomUtils.buildActionButton("Delete category", "icon-trash"));
-    topRow.appendChild(actions);
-
-    card.appendChild(topRow);
-
-    var title = document.createElement("h4");
-    title.style.marginBottom = "0.3rem";
-    title.textContent = data.name;
-    card.appendChild(title);
-
-    var description = document.createElement("p");
-    description.className = "text-slate text-sm";
-    description.style.marginBottom = "var(--sp-3)";
-    description.textContent = data.description || "No description provided.";
-    card.appendChild(description);
-
-    var badge = document.createElement("span");
-    badge.className = "badge badge-indigo";
-    badge.textContent = "0 products";
-    card.appendChild(badge);
-
-    return card;
+  function clearFormError() {
+    var box = getField("addCategoryFormError");
+    if (box) { box.hidden = true; box.textContent = ""; }
   }
 
-  function addCategoryToGrid(data) {
-    var grid = getField(GRID_ID);
-    if (!grid) return;
-    grid.insertBefore(buildCategoryCard(data), grid.firstChild);
+  function showFormError(message) {
+    var box = getField("addCategoryFormError");
+    if (box) { box.hidden = false; box.textContent = message; }
   }
 
-  function collectFormData() {
-    return {
-      name: getField("category-name").value.trim(),
-      parent: getField("category-parent").value,
-      code: getField("category-code").value.trim(),
-      description: getField("category-description").value.trim(),
-      status: getField("category-status").value
-    };
+  function applyServerErrors(errors) {
+    Object.keys(errors).forEach(function (fieldName) {
+      var fieldId = SERVER_FIELD_MAP[fieldName];
+      var field = fieldId ? getField(fieldId) : null;
+      var entries = errors[fieldName];
+      var text = (entries && entries.length && entries[0].message) || "This field is invalid.";
+      if (field) {
+        FV.setFieldError(field, text);
+      } else {
+        showFormError(text);
+      }
+    });
+  }
+
+  function onSubmit(form) {
+    clearFormError();
+
+    return fetch(form.getAttribute("action"), {
+      method: "POST",
+      body: new FormData(form)
+    }).then(function (response) {
+      return response.json().catch(function () {
+        return null;
+      }).then(function (payload) {
+        if (response.ok) {
+          window.location.reload();
+          return true;
+        }
+        if (payload && payload.errors) {
+          applyServerErrors(payload.errors);
+        } else {
+          showFormError("Could not save this category. Please try again.");
+        }
+        return false;
+      });
+    }).catch(function () {
+      showFormError("Could not reach the server. Please try again.");
+      return false;
+    });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -85,7 +94,9 @@
       modalId: MODAL_ID,
       fieldLabels: FIELD_LABELS,
       requiredFieldIds: REQUIRED_FIELD_IDS,
-      onSubmit: function () { addCategoryToGrid(collectFormData()); }
+      resettableFieldIds: ["category-name", "category-description", "category-status"],
+      onReset: clearFormError,
+      onSubmit: onSubmit
     });
   });
 })();

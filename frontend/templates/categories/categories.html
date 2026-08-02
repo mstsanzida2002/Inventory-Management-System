@@ -10,7 +10,7 @@
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Categories</h2>
-      <p class="text-slate">36 categories organizing 1,284 products across your catalog.</p>
+      <p class="text-slate">{{ categories|length }} categor{{ categories|length|pluralize:"y,ies" }} organizing your catalog.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-primary" type="button" data-modal-open="addCategoryModal">
@@ -21,111 +21,26 @@
   </div>
 
   <div class="grid grid-4" id="categoriesGrid">
-
+    {% for category in categories %}
     <div class="card-flat">
       <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-danger"><svg class="icon"><use href="#icon-shield"></use></svg></span>
+        <span class="kpi-icon {% if category.is_active %}tint-indigo{% else %}tint-danger{% endif %}"><svg class="icon"><use href="#icon-tag"></use></svg></span>
         <div class="flex gap-2">
           <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
           <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
         </div>
       </div>
-      <h4 style="margin-bottom:0.3rem;">Medical Supplies</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">PPE, first aid &amp; clinical consumables</p>
-      <span class="badge badge-indigo">64 products</span>
+      <h4 style="margin-bottom:0.3rem;">{{ category.name }}</h4>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">{{ category.description|default:"No description provided." }}</p>
+      <span class="badge {% if category.is_active %}badge-indigo{% else %}badge-danger{% endif %}">
+        {{ category.product_count }} product{{ category.product_count|pluralize }}{% if not category.is_active %} &middot; Inactive{% endif %}
+      </span>
     </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-sliders"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Tools</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Power tools, hand tools &amp; accessories</p>
-      <span class="badge badge-indigo">48 products</span>
+    {% empty %}
+    <div class="card-flat text-slate" style="text-align:center;">
+      No categories yet — click "Add category" to create the first one.
     </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-receipt"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Office Supplies</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Paper goods, stationery &amp; consumables</p>
-      <span class="badge badge-indigo">112 products</span>
-    </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-shield"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Safety Equipment</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Helmets, harnesses &amp; protective gear</p>
-      <span class="badge badge-indigo">36 products</span>
-    </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-box"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Housewares</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Kitchen, storage &amp; home essentials</p>
-      <span class="badge badge-indigo">84 products</span>
-    </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-cpu"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Electronics</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Devices, components &amp; accessories</p>
-      <span class="badge badge-indigo">57 products</span>
-    </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-layers"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Warehouse Equipment</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Shelving, pallets &amp; handling gear</p>
-      <span class="badge badge-indigo">22 products</span>
-    </div>
-
-    <div class="card-flat">
-      <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
-        <span class="kpi-icon tint-danger"><svg class="icon"><use href="#icon-cart"></use></svg></span>
-        <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
-        </div>
-      </div>
-      <h4 style="margin-bottom:0.3rem;">Retail &amp; Packaging</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-3);">Bags, boxes &amp; point-of-sale supplies</p>
-      <span class="badge badge-indigo">41 products</span>
-    </div>
-
+    {% endfor %}
   </div>
 
   {# -------------------------------------------------- Add category modal #}
@@ -142,38 +57,15 @@
         </button>
       </div>
 
-      <form class="modal-body" id="addCategoryForm" novalidate>
+      <form class="modal-body" id="addCategoryForm" method="post" action="{% url 'frontend:categories' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addCategoryFormError" hidden></div>
         <div class="form-grid">
 
           <div class="field field-full">
             <label class="form-label" for="category-name">Category name<span class="required-mark">*</span></label>
             <input class="input input-plain" type="text" id="category-name" name="name" placeholder="e.g. Medical Supplies">
             <div class="field-error" id="category-name-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="category-parent">Parent category <span class="optional-tag">(optional)</span></label>
-            <div class="select-wrap">
-              <select class="input select" id="category-parent" name="parent">
-                <option value="" selected>No parent (top-level)</option>
-                <option>Medical Supplies</option>
-                <option>Tools</option>
-                <option>Office Supplies</option>
-                <option>Safety Equipment</option>
-                <option>Housewares</option>
-                <option>Electronics</option>
-                <option>Warehouse Equipment</option>
-                <option>Retail &amp; Packaging</option>
-              </select>
-              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
-            </div>
-            <div class="field-error" id="category-parent-error" role="alert"></div>
-          </div>
-
-          <div class="field">
-            <label class="form-label" for="category-code">Category code <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="category-code" name="code" placeholder="e.g. CAT-MED">
-            <div class="field-error" id="category-code-error" role="alert"></div>
           </div>
 
           <div class="field field-full">

@@ -23,6 +23,15 @@ from django import forms
 from frontend.models import Category, Product, Supplier, UnitOfMeasurement
 from frontend.validators import validate_product_image
 
+# Category/Supplier's mock modal already has a real Active/Inactive
+# <select name="status">, matching each model's is_active BooleanField
+# 1:1, but as text choices rather than a checkbox. Kept as-is (not
+# converted to a checkbox) rather than changing existing template markup
+# — `status` is a form-only field on each form below, consumed by the
+# view to set instance.is_active, exactly like ProductForm.initial_stock
+# was a form-only field consumed by the view (Phase 5).
+STATUS_CHOICES = [("Active", "Active"), ("Inactive", "Inactive")]
+
 
 class ProductForm(forms.ModelForm):
     class Meta:
@@ -89,3 +98,50 @@ class ProductForm(forms.ModelForm):
         from django.utils import timezone
         import random
         return f"PRD-{timezone.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+
+
+class CategoryForm(forms.ModelForm):
+    """Phase 6 — mirrors ProductForm's pattern. The mock modal
+    (categories/categories.html) also had "Parent category" and
+    "Category code" fields with no corresponding model field anywhere in
+    SCHEMA.md (no hierarchy, no code column on Category) — removed from
+    the template rather than invented as new model fields, per this
+    phase's explicit instruction."""
+    status = forms.ChoiceField(choices=STATUS_CHOICES, required=False, initial="Active")
+
+    class Meta:
+        model = Category
+        fields = ["name", "description"]
+
+
+class SupplierForm(forms.ModelForm):
+    """Phase 6 — mirrors ProductForm's pattern. No dedicated Suppliers doc
+    exists (project_memory.md §12/§17); built from SCHEMA.md's Supplier
+    model plus the existing suppliers.html mock, reconciling two kinds of
+    mismatch found between them (same treatment as BUG-31's Product fix):
+
+    1. Every one of supplier_name/company_name/contact_person/email/
+       phone/address has no `blank=True` on the model — all genuinely
+       required — but the mock UI labeled contact_person/email/phone/
+       address "(optional)". Fixed by making them required in the
+       template, not by loosening the form.
+    2. The mock had one "Supplier name" field but the model has two
+       distinct required name fields (supplier_name AND company_name,
+       used together in Supplier.__str__). Mapped the existing field to
+       supplier_name (matches by field name, the least presumptive
+       reading) and added a new required "Company name" field for
+       company_name, rather than guessing which one the single mock
+       field "really" meant.
+    3. The mock's code/city/country/postal_code/website/tax_id/notes
+       fields have no corresponding model field anywhere in SCHEMA.md —
+       removed from the template rather than invented as new columns.
+       The mock's single free-text address model field also doesn't
+       decompose into street/city/country/postal code, so the mock's
+       four separate address inputs were collapsed into the one real
+       `address` field.
+    """
+    status = forms.ChoiceField(choices=STATUS_CHOICES, required=False, initial="Active")
+
+    class Meta:
+        model = Supplier
+        fields = ["supplier_name", "company_name", "contact_person", "email", "phone", "address"]

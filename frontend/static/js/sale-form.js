@@ -1,101 +1,137 @@
 /* ==========================================================================
-   SALE-FORM.JS — New Sale form: header fields + line items, turning a valid
-   submit into a new "Completed" row in the sales table. Mirrors
-   modules/06_SALES.md's SaleCreateSerializer: quantity uses min_value=1
-   (documented explicitly, unlike the Purchase form's ordered_qty, which
-   the docs only constrain to non-negative).
+   SALE-FORM.JS — New Sale form (header + line items) and the real Cancel
+   action for sales/sales.html (Phase 7).
+
+   No requiredFieldIds at the top level — confirmed intentional, not an
+   oversight: SaleTransaction has no required field beyond its line items
+   (customer_name/notes are both blank=True on the model, matching
+   06_SALES.md's "Customer info | Optional" rule exactly). Line items are
+   still gated by extraValidate, same as before.
+
+   line-items.js itself is untouched — see purchase-form.js's header for
+   the same note on productOptionsHtml now coming from a real, server-
+   rendered #realProductOptions template instead of mock-catalog.js.
    ========================================================================== */
 
 (function () {
   "use strict";
 
+  var FV = window.FormValidation;
+
   var FORM_ID = "addSaleForm";
   var MODAL_ID = "addSaleModal";
-  var TABLE_BODY_ID = "salesTableBody";
 
   var lineItems = null;
+
+  var SERVER_FIELD_MAP = {
+    customer_name: "sale-customer-name",
+    notes: "sale-notes"
+  };
 
   function getField(id) {
     return document.getElementById(id);
   }
 
-  function formatCurrency(value) {
-    return "$" + (Number(value) || 0).toFixed(2);
+  function clearFormError() {
+    var box = getField("addSaleFormError");
+    if (box) { box.hidden = true; box.textContent = ""; }
   }
 
-  function formatDate(date) {
-    return date.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
+  function showFormError(message) {
+    var box = getField("addSaleFormError");
+    if (box) { box.hidden = false; box.textContent = message; }
   }
 
-  function buildInvoiceNumber() {
-    var now = new Date();
-    var y = now.getFullYear();
-    var m = String(now.getMonth() + 1).padStart(2, "0");
-    var d = String(now.getDate()).padStart(2, "0");
-    var rand = Math.floor(1000 + Math.random() * 9000);
-    return "INV-" + y + m + d + "-" + rand;
+  function applyServerErrors(errors) {
+    Object.keys(errors).forEach(function (fieldName) {
+      var entries = errors[fieldName];
+      var text = (entries && entries.length && entries[0].message) || "This field is invalid.";
+      if (fieldName === "items") {
+        showFormError(entries.map(function (e) { return e.message; }).join(" "));
+        return;
+      }
+      var fieldId = SERVER_FIELD_MAP[fieldName];
+      var field = fieldId ? getField(fieldId) : null;
+      if (field) {
+        FV.setFieldError(field, text);
+      } else {
+        showFormError(text);
+      }
+    });
   }
 
-  function computeTotal(items) {
-    return items.reduce(function (sum, item) {
-      return sum + (item.unitPrice * item.quantity) * (1 - item.discount / 100) * (1 + item.tax / 100);
-    }, 0);
+  function realProductOptionsHtml() {
+    var template = getField("realProductOptions");
+    return template ? template.innerHTML : "";
   }
 
-  function buildSaleRow(data) {
-    var row = document.createElement("tr");
+  function onSubmit(form) {
+    clearFormError();
+    var formData = new FormData(form);
+    formData.append("items_json", JSON.stringify(lineItems.getItems()));
 
-    var invoiceCell = document.createElement("td");
-    invoiceCell.className = "mono";
-    invoiceCell.textContent = data.invoiceNumber;
-    row.appendChild(invoiceCell);
-
-    var customerCell = document.createElement("td");
-    customerCell.textContent = data.customerName || "Walk-in customer";
-    row.appendChild(customerCell);
-
-    var dateCell = document.createElement("td");
-    dateCell.className = "mono";
-    dateCell.textContent = formatDate(new Date());
-    row.appendChild(dateCell);
-
-    var itemsCell = document.createElement("td");
-    itemsCell.className = "mono";
-    itemsCell.textContent = String(data.items.length);
-    row.appendChild(itemsCell);
-
-    var totalCell = document.createElement("td");
-    totalCell.className = "mono";
-    totalCell.textContent = formatCurrency(computeTotal(data.items));
-    row.appendChild(totalCell);
-
-    var statusCell = document.createElement("td");
-    var badge = document.createElement("span");
-    badge.className = "badge badge-success";
-    badge.textContent = "Completed";
-    statusCell.appendChild(badge);
-    row.appendChild(statusCell);
-
-    var actionsCell = document.createElement("td");
-    var actionsWrap = document.createElement("div");
-    actionsWrap.className = "widget-actions";
-    actionsWrap.appendChild(DomUtils.buildActionButton("View invoice", "icon-external"));
-    var cancelBtn = DomUtils.buildActionButton("Cancel sale", "icon-x");
-    cancelBtn.classList.add("reject");
-    actionsWrap.appendChild(cancelBtn);
-    actionsCell.appendChild(actionsWrap);
-    row.appendChild(actionsCell);
-
-    return row;
+    return fetch(form.getAttribute("action"), {
+      method: "POST",
+      body: formData
+    }).then(function (response) {
+      return response.json().catch(function () {
+        return null;
+      }).then(function (payload) {
+        if (response.ok) {
+          window.location.reload();
+          return true;
+        }
+        if (payload && payload.errors) {
+          applyServerErrors(payload.errors);
+        } else {
+          showFormError("Could not complete this sale. Please try again.");
+        }
+        return false;
+      });
+    }).catch(function () {
+      showFormError("Could not reach the server. Please try again.");
+      return false;
+    });
   }
 
-  function addSaleToTable(data) {
-    var tableBody = getField(TABLE_BODY_ID);
-    if (!tableBody) return;
-    tableBody.insertBefore(buildSaleRow(data), tableBody.firstChild);
+  /* -------------------------------------------------------- cancel --- */
+
+  function getCsrfToken() {
+    var input = document.querySelector('#addSaleForm input[name=csrfmiddlewaretoken]');
+    return input ? input.value : "";
+  }
+
+  function handleRowAction(event) {
+    var btn = event.target.closest(".sale-cancel-btn");
+    if (!btn) return;
+    var row = event.target.closest("tr[data-sale-id]");
+    if (!row) return;
+    var saleId = row.getAttribute("data-sale-id");
+
+    if (!confirm("Cancel this sale? Stock will be restored immediately.")) return;
+
+    var tableBody = getField("salesTableBody");
+    var base = tableBody ? tableBody.getAttribute("data-base-url") : "/sales/";
+    fetch(base + saleId + "/cancel/", {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() }
+    }).then(function (response) {
+      return response.json().catch(function () { return null; }).then(function (payload) {
+        if (response.ok) {
+          window.location.reload();
+          return;
+        }
+        alert((payload && payload.error) || "Could not cancel this sale.");
+      });
+    }).catch(function () {
+      alert("Could not reach the server. Please try again.");
+    });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    var tableBody = getField("salesTableBody");
+    if (tableBody) tableBody.addEventListener("click", handleRowAction);
+
     if (!getField(FORM_ID)) return;
 
     lineItems = LineItems.create({
@@ -103,21 +139,16 @@
       addButtonId: "sale-add-item",
       errorId: "sale-items-error",
       grandTotalId: "sale-grand-total",
-      productOptionsHtml: window.MockCatalog ? MockCatalog.productOptionsHtml : ""
+      productOptionsHtml: realProductOptionsHtml()
     });
 
     ModalForm.init({
       formId: FORM_ID,
       modalId: MODAL_ID,
+      resettableFieldIds: ["sale-customer-name", "sale-notes"],
       extraValidate: function () { return lineItems.validate({ minQuantity: 1 }); },
-      onReset: function () { lineItems.reset(); },
-      onSubmit: function () {
-        addSaleToTable({
-          invoiceNumber: buildInvoiceNumber(),
-          customerName: getField("sale-customer-name").value.trim(),
-          items: lineItems.getItems()
-        });
-      }
+      onReset: function () { lineItems.reset(); clearFormError(); },
+      onSubmit: onSubmit
     });
   });
 })();

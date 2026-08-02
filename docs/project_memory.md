@@ -110,6 +110,39 @@
 > name/email rejected, Active/Inactive status confirmed mapping to
 > `is_active` correctly, persistence confirmed after reload, for both
 > modules. 80 tests still passing (none added or broken).
+> **(15) Backend Phase 7** — Purchases, Sales, and Adjustments are real
+> now, including their full approval workflows, not just create+list:
+> `PurchaseOrderForm`/`SaleTransactionForm`/`AdjustmentForm`/`ReasonForm`,
+> a `parse_line_items()` helper shared by Purchase/Sale, and 12 new views
+> covering every documented state-machine transition (submit/approve/
+> reject/receive/cancel for Purchases; create/cancel for Sales; create/
+> approve/reject for Adjustments) — see §5. `AnyStaffMixin` on create/
+> submit/receive, `SupervisorRequiredMixin` on approve/reject/cancel,
+> confirmed live and by test that `SupervisorRequiredMixin` really is a
+> hierarchy (`[ADMIN, SUPERVISOR]`) — an Admin can approve, not just a
+> Supervisor. Unlike Phase 5/6, checking the mock modals against
+> `SCHEMA.md` found **no** BUG-31/35-style mismatch this time — all three
+> were already field-correct (each one's own template comment already
+> cited the exact model fields it was built from). The real gap was
+> `mock-catalog.js` keying products/suppliers by *name string*; retired
+> in favor of real, server-rendered `<option value="{{ pk }}">`, with
+> `line-items.js` itself untouched (it only ever cared about whatever
+> HTML it was handed). Added a real "Submit for approval" action to
+> Purchases' Draft rows — the mock had no way to move Draft → Pending at
+> all, a workflow gap rather than a field one — and a real Cancel action
+> now that `PurchaseService.cancel()` exists (Phase 3.4, BUG-25). Every
+> stock mutation routes through `InventoryService`/`PurchaseService`/
+> `SaleService`/`AdjustmentService` — never a raw model save. 20 new
+> tests, one per documented transition (submit→approve→receive, partial
+> receive, submit→reject, cancel from every cancellable state including
+> "partial-received stock isn't reversed", Sale create/insufficient-
+> stock/cancel, Adjustment approve-increase/approve-decrease/reject),
+> written alongside the views per this phase's explicit instruction, not
+> after the fact — 100 tests passing (was 80). Also found and fixed
+> BUG-36: a multi-line `{# #}` comment (BUG-03's exact root cause,
+> recurring) leaked text containing a literal `<template>` substring,
+> which the browser parsed as a real tag and swallowed the entire rest of
+> the page — worth remembering harder than BUG-03 alone implied.
 > See `docs/frontend_work.md` for a frontend-only summary.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
@@ -294,11 +327,24 @@ What is actually built and working:
   every genuinely-required field server-side. Mock fields with no schema
   backing (code/city/country/postal_code/website/tax_id/notes) removed;
   gained a "Company name" field the mock was missing (see §12 BUG-35).
-- ✅ **Purchase module** — list page + working "Add Purchase" modal with
-  repeatable line-items editor.
-- ✅ **Sale module** — list page + working "Add Sale" modal with repeatable
-  line-items editor.
-- ✅ **Adjustment module** — list page + working "Add Adjustment" modal.
+- ✅ **Purchase module (real, Phase 7)** — list page renders the real
+  `PurchaseOrder` queryset; "New purchase order" modal creates a real
+  Draft PO with real line items via `PurchaseOrderForm` +
+  `parse_line_items()`. Full state machine wired: Submit (`AnyStaffMixin`),
+  Approve/Reject (`SupervisorRequiredMixin`), Receive — full or partial
+  (`AnyStaffMixin`), Cancel from any cancellable state
+  (`SupervisorRequiredMixin`). Every transition calls `PurchaseService`,
+  never a raw model save.
+- ✅ **Sale module (real, Phase 7)** — list page renders the real
+  `SaleTransaction` queryset; "New sale" modal creates a real sale with
+  real line items via `SaleTransactionForm` + `parse_line_items()`,
+  routed through `SaleService.create_sale()` (pre-validates stock, deducts
+  on success). Cancel (`SupervisorRequiredMixin`) restores stock via
+  `SaleService.cancel_sale()`.
+- ✅ **Adjustment module (real, Phase 7)** — list page renders the real
+  `InventoryAdjustment` queryset; "New adjustment" modal creates a real
+  pending request via `AdjustmentForm` (`AnyStaffMixin`). Approve/Reject
+  (`SupervisorRequiredMixin`) route through `AdjustmentService`.
 - ✅ **Inventory module (read-only)** — list page only, deliberately **no**
   add/create modal (see §7/§18 — documented as API-driven only, never
   user-created directly).
@@ -585,32 +631,49 @@ nothing calls.
   `ai/forecasting/`, `ai/slow-moving/`, the 5 Phase 3.6 routes —
   `reports/`, `notifications/`, `users/`, `audit-log/`, `settings/` —
   plus `login/`) and 2 new real ones (Phase 4): `logout/`, `profile/`.
-- **Views (Phase 4 auth + Phase 5/6 real modules)**: `frontend/views.py`'s
+- **Views (Phase 4 auth + Phase 5/6/7 real modules)**: `frontend/views.py`'s
   `login`/`logout_view`/`profile_view` (Phase 4); `ProductListCreateView`
   (Phase 5 — GET renders the real `Product` queryset, POST validates via
   `ProductForm` and, in one transaction, creates the product and calls
   `InventoryService.initialize_for_product()` — see §6's Phase 5.5 note);
   `CategoryListCreateView`/`SupplierListCreateView` (Phase 6, identical
   shape — no `InventoryService` involvement, neither module touches
-  stock). All three are class-based `AnyStaffMixin` + `View`, all POST
-  handlers return JSON for the modal's `fetch()`-based submit (Phase 5.5
-  contract, used from the start for Categories/Suppliers — no sync-XHR
-  workaround needed). Every *other* view (Purchases, Sales, Inventory,
-  Adjustments, ...) is still the original one-line
-  `render(request, "<template>", {"active_nav": "<name>"})` — no forms,
-  no querysets, no auth checks, no ORM usage.
+  stock). Phase 7 adds 12 more views for the first time modules with real
+  *workflows*, not just CRUD, go live: `PurchaseListCreateView` +
+  `PurchaseSubmitView`/`PurchaseApproveView`/`PurchaseRejectView`/
+  `PurchaseReceiveView`/`PurchaseCancelView`; `SaleListCreateView` +
+  `SaleCancelView`; `AdjustmentListCreateView` +
+  `AdjustmentApproveView`/`AdjustmentRejectView`. Every stock-touching
+  transition delegates to `PurchaseService`/`SaleService`/
+  `AdjustmentService` (Phase 3) — creation views themselves never call
+  `InventoryService` directly except via those services (Purchase/
+  Adjustment *creation* stays out of stock entirely, matching
+  `PurchaseService`'s own docstring: "PO creation isn't part of this
+  service"). All action views return JSON for `fetch()`-based row actions
+  (confirm()/prompt() dialogs on the client, no bespoke confirmation
+  modals built beyond the one genuinely new UI needed — Purchase's
+  Receive modal, since partial receiving needs real per-line input).
+  Every *other* view (Inventory, Users & Roles, Settings, ...) is still
+  the original one-line `render()` — no forms, no querysets, no auth
+  checks, no ORM usage.
 - **RBAC (Phase 4 mechanism, real since Phase 5)**: `frontend/decorators.py`
   (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
   and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
   `SupervisorRequiredMixin`/`AnyStaffMixin`) — translated from
   `02_RBAC.md`'s `apps/rbac/decorators.py`/`apps/rbac/mixins.py`. Phase 4
-  proved it only against throwaway views; `AnyStaffMixin` now guards
-  `ProductListCreateView` (Phase 5) and `CategoryListCreateView`/
-  `SupplierListCreateView` (Phase 6) — 3 of 7 real-module views. Purchases/
-  Sales/Inventory/Adjustments are still unguarded (see §12/§16).
-  DRF's `BasePermission` classes (`IsAdmin` etc.) from the same doc were
-  explicitly out of scope — DRF isn't installed.
-- **Forms (Phase 5/6 — real ModelForms)**: `frontend/forms.py`'s
+  proved it only against throwaway views; `AnyStaffMixin` guards
+  `ProductListCreateView` (Phase 5), `CategoryListCreateView`/
+  `SupplierListCreateView` (Phase 6), and now (Phase 7) create/submit/
+  receive across Purchases/Sales/Adjustments; `SupervisorRequiredMixin`
+  gets its first real use ever on approve/reject/cancel across the same
+  three. **Confirmed live and by test (Phase 7) that `SupervisorRequiredMixin`
+  is genuinely a hierarchy** — `required_roles = [UserRole.ADMIN,
+  UserRole.SUPERVISOR]` — not an exact-role check that would incorrectly
+  lock out Admins; nothing needed fixing here. Inventory/Users & Roles/
+  Settings/etc. remain unguarded (see §12/§16). DRF's `BasePermission`
+  classes (`IsAdmin` etc.) from the same doc were explicitly out of
+  scope — DRF isn't installed.
+- **Forms (Phase 5/6/7 — real ModelForms)**: `frontend/forms.py`'s
   `ProductForm` (Phase 5) — server-side enforcement of what the JS modal
   previously only checked client-side (unique SKU/barcode via Django's
   automatic `ModelForm` uniqueness check, non-negative purchase/selling
@@ -627,6 +690,14 @@ nothing calls.
   existing template `<select>`) that the view maps to `is_active`, the
   same pattern as `ProductForm.initial_stock` being a form-only field
   consumed by the view.
+  `PurchaseOrderForm`/`SaleTransactionForm`/`AdjustmentForm`/`ReasonForm`
+  (Phase 7) — header-only forms; line items arrive as a JSON-encoded
+  `items_json` POST field, parsed by the new shared `parse_line_items()`
+  helper (also form-only-field territory: line items aren't a Django
+  formset here). Unlike Phase 5/6, checking these three against
+  `SCHEMA.md` found no mismatch to fix — see §15's Phase 7 entry.
+  `ReasonForm` is shared by `PurchaseOrder.reject`/`InventoryAdjustment.reject`,
+  the first form in this project reused across two unrelated models.
 - **Validators (Phase 4)**: `frontend/validators.py`'s
   `StrongPasswordValidator` — translated from `SECURITY.md`'s
   `apps/authentication/validators.py`, registered in
@@ -964,10 +1035,10 @@ re-enabled, nothing left disabled.
 - ✅ Products (real, Phase 5 — list + Add modal against the live DB, RBAC-guarded)
 - ✅ Categories (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded)
 - ✅ Suppliers (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded)
-- ✅ Purchases (list + Add modal, line-items)
-- ✅ Sales (list + Add modal, line-items)
+- ✅ Purchases (real, Phase 7 — list + Add modal against the live DB, full submit/approve/reject/receive/cancel workflow, RBAC-guarded)
+- ✅ Sales (real, Phase 7 — list + Add modal against the live DB, cancel restores stock, RBAC-guarded)
 - ✅ Inventory (list only, read-only by design)
-- ✅ Adjustments (list + Add modal)
+- ✅ Adjustments (real, Phase 7 — list + Add modal against the live DB, approve/reject workflow, RBAC-guarded)
 - ✅ Demand Forecasting (`/ai/forecasting/`)
 - ✅ Slow-Moving & Dead Stock (`/ai/slow-moving/`)
 - ✅ Reports (`/reports/`, Phase 3.6 — 9 report types listed, 2 with mock tables)
@@ -1056,15 +1127,17 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
 kept together here rather than scattered, since they were all found in
 the same phase):
 
-- **RBAC mechanism now applied to 3 real modules — Products (Phase 5),
-  Categories, Suppliers (Phase 6).** `AnyStaffMixin` guards all three
-  List/CreateViews (GET and POST); logged-out requests redirect to login,
-  confirmed live for all three. Every *other* page view (Purchases, Sales,
-  Inventory, Adjustments, Users & Roles, Settings, ...) is still a bare
-  `render()` with no `@login_required` and no role check — open to anyone,
-  logged in or not, until Phase 7+ wires each module in the same way. This
-  remains a real, current security gap for every module except Products/
-  Categories/Suppliers.
+- **RBAC mechanism now applied to 6 real modules — Products (Phase 5),
+  Categories, Suppliers (Phase 6), Purchases, Sales, Adjustments (Phase 7).**
+  `AnyStaffMixin` guards every create/list/submit/receive view;
+  `SupervisorRequiredMixin` (first real use, Phase 7) guards every
+  approve/reject/cancel view; logged-out requests redirect to login,
+  confirmed live and by test across all six. Every *other* page view
+  (Inventory, Users & Roles, Settings, Reports, Notifications, Audit Log)
+  is still a bare `render()` with no `@login_required` and no role
+  check — open to anyone, logged in or not, until those modules get
+  wired in the same way. This remains a real, current security gap for
+  every module except the six above.
 - **Phase 5 verification surfaced two pre-existing quirks in the shared
   modal architecture** (`modal-form.js`/`form-validation.js`), neither
   introduced this phase — see `docs/bugsfound.md` BUG-32/33 for full
@@ -1719,25 +1792,17 @@ Highest priority first:
 
 1. **Wire the RBAC decorator/mixin (§5, Phase 4) and the service layer
    into real module views, together, module by module** — Products
-   (Phase 5), Categories, Suppliers (Phase 6) are done, see §2/§5/§12/§15;
-   Purchases, Sales, Inventory, and Adjustments are next, in that order,
-   following the exact pattern Phase 5/6 established — these four
-   involve `InventoryService`/approval workflows, unlike Categories/
-   Suppliers, so expect that part to need real thought again, not pure
-   repetition. Replace static hardcoded rows module by module. The 5
-   Phase 3.6 pages (§11) join this same backlog — they're mocks like
-   everything else. Until this happens, every page except login/logout/
-   profile/Products/Categories/Suppliers remains open to anyone (§12) —
-   treat this as a security gap, not just an incompleteness note.
-   **When wiring Purchase/Sale to a real endpoint**: BUG-33 (§15, item 26)
-   is fixed at the source now (Phase 5.6, §15 item 27) — `extraValidate`
-   is safely short-circuited behind standard validation for every module,
-   so no workaround is needed there anymore. Still put any *async*
-   server-side work in `onSubmit`, not `extraValidate`, for a different,
-   still-true reason: `extraValidate` only supports a synchronous
-   true/false return (it runs, then the result is read immediately) —
-   only `onSubmit` supports the Phase 5.5 Promise contract (§4/§5) that
-   keeps the modal open until a real request settles.
+   (Phase 5), Categories, Suppliers (Phase 6), Purchases, Sales,
+   Adjustments (Phase 7) are done, see §2/§5/§12/§15. Inventory is next —
+   it's documented as read-only/API-driven only (§6/§13), so "wiring it
+   in" means a real list view, not a create form. After that, the
+   backlog is the 5 Phase 3.6 mock pages (Reports, Notifications, Users &
+   Roles, Audit Log, Settings, §11) — none of which involve
+   `InventoryService` or an approval workflow, closer to Categories/
+   Suppliers' shape than Purchase/Sale/Adjustment's. Until this happens,
+   every page except login/logout/profile and the 6 Phase 5/6/7 modules
+   remains open to anyone (§12) — treat this as a security gap, not just
+   an incompleteness note.
 2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
    (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
    `12_SEARCH.md`, `14_SETTINGS.md`).
@@ -1782,10 +1847,18 @@ Grouped by module, per the documentation:
   dedicated doc exists — see §12; built from `SCHEMA.md` + the existing
   `suppliers.html` UI, reconciled per BUG-35). Still pending: edit/
   deactivate views.
-- **Purchases/Sales/Inventory/Adjustments services**: ✅ **done**
-  (Backend Phase 3/3.4, §2) — `PurchaseService`, `SaleService`,
-  `InventoryService`, `AdjustmentService`, all with audit/notification
-  hooks (Phase 3.5). Not yet callable from any view/form (see §16 #3).
+- **Purchases/Sales/Adjustments services**: ✅ **done** (Backend Phase
+  3/3.4, §2) — `PurchaseService`, `SaleService`, `AdjustmentService`, all
+  with audit/notification hooks (Phase 3.5). ✅ **Now wired to real
+  views/forms too** (Phase 7, §2/§5/§15) — full create + approval-workflow
+  UI for all three, every stock mutation routed through the service
+  layer. Still pending: edit views, PO/sale detail pages (this project
+  has no per-entity detail routes anywhere yet, by design — see §13).
+- **Inventory service**: ✅ **done** (Backend Phase 3/3.8, §2) —
+  `InventoryService`, `select_for_update()`-safe. Still just a read-only
+  list page (§6/§13 — documented as API-driven only, deliberately no
+  create form) — "wiring it in" (§16 #1) means RBAC + a real queryset on
+  the existing list view, not a new create flow.
 - **Dashboard**: real KPI/stat aggregation replacing hardcoded numbers (no
   dedicated doc — infer from the existing `dashboard.html` mock + general
   patterns in other module docs).

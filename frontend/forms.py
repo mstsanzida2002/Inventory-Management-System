@@ -18,9 +18,20 @@ two directions found:
     fallback — fixed here by explicitly making them not required and
     falling back to the same default the model itself declares.
 """
+from decimal import Decimal, InvalidOperation
+import json
+
 from django import forms
 
-from frontend.models import Category, Product, Supplier, UnitOfMeasurement
+from frontend.models import (
+    Category,
+    InventoryAdjustment,
+    Product,
+    PurchaseOrder,
+    SaleTransaction,
+    Supplier,
+    UnitOfMeasurement,
+)
 from frontend.validators import validate_product_image
 
 # Category/Supplier's mock modal already has a real Active/Inactive
@@ -145,3 +156,169 @@ class SupplierForm(forms.ModelForm):
     class Meta:
         model = Supplier
         fields = ["supplier_name", "company_name", "contact_person", "email", "phone", "address"]
+
+
+# ---------------------------------------------------------------- Phase 7
+# Purchases/Sales/Adjustments. Unlike Products/Categories/Suppliers, the
+# existing purchases.html/sales.html/adjustments.html mock modals were
+# already field-correct against SCHEMA.md — each one's own template
+# comment already cites the exact model fields it's built from, and
+# checking field-by-field found no BUG-31/BUG-35-style mismatch here (see
+# docs/bugsfound.md's Phase 7 entry for the full check). The real gap was
+# elsewhere: mock-catalog.js's product/supplier <option value="..."> used
+# each item's *name* as the value, since no real Product/Supplier table
+# existed when it was built — now that one does (Phase 5/6), the real
+# templates render real Product/Supplier <option value="{{ pk }}">
+# instead, and mock-catalog.js is retired (see frontend/views.py).
+
+
+def parse_line_items(raw_json, min_quantity=1):
+    """Shared by PurchaseOrderForm/SaleTransactionForm's item validation.
+    line-items.js (kept exactly as-is per this phase's instruction) is
+    unaware of any of this — it just POSTs whatever HTML the product
+    <select> options carry as their value attribute back as
+    item['productLabel']. Since the real templates now render those
+    options with the product's real pk as the value (not its name, the
+    way mock-catalog.js did), 'productLabel' is a product pk string here,
+    not a display name — read literally as one, not renamed, since
+    renaming would suggest line-items.js's own wire format changed, and
+    it didn't.
+
+    Returns (items, errors): items is a list of dicts with real Product
+    instances and Decimal-coerced discount/tax (same coercion
+    InventoryService/PurchaseOrderItem.save() already do — see BUG-23/24);
+    errors is a list of user-facing strings, empty if items is usable.
+    """
+    try:
+        raw_items = json.loads(raw_json or "[]")
+    except (ValueError, TypeError):
+        return [], ["Line items could not be read. Please try again."]
+
+    if not isinstance(raw_items, list) or not raw_items:
+        return [], ["At least one line item is required."]
+
+    errors = []
+    parsed = []
+    for index, raw in enumerate(raw_items, start=1):
+        if not isinstance(raw, dict):
+            errors.append(f"Line {index}: malformed line item.")
+            continue
+
+        try:
+            product = Product.objects.get(pk=raw.get("productLabel"), is_active=True)
+        except (Product.DoesNotExist, ValueError, TypeError):
+            errors.append(f"Line {index}: product is invalid or no longer active.")
+            continue
+
+        try:
+            quantity = int(raw.get("quantity"))
+        except (TypeError, ValueError):
+            quantity = None
+        if quantity is None or quantity < min_quantity:
+            errors.append(f"Line {index}: quantity must be at least {min_quantity}.")
+            continue
+
+        try:
+            unit_price = Decimal(str(raw.get("unitPrice")))
+        except (InvalidOperation, TypeError, ValueError):
+            unit_price = None
+        if unit_price is None or unit_price < 0:
+            errors.append(f"Line {index}: unit price cannot be negative.")
+            continue
+
+        try:
+            discount = Decimal(str(raw.get("discount") or 0))
+            tax = Decimal(str(raw.get("tax") or 0))
+        except InvalidOperation:
+            errors.append(f"Line {index}: discount/tax must be numeric.")
+            continue
+        if discount < 0 or tax < 0:
+            errors.append(f"Line {index}: discount/tax cannot be negative.")
+            continue
+
+        parsed.append({
+            "product": product, "quantity": quantity,
+            "unit_price": unit_price, "discount": discount, "tax": tax,
+        })
+
+    return parsed, errors
+
+
+class PurchaseOrderForm(forms.ModelForm):
+    """Header fields only — line items arrive separately as items_json,
+    parsed by parse_line_items() (PurchaseOrderItem rows aren't part of a
+    ModelForm here since there's no formset in play; matches how
+    ProductForm.initial_stock/CategoryForm.status are already form-only
+    fields consumed directly by the view, Phase 5/6). expected_delivery/
+    notes match the model's own null=True/blank=True — genuinely optional,
+    not a mismatch to fix."""
+
+    class Meta:
+        model = PurchaseOrder
+        fields = ["supplier", "expected_delivery", "notes"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["expected_delivery"].required = False
+        self.fields["notes"].required = False
+        # 05_PURCHASES.md: "Inactive supplier | Cannot create PO for
+        # inactive supplier."
+        self.fields["supplier"].queryset = Supplier.objects.filter(is_active=True)
+
+
+class SaleTransactionForm(forms.ModelForm):
+    """Header fields only, same split as PurchaseOrderForm above.
+    customer_name/notes are both genuinely optional on the model
+    (blank=True) — matches 06_SALES.md's "Customer info | Optional" rule
+    exactly, no mismatch to fix. No status field here (unlike Category/
+    Supplier) — SaleTransaction.status defaults to COMPLETED and the
+    documented workflow has no draft/pending state for a sale; setting it
+    is SaleService.cancel_sale()'s job, not this form's."""
+
+    class Meta:
+        model = SaleTransaction
+        fields = ["customer_name", "notes"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["customer_name"].required = False
+        self.fields["notes"].required = False
+
+
+class AdjustmentForm(forms.ModelForm):
+    """product/adjustment_type/quantity/reason match InventoryAdjustment
+    field-for-field already — the mock's own template comment already
+    cites this exact field list, and checking against SCHEMA.md found no
+    mismatch. Deliberately did NOT restrict the product queryset to
+    is_active=True the way Product/Purchase/Sale forms do: no documented
+    rule (SCHEMA.md, or otherwise) says an adjustment can only target an
+    active product, and correcting a stale count on a product being
+    deactivated is a legitimate real-world reason for one — not inventing
+    a restriction the docs don't state."""
+
+    class Meta:
+        model = InventoryAdjustment
+        fields = ["product", "adjustment_type", "quantity", "reason"]
+
+    def clean_quantity(self):
+        # PositiveIntegerField's own form field allows 0, but an
+        # adjustment of exactly 0 units is a no-op, not a real request —
+        # same "reject a technically-valid-but-meaningless value" call as
+        # parse_line_items()'s min_quantity=1 above.
+        value = self.cleaned_data.get("quantity")
+        if value is not None and value <= 0:
+            raise forms.ValidationError("Quantity must be greater than zero.")
+        return value
+
+
+class ReasonForm(forms.Form):
+    """Shared by PurchaseOrder.reject and InventoryAdjustment.reject —
+    both services require a non-empty reason (PurchaseService.reject()'s
+    `reason` param feeds PurchaseOrder.rejected_reason, a required-content
+    TextField in practice even though blank=True at the model level; same
+    for InventoryAdjustment.rejected_reason). One shared form instead of
+    two identical ones."""
+    reason = forms.CharField(widget=forms.Textarea, min_length=1, error_messages={
+        "required": "A reason is required.",
+        "min_length": "A reason is required.",
+    })

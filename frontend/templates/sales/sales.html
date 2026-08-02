@@ -25,28 +25,28 @@
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
       <div>
-        <div class="stat-strip-value">$4,714.95</div>
+        <div class="stat-strip-value">${{ counts.revenue_today|floatformat:2 }}</div>
         <div class="stat-strip-label">Revenue today</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-receipt"></use></svg>
       <div>
-        <div class="stat-strip-value">2</div>
+        <div class="stat-strip-value">{{ counts.transactions_today }}</div>
         <div class="stat-strip-label">Transactions today</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-trending-up"></use></svg>
       <div>
-        <div class="stat-strip-value">$589.37</div>
+        <div class="stat-strip-value">${{ counts.avg_order_30d|floatformat:2 }}</div>
         <div class="stat-strip-label">Avg. order value, 30d</div>
       </div>
     </div>
     <div class="stat-strip-item is-danger">
       <svg class="icon icon-lg"><use href="#icon-alert-circle"></use></svg>
       <div>
-        <div class="stat-strip-value">2</div>
+        <div class="stat-strip-value">{{ counts.cancelled_30d }}</div>
         <div class="stat-strip-label">Cancelled, 30d</div>
       </div>
     </div>
@@ -80,126 +80,37 @@
               <th></th>
             </tr>
           </thead>
-          <tbody id="salesTableBody">
-
-            <tr>
-              <td class="mono">INV-20260726-0301</td>
-              <td>Order Café Bistro</td>
-              <td class="mono">26 Jul 2026</td>
-              <td class="mono">2</td>
-              <td class="mono">$342.00</td>
-              <td><span class="badge badge-success">Completed</span></td>
+          <tbody id="salesTableBody" data-base-url="{% url 'frontend:sales' %}">
+            {% for sale in sales %}
+            <tr data-sale-id="{{ sale.pk }}">
+              <td class="mono">{{ sale.invoice_number }}</td>
+              <td>{{ sale.customer_name|default:"Walk-in customer" }}</td>
+              <td class="mono">{{ sale.transaction_date|date:"d M Y" }}</td>
+              <td class="mono">{{ sale.item_count }}</td>
+              <td class="mono">${{ sale.total_amount|floatformat:2 }}</td>
+              <td>
+                {% if sale.is_cancelled %}
+                  <span class="badge badge-danger">Cancelled</span>
+                {% else %}
+                  <span class="badge badge-success">Completed</span>
+                {% endif %}
+              </td>
               <td>
                 <div class="widget-actions">
                   <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                  {% if not sale.is_cancelled %}
+                    <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                  {% endif %}
                 </div>
               </td>
             </tr>
-
+            {% empty %}
             <tr>
-              <td class="mono">INV-20260726-0300</td>
-              <td>Walk-in customer</td>
-              <td class="mono">26 Jul 2026</td>
-              <td class="mono">1</td>
-              <td class="mono">$89.99</td>
-              <td><span class="badge badge-success">Completed</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
+              <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                No sales yet — click "New sale" to record the first one.
               </td>
             </tr>
-
-            <tr>
-              <td class="mono">INV-20260725-0298</td>
-              <td>Meridian Facilities Group</td>
-              <td class="mono">25 Jul 2026</td>
-              <td class="mono">6</td>
-              <td class="mono">$1,240.50</td>
-              <td><span class="badge badge-success">Completed</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">INV-20260725-0297</td>
-              <td>Walk-in customer</td>
-              <td class="mono">25 Jul 2026</td>
-              <td class="mono">3</td>
-              <td class="mono">$214.75</td>
-              <td><span class="badge badge-success">Completed</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">INV-20260724-0291</td>
-              <td>Union Street Clinic</td>
-              <td class="mono">24 Jul 2026</td>
-              <td class="mono">4</td>
-              <td class="mono">$560.00</td>
-              <td><span class="badge badge-danger">Cancelled</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">INV-20260723-0286</td>
-              <td>Walk-in customer</td>
-              <td class="mono">23 Jul 2026</td>
-              <td class="mono">1</td>
-              <td class="mono">$27.40</td>
-              <td><span class="badge badge-success">Completed</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">INV-20260722-0280</td>
-              <td>Parkside Retail Group</td>
-              <td class="mono">22 Jul 2026</td>
-              <td class="mono">8</td>
-              <td class="mono">$2,105.30</td>
-              <td><span class="badge badge-success">Completed</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">INV-20260720-0271</td>
-              <td>Walk-in customer</td>
-              <td class="mono">20 Jul 2026</td>
-              <td class="mono">2</td>
-              <td class="mono">$145.00</td>
-              <td><span class="badge badge-danger">Cancelled</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
+            {% endfor %}
           </tbody>
         </table>
       </div>
@@ -207,7 +118,7 @@
 
     <div class="panel-body" style="padding-top:0;">
       <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing 1–8 of 301 sales</p>
+        <p class="text-slate text-xs" style="margin:0;">Showing {{ sales|length }} of {{ sales|length }} sales</p>
         <div class="flex gap-2">
           <button class="btn btn-secondary" type="button" disabled>Previous</button>
           <button class="btn btn-secondary" type="button">Next</button>
@@ -215,6 +126,15 @@
       </div>
     </div>
   </div>
+
+  {% comment %}
+    Real product options for the line-items editor (Phase 7 — replaces
+    mock-catalog.js's name-keyed options; retired, see project_memory.md).
+    A template tag so it's inert markup, read by sale-form.js at init.
+  {% endcomment %}
+  <template id="realProductOptions">
+    {% for product in products %}<option value="{{ product.pk }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
+  </template>
 
   {% comment %}
     New sale modal
@@ -236,7 +156,9 @@
         </button>
       </div>
 
-      <form class="modal-body" id="addSaleForm" novalidate>
+      <form class="modal-body" id="addSaleForm" method="post" action="{% url 'frontend:sales' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addSaleFormError" hidden></div>
         <div class="form-grid">
 
           <div class="field">
@@ -296,7 +218,6 @@
   <script src="{% static 'js/form-validation.js' %}"></script>
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
-  <script src="{% static 'js/mock-catalog.js' %}"></script>
   <script src="{% static 'js/line-items.js' %}"></script>
   <script src="{% static 'js/sale-form.js' %}"></script>
 {% endblock %}

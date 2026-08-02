@@ -1,16 +1,24 @@
 /* ==========================================================================
-   ADJUSTMENT-FORM.JS — New Adjustment form: field config + turning a valid
-   submit into a new "Pending approval" row in the adjustments table.
-   Single-entity form (no line items) — plugs straight into modal-form.js
-   like product-form.js / category-form.js / supplier-form.js.
+   ADJUSTMENT-FORM.JS — New Adjustment form and the real Approve/Reject
+   row actions for adjustments/adjustments.html (Phase 7). Single-entity
+   form (no line items) — plugs straight into modal-form.js like
+   product-form.js/category-form.js/supplier-form.js, following the same
+   fetch()-based onSubmit contract (Phase 5.5).
+
+   The adjustment-type <select>'s option values changed from the mock's
+   "Increase"/"Decrease" (display-only, since nothing read them before) to
+   the model's real lowercase choice values ("increase"/"decrease") — the
+   ModelForm validates against AdjustmentType.choices exactly, so the
+   posted value has to match one of those, not just look right.
    ========================================================================== */
 
 (function () {
   "use strict";
 
+  var FV = window.FormValidation;
+
   var FORM_ID = "addAdjustmentForm";
   var MODAL_ID = "addAdjustmentModal";
-  var TABLE_BODY_ID = "adjustmentsTableBody";
 
   var FIELD_LABELS = {
     "adjustment-product": "Product",
@@ -28,89 +36,120 @@
 
   var NON_NEGATIVE_FIELD_IDS = ["adjustment-quantity"];
 
-  var referenceCounter = 521; // seed matches the highest AJ-#### already in the mock table
+  var SERVER_FIELD_MAP = {
+    product: "adjustment-product",
+    adjustment_type: "adjustment-type",
+    quantity: "adjustment-quantity",
+    reason: "adjustment-reason"
+  };
 
   function getField(id) {
     return document.getElementById(id);
   }
 
-  function buildReference() {
-    referenceCounter += 1;
-    return "AJ-" + String(referenceCounter).padStart(4, "0");
+  function clearFormError() {
+    var box = getField("addAdjustmentFormError");
+    if (box) { box.hidden = true; box.textContent = ""; }
   }
 
-  function buildAdjustmentRow(data) {
-    var row = document.createElement("tr");
-
-    var refCell = document.createElement("td");
-    refCell.className = "mono";
-    refCell.textContent = data.reference;
-    row.appendChild(refCell);
-
-    var productCell = document.createElement("td");
-    productCell.textContent = data.productLabel;
-    row.appendChild(productCell);
-
-    var typeCell = document.createElement("td");
-    var typeBadge = document.createElement("span");
-    typeBadge.className = "badge " + (data.adjustmentType === "Increase" ? "badge-success" : "badge-danger");
-    typeBadge.textContent = data.adjustmentType;
-    typeCell.appendChild(typeBadge);
-    row.appendChild(typeCell);
-
-    var qtyCell = document.createElement("td");
-    qtyCell.className = "mono";
-    qtyCell.textContent = data.quantity + (data.quantity === 1 ? " unit" : " units");
-    row.appendChild(qtyCell);
-
-    var reasonCell = document.createElement("td");
-    reasonCell.textContent = data.reason;
-    row.appendChild(reasonCell);
-
-    var requestedByCell = document.createElement("td");
-    requestedByCell.textContent = "You";
-    row.appendChild(requestedByCell);
-
-    var statusCell = document.createElement("td");
-    var statusBadge = document.createElement("span");
-    statusBadge.className = "badge badge-warning";
-    statusBadge.textContent = "Pending approval";
-    statusCell.appendChild(statusBadge);
-    row.appendChild(statusCell);
-
-    var actionsCell = document.createElement("td");
-    var actionsWrap = document.createElement("div");
-    actionsWrap.className = "widget-actions";
-    var approveBtn = DomUtils.buildActionButton("Approve adjustment", "icon-check-circle");
-    approveBtn.classList.add("approve");
-    var rejectBtn = DomUtils.buildActionButton("Reject adjustment", "icon-x");
-    rejectBtn.classList.add("reject");
-    actionsWrap.appendChild(approveBtn);
-    actionsWrap.appendChild(rejectBtn);
-    actionsCell.appendChild(actionsWrap);
-    row.appendChild(actionsCell);
-
-    return row;
+  function showFormError(message) {
+    var box = getField("addAdjustmentFormError");
+    if (box) { box.hidden = false; box.textContent = message; }
   }
 
-  function addAdjustmentToTable(data) {
-    var tableBody = getField(TABLE_BODY_ID);
-    if (!tableBody) return;
-    tableBody.insertBefore(buildAdjustmentRow(data), tableBody.firstChild);
+  function applyServerErrors(errors) {
+    Object.keys(errors).forEach(function (fieldName) {
+      var fieldId = SERVER_FIELD_MAP[fieldName];
+      var field = fieldId ? getField(fieldId) : null;
+      var entries = errors[fieldName];
+      var text = (entries && entries.length && entries[0].message) || "This field is invalid.";
+      if (field) {
+        FV.setFieldError(field, text);
+      } else {
+        showFormError(text);
+      }
+    });
   }
 
-  function collectFormData() {
-    var productSelect = getField("adjustment-product");
-    return {
-      reference: buildReference(),
-      productLabel: productSelect.value,
-      adjustmentType: getField("adjustment-type").value,
-      quantity: Number(getField("adjustment-quantity").value),
-      reason: getField("adjustment-reason").value.trim()
-    };
+  function onSubmit(form) {
+    clearFormError();
+    return fetch(form.getAttribute("action"), {
+      method: "POST",
+      body: new FormData(form)
+    }).then(function (response) {
+      return response.json().catch(function () {
+        return null;
+      }).then(function (payload) {
+        if (response.ok) {
+          window.location.reload();
+          return true;
+        }
+        if (payload && payload.errors) {
+          applyServerErrors(payload.errors);
+        } else {
+          showFormError("Could not submit this adjustment. Please try again.");
+        }
+        return false;
+      });
+    }).catch(function () {
+      showFormError("Could not reach the server. Please try again.");
+      return false;
+    });
+  }
+
+  /* --------------------------------------------------- row actions --- */
+
+  function getCsrfToken() {
+    var input = document.querySelector('#addAdjustmentForm input[name=csrfmiddlewaretoken]');
+    return input ? input.value : "";
+  }
+
+  function postAction(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() },
+      body: body || new FormData()
+    }).then(function (response) {
+      return response.json().catch(function () { return null; }).then(function (payload) {
+        return { ok: response.ok, payload: payload };
+      });
+    });
+  }
+
+  function handleRowAction(event) {
+    var row = event.target.closest("tr[data-adjustment-id]");
+    if (!row) return;
+    var adjustmentId = row.getAttribute("data-adjustment-id");
+    var tableBody = getField("adjustmentsTableBody");
+    var base = tableBody ? tableBody.getAttribute("data-base-url") : "/adjustments/";
+
+    if (event.target.closest(".adj-approve-btn")) {
+      if (!confirm("Approve this adjustment? Stock will change immediately.")) return;
+      postAction(base + adjustmentId + "/approve/").then(reloadOrAlert);
+    } else if (event.target.closest(".adj-reject-btn")) {
+      var reason = prompt("Reason for rejecting this adjustment:");
+      if (reason === null) return;
+      if (!reason.trim()) { alert("A reason is required to reject an adjustment."); return; }
+      var formData = new FormData();
+      formData.append("reason", reason.trim());
+      postAction(base + adjustmentId + "/reject/", formData).then(reloadOrAlert);
+    }
+  }
+
+  function reloadOrAlert(result) {
+    if (result.ok) {
+      window.location.reload();
+      return;
+    }
+    var message = (result.payload && (result.payload.error ||
+      (result.payload.errors && Object.values(result.payload.errors)[0]))) || "Something went wrong.";
+    alert(typeof message === "string" ? message : "Something went wrong.");
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    var tableBody = getField("adjustmentsTableBody");
+    if (tableBody) tableBody.addEventListener("click", handleRowAction);
+
     if (!getField(FORM_ID)) return;
 
     ModalForm.init({
@@ -119,7 +158,8 @@
       fieldLabels: FIELD_LABELS,
       requiredFieldIds: REQUIRED_FIELD_IDS,
       nonNegativeFieldIds: NON_NEGATIVE_FIELD_IDS,
-      onSubmit: function () { addAdjustmentToTable(collectFormData()); }
+      onReset: clearFormError,
+      onSubmit: onSubmit
     });
   });
 })();

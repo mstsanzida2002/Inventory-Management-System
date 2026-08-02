@@ -68,6 +68,7 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-33 | `modal-form.js` evaluates `extraValidate()` unconditionally, even when standard field validation already failed | N/A — implementation bug (pre-existing architecture; only became costly once an `extraValidate` hook did real network work, in Phase 5) | ✅ Fixed (Phase 5.6, in the shared file) |
 | BUG-34 | Product creation wrote a real `InventoryMovement` with no true cause, violating this project's own prior architecture decision | `docs/project_memory.md` §13 ("No 'Add Inventory Transaction' modal" decision) — Phase 5's own implementation | ✅ Fixed (Phase 5.5) |
 | BUG-35 | Category/Supplier mock modals had fields with no schema backing (category parent/code; supplier code/city/country/postal_code/website/tax_id/notes) and mislabeled most of Supplier's genuinely-required fields as optional | `SCHEMA.md` §2 Category, §3 Supplier vs. Phase 3's hand-built `categories.html`/`suppliers.html` modals | ✅ Fixed (Phase 6) |
+| BUG-36 | A multi-line Django `{# #}` comment leaked as literal text containing a `<template>` substring, which the browser parsed as a real tag and swallowed the rest of the page's body into an inert fragment | N/A — implementation bug (recurrence of BUG-03's exact root cause, in a new file, with a much worse blast radius) | ✅ Fixed (Phase 7) |
 
 ---
 
@@ -820,3 +821,53 @@ address-shaped inputs collapsed into the one real `address` field.
 Category's "Active/Inactive" status select and Supplier's already
 matched their models 1:1 (`is_active`) and needed no field changes,
 just backend wiring.
+
+### BUG-36 — Multi-line `{# #}` comment's leaked text broke the whole page
+**Root cause:** Same underlying defect as BUG-03 — Django's `{# comment #}`
+tag is single-line only, so a comment whose closing `#}` isn't on the same
+line as the opening `{#` fails to parse as a comment at all and renders
+as literal page text. `purchases.html`'s new `#realProductOptions`
+`<template>` block was introduced with exactly this shape:
+```
+{# Real product <option>s for the line-items editor (Phase 7 — replaces
+   mock-catalog.js's name-keyed options; retired, see project_memory.md).
+   A <template> so it's inert markup, read by purchase-form.js at init. #}
+<template id="realProductOptions">
+```
+BUG-03's instances just left visible junk text on the page — annoying but
+harmless. This one was much worse: the leaked comment text itself
+contained the literal substring `<template>` (from "A `<template>` so
+it's inert markup..."), unescaped, in the middle of the HTML stream. The
+browser's parser has no way to know this came from a doc comment — it saw
+a real `<template>` start tag and did exactly what the spec says: entered
+template-content parsing mode and started routing everything that
+followed into that element's inert `.content` fragment. The *next* real
+tag encountered was the actual, intended `<template id="realProductOptions">`
+block, which nested one level deeper inside the fake one; its own
+`</template>` only closed itself, leaving the outer (fake, comment-
+sourced) template still open with no matching close anywhere in the
+document. Every real sibling after that point — both real product
+`<option>`s' container, the entire Add Purchase Order modal, the Receive
+Items modal, and the page's own `<script>` tags — ended up nested inside
+that dead template fragment: present in `document.body.innerHTML`'s
+string output (which is why the raw response body looked fine), but
+completely invisible to `document.querySelector`/`getElementById` and
+therefore to every click handler and `data-modal-open` trigger on the
+page. `modal.js` never errored — there was simply nothing live for it to
+find.
+**Source Documentation:** N/A — implementation bug, not sourced from any
+project doc. Found via Playwright reporting `#addPurchaseModal` as 0
+elements despite the raw HTTP response clearly containing that markup;
+diagnosed by walking the live DOM tree (`document.body.children`, 2 deep)
+down to a stray `<option>`/`<template>` pair sitting where the real modal
+should have been.
+**Status:** ✅ Fixed (Phase 7) — converted to `{% comment %}...{% endcomment %}`,
+the same fix BUG-03 already established as this project's standard for
+any comment that needs more than one line. Re-verified live: the modal
+element count went from 0 to 1, and the full create → submit → approve →
+receive flow worked end to end afterward. Worth remembering going
+forward, more strongly than BUG-03 already implied: a leaked Django
+comment isn't just cosmetic — if its text happens to contain something
+that looks like an HTML tag (`<template>`, `<select>`, `<table>`, and a
+few others all have special parsing rules), it can silently take down
+everything after it on the page.

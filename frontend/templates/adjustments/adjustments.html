@@ -25,28 +25,28 @@
     <div class="stat-strip-item is-warning">
       <svg class="icon icon-lg"><use href="#icon-clock"></use></svg>
       <div>
-        <div class="stat-strip-value">4</div>
+        <div class="stat-strip-value">{{ counts.pending }}</div>
         <div class="stat-strip-label">Pending approval</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-check-circle"></use></svg>
       <div>
-        <div class="stat-strip-value">19</div>
+        <div class="stat-strip-value">{{ counts.approved_month }}</div>
         <div class="stat-strip-label">Approved this month</div>
       </div>
     </div>
     <div class="stat-strip-item is-danger">
       <svg class="icon icon-lg"><use href="#icon-x"></use></svg>
       <div>
-        <div class="stat-strip-value">3</div>
+        <div class="stat-strip-value">{{ counts.rejected_month }}</div>
         <div class="stat-strip-label">Rejected this month</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-sliders"></use></svg>
       <div>
-        <div class="stat-strip-value">26</div>
+        <div class="stat-strip-value">{{ counts.total_30d }}</div>
         <div class="stat-strip-label">Total requests, 30d</div>
       </div>
     </div>
@@ -89,156 +89,43 @@
               <th></th>
             </tr>
           </thead>
-          <tbody id="adjustmentsTableBody">
-
-            <tr>
-              <td class="mono">AJ-0521</td>
+          <tbody id="adjustmentsTableBody" data-base-url="{% url 'frontend:adjustments' %}">
+            {% for adjustment in adjustments %}
+            <tr data-adjustment-id="{{ adjustment.pk }}">
+              <td class="mono">AJ-{{ adjustment.pk|stringformat:"04d" }}</td>
               <td>
-                Nitrile Gloves, Box of 100
-                <div class="cell-sub">SKU-20194</div>
+                {{ adjustment.product.name }}
+                <div class="cell-sub">{{ adjustment.product.sku }}</div>
               </td>
-              <td><span class="badge badge-danger">Decrease</span></td>
-              <td class="mono">12 units</td>
-              <td>Water damage during storage</td>
-              <td>Kito Fernandes</td>
-              <td><span class="badge badge-warning">Pending approval</span></td>
+              <td>
+                {% if adjustment.adjustment_type == 'increase' %}
+                  <span class="badge badge-success">Increase</span>
+                {% else %}
+                  <span class="badge badge-danger">Decrease</span>
+                {% endif %}
+              </td>
+              <td class="mono">{{ adjustment.quantity }} unit{{ adjustment.quantity|pluralize }}</td>
+              <td>{{ adjustment.reason }}</td>
+              <td>{{ adjustment.requested_by.get_full_name }}</td>
+              <td><span class="badge {{ adjustment.status_badge }}">{{ adjustment.get_status_display }}</span></td>
               <td>
                 <div class="widget-actions">
-                  <button class="pill-btn approve" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                  {% if adjustment.status == 'pending' %}
+                    <button class="pill-btn approve adj-approve-btn" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                    <button class="pill-btn reject adj-reject-btn" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                  {% else %}
+                    <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
+                  {% endif %}
                 </div>
               </td>
             </tr>
-
+            {% empty %}
             <tr>
-              <td class="mono">AJ-0520</td>
-              <td>
-                Cordless Drill, 18V
-                <div class="cell-sub">SKU-11832</div>
-              </td>
-              <td><span class="badge badge-success">Increase</span></td>
-              <td class="mono">6 units</td>
-              <td>Recount found miscounted units</td>
-              <td>Priya Nair</td>
-              <td><span class="badge badge-warning">Pending approval</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn approve" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
+              <td colspan="8" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                No adjustment requests yet — click "New adjustment" to create the first one.
               </td>
             </tr>
-
-            <tr>
-              <td class="mono">AJ-0519</td>
-              <td>
-                Wireless Barcode Scanner
-                <div class="cell-sub">SKU-80339</div>
-              </td>
-              <td><span class="badge badge-danger">Decrease</span></td>
-              <td class="mono">1 unit</td>
-              <td>Unit missing — reported to security</td>
-              <td>Priya Nair</td>
-              <td><span class="badge badge-warning">Pending approval</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn approve" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">AJ-0512</td>
-              <td>
-                A4 Copy Paper, Ream
-                <div class="cell-sub">SKU-30456</div>
-              </td>
-              <td><span class="badge badge-danger">Decrease</span></td>
-              <td class="mono">18 units</td>
-              <td>Stock recount</td>
-              <td>Kito Fernandes</td>
-              <td><span class="badge badge-warning">Pending approval</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn approve" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                  <button class="pill-btn reject" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">AJ-0510</td>
-              <td>
-                Safety Helmet, Class E
-                <div class="cell-sub">SKU-40217</div>
-              </td>
-              <td><span class="badge badge-danger">Decrease</span></td>
-              <td class="mono">3 units</td>
-              <td>Failed quality inspection</td>
-              <td>Amara Tenzin</td>
-              <td><span class="badge badge-success">Approved</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">AJ-0509</td>
-              <td>
-                Stainless Water Bottle, 750ml
-                <div class="cell-sub">SKU-50221</div>
-              </td>
-              <td><span class="badge badge-success">Increase</span></td>
-              <td class="mono">20 units</td>
-              <td>Cycle count correction</td>
-              <td>Priya Nair</td>
-              <td><span class="badge badge-success">Approved</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">AJ-0506</td>
-              <td>
-                LED Desk Lamp
-                <div class="cell-sub">SKU-60214</div>
-              </td>
-              <td><span class="badge badge-danger">Decrease</span></td>
-              <td class="mono">4 units</td>
-              <td>Customer return — defective</td>
-              <td>Amara Tenzin</td>
-              <td><span class="badge badge-danger">Rejected</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td class="mono">AJ-0503</td>
-              <td>
-                Industrial Shelving Unit
-                <div class="cell-sub">SKU-70118</div>
-              </td>
-              <td><span class="badge badge-success">Increase</span></td>
-              <td class="mono">2 units</td>
-              <td>Found misplaced units in Warehouse B</td>
-              <td>Kito Fernandes</td>
-              <td><span class="badge badge-danger">Rejected</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
+            {% endfor %}
           </tbody>
         </table>
       </div>
@@ -246,7 +133,7 @@
 
     <div class="panel-body" style="padding-top:0;">
       <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing 1–8 of 26 adjustment requests</p>
+        <p class="text-slate text-xs" style="margin:0;">Showing {{ adjustments|length }} of {{ adjustments|length }} adjustment requests</p>
         <div class="flex gap-2">
           <button class="btn btn-secondary" type="button" disabled>Previous</button>
           <button class="btn btn-secondary" type="button">Next</button>
@@ -259,7 +146,7 @@
     New adjustment modal
     Fields sourced from InventoryAdjustment in database/SCHEMA.md, which match
     the documented create request in api/API_CONTRACTS.md exactly: product,
-    adjustment_type, quantity, reason. All four are required — `reason` is a
+    adjustment_type, quantity, reason. All four are required — reason is a
     plain (non-blank) TextField in the model, so unlike other modules' notes
     fields, it is NOT optional here. status/requested_by/approved_by/approved_at
     /rejected_reason are all system-set, not part of this form.
@@ -277,7 +164,9 @@
         </button>
       </div>
 
-      <form class="modal-body" id="addAdjustmentForm" novalidate>
+      <form class="modal-body" id="addAdjustmentForm" method="post" action="{% url 'frontend:adjustments' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addAdjustmentFormError" hidden></div>
         <div class="form-grid">
 
           <div class="field field-full">
@@ -285,14 +174,9 @@
             <div class="select-wrap">
               <select class="input select" id="adjustment-product" name="product">
                 <option value="" selected disabled>Select product</option>
-                <option>Nitrile Gloves, Box of 100 (SKU-20194)</option>
-                <option>Cordless Drill, 18V (SKU-11832)</option>
-                <option>A4 Copy Paper, Ream (SKU-30456)</option>
-                <option>Safety Helmet, Class E (SKU-40217)</option>
-                <option>Stainless Water Bottle, 750ml (SKU-50221)</option>
-                <option>LED Desk Lamp (SKU-60214)</option>
-                <option>Industrial Shelving Unit (SKU-70118)</option>
-                <option>Wireless Barcode Scanner (SKU-80339)</option>
+                {% for product in products %}
+                  <option value="{{ product.pk }}">{{ product.name }} ({{ product.sku }})</option>
+                {% endfor %}
               </select>
               <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
             </div>
@@ -304,8 +188,8 @@
             <div class="select-wrap">
               <select class="input select" id="adjustment-type" name="adjustment_type">
                 <option value="" selected disabled>Select type</option>
-                <option value="Increase">Increase</option>
-                <option value="Decrease">Decrease</option>
+                <option value="increase">Increase</option>
+                <option value="decrease">Decrease</option>
               </select>
               <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
             </div>
@@ -314,7 +198,7 @@
 
           <div class="field">
             <label class="form-label" for="adjustment-quantity">Quantity<span class="required-mark">*</span></label>
-            <input class="input input-plain" type="number" id="adjustment-quantity" name="quantity" placeholder="0" min="0" step="1">
+            <input class="input input-plain" type="number" id="adjustment-quantity" name="quantity" placeholder="0" min="1" step="1">
             <div class="field-error" id="adjustment-quantity-error" role="alert"></div>
           </div>
 

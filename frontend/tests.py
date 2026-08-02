@@ -7,6 +7,7 @@ frontend/notifications.py). Phase 4 adds tests for real auth (login/logout/
 profile, frontend/views.py) and the RBAC decorator/mixin (frontend/decorators.py,
 frontend/mixins.py).
 """
+import json
 from datetime import timedelta
 from decimal import Decimal
 
@@ -38,7 +39,9 @@ from frontend.models import (
     Product,
     PurchaseOrder,
     PurchaseOrderItem,
+    SaleItem,
     SaleStatus,
+    SaleTransaction,
     Supplier,
     SystemSettings,
     UserRole,
@@ -1131,3 +1134,485 @@ class ProductCreateViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         product = Product.objects.get(name='Test Gadget')
         self.assertEqual(product.current_stock, 0)
+
+
+# ------------------------------------------------------------- Purchases
+# Phase 7. Real HTTP round-trips through frontend/urls.py, per this
+# task's own instruction: "one test per approval-workflow transition...
+# confirming the correct service method fires and stock changes exactly
+# as expected — not just that the view returns 200."
+
+class PurchaseWorkflowViewTests(TestCase):
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='pobstaff', email='pobstaff@example.com', password='x',
+            employee_id='EMP-5001', full_name='PO Staffer', role=UserRole.STAFF,
+        )
+        self.supervisor = User.objects.create_user(
+            username='pobsuper', email='pobsuper@example.com', password='x',
+            employee_id='EMP-5002', full_name='PO Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.admin = User.objects.create_user(
+            username='pobadmin', email='pobadmin@example.com', password='x',
+            employee_id='EMP-5003', full_name='PO Admin', role=UserRole.ADMIN,
+        )
+        self.category = Category.objects.create(name='PO Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='PO Supply', company_name='PO Supply Co', contact_person='Jo',
+            email='posupply@example.com', phone='555-0200', address='1 PO Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='PO-SKU-001', name='PO Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+
+    def create_draft_po(self, quantity=10):
+        self.client.login(username='pobstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': quantity, 'unitPrice': 5.0, 'discount': 0, 'tax': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.client.logout()
+        return PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+
+    def test_create_draft_po_with_line_items_no_stock_change(self):
+        po = self.create_draft_po(quantity=10)
+        self.assertEqual(po.status, POStatus.DRAFT)
+        item = po.items.get()
+        self.assertEqual(item.ordered_qty, 10)
+        self.assertEqual(po.total_cost, Decimal('50.00'))
+        self.assertEqual(
+            InventoryMovement.objects.filter(reference_type='PurchaseOrder', reference_id=po.pk).count(), 0,
+            "creating a draft PO must not touch stock",
+        )
+        self.assertTrue(AuditLog.objects.filter(action='PO_CREATED', affected_id=po.pk).exists())
+
+    def test_submit_approve_receive_full_increases_stock_via_movement(self):
+        po = self.create_draft_po(quantity=10)
+
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.PENDING)
+
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        response = self.client.post(reverse('frontend:purchase_approve', args=[po.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.APPROVED)
+        self.assertEqual(po.approved_by, self.supervisor)
+        # Approval alone must not touch stock (05_PURCHASES.md: "Stock
+        # update timing | ONLY after successful receive — not on approval").
+        self.assertEqual(InventoryRecord.objects.filter(product=self.product).count(), 0)
+        self.client.logout()
+
+        # Receiving is a staff task, distinct from approval (05_PURCHASES.md's
+        # own purchase_receive_view uses @staff_required, not @supervisor_required).
+        self.client.login(username='pobstaff', password='x')
+        item = po.items.get()
+        response = self.client.post(
+            reverse('frontend:purchase_receive', args=[po.pk]),
+            {'receive_json': json.dumps([{'item_id': item.pk, 'received_qty': 10}])},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.RECEIVED)
+
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 10)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.current_stock, 10)
+
+        movement = InventoryMovement.objects.get(reference_type='PurchaseOrder', reference_id=po.pk)
+        self.assertEqual(movement.movement_type, MovementType.PURCHASE)
+        self.assertEqual(movement.quantity_change, 10)
+        self.assertEqual(movement.performed_by, self.staff)
+
+    def test_partial_receive_leaves_status_partial_and_increases_stock_by_received_only(self):
+        po = self.create_draft_po(quantity=10)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        self.client.post(reverse('frontend:purchase_approve', args=[po.pk]))
+        self.client.logout()
+
+        self.client.login(username='pobstaff', password='x')
+        item = po.items.get()
+        response = self.client.post(
+            reverse('frontend:purchase_receive', args=[po.pk]),
+            {'receive_json': json.dumps([{'item_id': item.pk, 'received_qty': 6}])},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.PARTIAL)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 6, "only the received quantity should be added to stock")
+
+    def test_receive_cannot_exceed_ordered_quantity(self):
+        po = self.create_draft_po(quantity=10)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        self.client.post(reverse('frontend:purchase_approve', args=[po.pk]))
+        self.client.logout()
+
+        self.client.login(username='pobstaff', password='x')
+        item = po.items.get()
+        response = self.client.post(
+            reverse('frontend:purchase_receive', args=[po.pk]),
+            {'receive_json': json.dumps([{'item_id': item.pk, 'received_qty': 11}])},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
+
+    def test_submit_then_reject_writes_no_movement(self):
+        po = self.create_draft_po(quantity=10)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
+        self.client.logout()
+
+        self.client.login(username='pobsuper', password='x')
+        response = self.client.post(reverse('frontend:purchase_reject', args=[po.pk]), {'reason': 'Budget frozen'})
+        self.assertEqual(response.status_code, 200, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.REJECTED)
+        self.assertEqual(po.rejected_reason, 'Budget frozen')
+        self.assertFalse(InventoryMovement.objects.filter(reference_type='PurchaseOrder', reference_id=po.pk).exists())
+
+    def test_cancel_from_every_cancellable_state(self):
+        # DRAFT
+        po = self.create_draft_po(quantity=5)
+        self.client.login(username='pobsuper', password='x')
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.CANCELLED)
+        self.client.logout()
+
+        # PENDING
+        po2 = self.create_draft_po(quantity=5)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po2.pk]))
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        self.client.post(reverse('frontend:purchase_cancel', args=[po2.pk]))
+        po2.refresh_from_db()
+        self.assertEqual(po2.status, POStatus.CANCELLED)
+        self.client.logout()
+
+        # APPROVED
+        po3 = self.create_draft_po(quantity=5)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po3.pk]))
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        self.client.post(reverse('frontend:purchase_approve', args=[po3.pk]))
+        self.client.post(reverse('frontend:purchase_cancel', args=[po3.pk]))
+        po3.refresh_from_db()
+        self.assertEqual(po3.status, POStatus.CANCELLED)
+        self.client.logout()
+
+        # PARTIAL — cancelling must NOT reverse the stock already received
+        # (05_PURCHASES.md: "Cancelled PO | Does NOT affect inventory").
+        po4 = self.create_draft_po(quantity=10)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po4.pk]))
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        self.client.post(reverse('frontend:purchase_approve', args=[po4.pk]))
+        self.client.logout()
+        self.client.login(username='pobstaff', password='x')
+        item4 = po4.items.get()
+        self.client.post(
+            reverse('frontend:purchase_receive', args=[po4.pk]),
+            {'receive_json': json.dumps([{'item_id': item4.pk, 'received_qty': 4}])},
+        )
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po4.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        po4.refresh_from_db()
+        self.assertEqual(po4.status, POStatus.CANCELLED)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 4, "stock already received before cancellation must not be reversed")
+
+    def test_staff_cannot_approve_reject_or_cancel(self):
+        po = self.create_draft_po(quantity=5)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
+
+        for name in ('purchase_approve', 'purchase_reject', 'purchase_cancel'):
+            response = self.client.post(reverse(f'frontend:{name}', args=[po.pk]))
+            self.assertEqual(response.status_code, 302, f"{name} should redirect (blocked) for a Staff user")
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.PENDING, "none of the blocked actions should have taken effect")
+
+    def test_admin_can_approve_confirming_supervisor_mixin_hierarchy(self):
+        """SupervisorRequiredMixin.required_roles = [ADMIN, SUPERVISOR] —
+        confirms Admin is NOT excluded by an over-strict exact-role check."""
+        po = self.create_draft_po(quantity=5)
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
+        self.client.logout()
+
+        self.client.login(username='pobadmin', password='x')
+        response = self.client.post(reverse('frontend:purchase_approve', args=[po.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.APPROVED)
+        self.assertEqual(po.approved_by, self.admin)
+
+    def test_inactive_supplier_excluded_and_inactive_product_rejected_in_line_items(self):
+        inactive_supplier = Supplier.objects.create(
+            supplier_name='Old Supply', company_name='Old Supply Co', contact_person='X',
+            email='oldsupply@example.com', phone='555-0201', address='addr', is_active=False,
+        )
+        inactive_product = Product.objects.create(
+            sku='PO-SKU-INACTIVE', name='Retired Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('1.00'), selling_price=Decimal('2.00'), is_active=False,
+        )
+        self.client.login(username='pobstaff', password='x')
+        response = self.client.post(reverse('frontend:purchases'), {
+            'supplier': inactive_supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(inactive_product.pk), 'quantity': 1, 'unitPrice': 1.0, 'discount': 0, 'tax': 0},
+            ]),
+        })
+        self.assertEqual(response.status_code, 400)
+        errors = response.json().get('errors', {})
+        self.assertIn('supplier', errors)
+        self.assertIn('items', errors)
+
+
+# ----------------------------------------------------------------- Sales
+# Phase 7. Real HTTP round-trips, same discipline as PurchaseWorkflowViewTests.
+
+class SaleWorkflowViewTests(TestCase):
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='salestaff', email='salestaff@example.com', password='x',
+            employee_id='EMP-6001', full_name='Sale Staffer', role=UserRole.STAFF,
+        )
+        self.supervisor = User.objects.create_user(
+            username='salesuper', email='salesuper@example.com', password='x',
+            employee_id='EMP-6002', full_name='Sale Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Sale Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Sale Supply', company_name='Sale Supply Co', contact_person='Jo',
+            email='salesupply@example.com', phone='555-0300', address='1 Sale Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='SALE-SKU-001', name='Sale Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(self.product)
+        InventoryService.increase_stock(
+            product=self.product, quantity=20, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+
+    def test_create_sale_deducts_stock_via_movement(self):
+        self.client.login(username='salestaff', password='x')
+        response = self.client.post(reverse('frontend:sales'), {
+            'customer_name': 'Walk-in customer',
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
+            ]),
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+
+        sale = SaleTransaction.objects.get(created_by=self.staff)
+        self.assertEqual(sale.status, SaleStatus.COMPLETED)
+        self.assertEqual(sale.total_amount, Decimal('50.00'))
+
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 15, "20 in stock minus 5 sold")
+
+        movement = InventoryMovement.objects.get(reference_type='SaleTransaction', reference_id=sale.pk)
+        self.assertEqual(movement.movement_type, MovementType.SALE)
+        self.assertEqual(movement.quantity_change, -5)
+        self.assertTrue(AuditLog.objects.filter(action='SALE_CREATED', affected_id=sale.pk).exists())
+
+    def test_insufficient_stock_rejected_with_no_partial_deduction(self):
+        self.client.login(username='salestaff', password='x')
+        response = self.client.post(reverse('frontend:sales'), {
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 999, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
+            ]),
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(SaleTransaction.objects.filter(created_by=self.staff).exists())
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20, "a rejected sale must not touch stock at all")
+
+    def test_cancel_restores_stock_via_return_movement(self):
+        self.client.login(username='salestaff', password='x')
+        self.client.post(reverse('frontend:sales'), {
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
+            ]),
+        })
+        sale = SaleTransaction.objects.get(created_by=self.staff)
+        self.client.logout()
+
+        self.client.login(username='salesuper', password='x')
+        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.CANCELLED)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20, "stock must be fully restored on cancellation")
+
+        return_movement = InventoryMovement.objects.get(
+            reference_type='SaleTransaction', reference_id=sale.pk, movement_type=MovementType.RETURN,
+        )
+        self.assertEqual(return_movement.quantity_change, 5)
+        self.assertTrue(AuditLog.objects.filter(action='SALE_CANCELLED', affected_id=sale.pk).exists())
+
+    def test_staff_cannot_cancel(self):
+        self.client.login(username='salestaff', password='x')
+        self.client.post(reverse('frontend:sales'), {
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
+            ]),
+        })
+        sale = SaleTransaction.objects.get(created_by=self.staff)
+
+        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]))
+        self.assertEqual(response.status_code, 302, "Staff should be blocked (redirected), matching 06_SALES.md's @supervisor_required")
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.COMPLETED)
+
+    def test_inactive_product_rejected_in_line_items(self):
+        inactive_product = Product.objects.create(
+            sku='SALE-SKU-INACTIVE', name='Retired Sale Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('1.00'), selling_price=Decimal('2.00'), is_active=False,
+        )
+        self.client.login(username='salestaff', password='x')
+        response = self.client.post(reverse('frontend:sales'), {
+            'items_json': json.dumps([
+                {'productLabel': str(inactive_product.pk), 'quantity': 1, 'unitPrice': 2.0, 'discount': 0, 'tax': 0},
+            ]),
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('items', response.json().get('errors', {}))
+
+
+# ----------------------------------------------------------- Adjustments
+# Phase 7. Real HTTP round-trips, same discipline as the other two.
+
+class AdjustmentWorkflowViewTests(TestCase):
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='adjstaff', email='adjstaff@example.com', password='x',
+            employee_id='EMP-7001', full_name='Adjustment Staffer', role=UserRole.STAFF,
+        )
+        self.supervisor = User.objects.create_user(
+            username='adjsuper', email='adjsuper@example.com', password='x',
+            employee_id='EMP-7002', full_name='Adjustment Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Adj Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Adj Supply', company_name='Adj Supply Co', contact_person='Jo',
+            email='adjsupply@example.com', phone='555-0400', address='1 Adj Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='ADJ-SKU-001', name='Adj Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(self.product)
+        InventoryService.increase_stock(
+            product=self.product, quantity=20, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+
+    def create_pending_adjustment(self, adjustment_type='decrease', quantity=5):
+        self.client.login(username='adjstaff', password='x')
+        response = self.client.post(reverse('frontend:adjustments'), {
+            'product': self.product.pk, 'adjustment_type': adjustment_type,
+            'quantity': quantity, 'reason': 'Verification test reason',
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        self.client.logout()
+        return InventoryAdjustment.objects.filter(product=self.product).order_by('-pk').first()
+
+    def test_create_writes_no_movement_until_approved(self):
+        adjustment = self.create_pending_adjustment()
+        self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
+        self.assertEqual(
+            InventoryMovement.objects.filter(reference_type='InventoryAdjustment', reference_id=adjustment.pk).count(), 0,
+        )
+        self.assertTrue(AuditLog.objects.filter(action='ADJUSTMENT_REQUESTED', affected_id=adjustment.pk).exists())
+
+    def test_approve_decrease_writes_movement_and_reduces_stock(self):
+        adjustment = self.create_pending_adjustment(adjustment_type='decrease', quantity=5)
+        self.client.login(username='adjsuper', password='x')
+        response = self.client.post(reverse('frontend:adjustment_approve', args=[adjustment.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.status, AdjustmentStatus.APPROVED)
+        self.assertEqual(adjustment.approved_by, self.supervisor)
+
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 15)
+        movement = InventoryMovement.objects.get(reference_type='InventoryAdjustment', reference_id=adjustment.pk)
+        self.assertEqual(movement.movement_type, MovementType.ADJUSTMENT)
+        self.assertEqual(movement.quantity_change, -5)
+
+    def test_approve_increase_writes_movement_and_increases_stock(self):
+        adjustment = self.create_pending_adjustment(adjustment_type='increase', quantity=8)
+        self.client.login(username='adjsuper', password='x')
+        response = self.client.post(reverse('frontend:adjustment_approve', args=[adjustment.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 28)
+        movement = InventoryMovement.objects.get(reference_type='InventoryAdjustment', reference_id=adjustment.pk)
+        self.assertEqual(movement.quantity_change, 8)
+
+    def test_decrease_beyond_available_stock_rejected(self):
+        adjustment = self.create_pending_adjustment(adjustment_type='decrease', quantity=999)
+        self.client.login(username='adjsuper', password='x')
+        response = self.client.post(reverse('frontend:adjustment_approve', args=[adjustment.pk]))
+        self.assertEqual(response.status_code, 400)
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.status, AdjustmentStatus.PENDING, "a failed approval must not change status")
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20)
+
+    def test_reject_writes_no_movement(self):
+        adjustment = self.create_pending_adjustment()
+        self.client.login(username='adjsuper', password='x')
+        response = self.client.post(
+            reverse('frontend:adjustment_reject', args=[adjustment.pk]), {'reason': 'Not needed'},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.status, AdjustmentStatus.REJECTED)
+        self.assertEqual(adjustment.rejected_reason, 'Not needed')
+        self.assertFalse(InventoryMovement.objects.filter(reference_type='InventoryAdjustment', reference_id=adjustment.pk).exists())
+
+    def test_staff_cannot_approve_or_reject(self):
+        adjustment = self.create_pending_adjustment()
+        self.client.login(username='adjstaff', password='x')
+
+        response = self.client.post(reverse('frontend:adjustment_approve', args=[adjustment.pk]))
+        self.assertEqual(response.status_code, 302)
+        response = self.client.post(reverse('frontend:adjustment_reject', args=[adjustment.pk]), {'reason': 'x'})
+        self.assertEqual(response.status_code, 302)
+
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)

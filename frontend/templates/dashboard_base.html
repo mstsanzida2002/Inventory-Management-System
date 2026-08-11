@@ -41,6 +41,11 @@
       </header>
 
       <main class="page-body">
+        {% if messages %}
+          {% for message in messages %}
+            <div class="form-alert form-alert-{{ message.tags }}" role="alert">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
         {% block content %}{% endblock %}
       </main>
     </div>
@@ -50,6 +55,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="{% static 'js/chart-colors.js' %}"></script>
   <script src="{% static 'js/dashboard.js' %}"></script>
+  <script src="{% static 'js/row-actions.js' %}"></script>
+  <script src="{% static 'js/notifications.js' %}"></script>
   {% block extra_js %}{% endblock %}
 </body>
 </html>

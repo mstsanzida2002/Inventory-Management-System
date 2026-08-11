@@ -111,8 +111,11 @@
               <td>
                 <div class="widget-actions">
                   {% if adjustment.status == 'pending' %}
-                    <button class="pill-btn approve adj-approve-btn" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                    <button class="pill-btn reject adj-reject-btn" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {# AdjustmentApproveView/AdjustmentRejectView: SupervisorRequiredMixin #}
+                    {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                      <button class="pill-btn approve adj-approve-btn" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                      <button class="pill-btn reject adj-reject-btn" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% endif %}
                   {% else %}
                     <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
                   {% endif %}

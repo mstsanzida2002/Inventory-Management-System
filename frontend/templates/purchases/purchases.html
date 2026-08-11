@@ -100,15 +100,23 @@
               <td>
                 <div class="widget-actions">
                   {% if po.status == 'draft' %}
+                    {# PurchaseSubmitView: AnyStaffMixin — every logged-in role may submit, no gate needed #}
                     <button class="pill-btn po-submit-btn" type="button" aria-label="Submit for approval" title="Submit for approval"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                   {% elif po.status == 'pending' %}
-                    <button class="pill-btn approve po-approve-btn" type="button" aria-label="Approve PO"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                    <button class="pill-btn reject po-reject-btn" type="button" aria-label="Reject PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {# PurchaseApproveView/PurchaseRejectView: SupervisorRequiredMixin #}
+                    {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                      <button class="pill-btn approve po-approve-btn" type="button" aria-label="Approve PO"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                      <button class="pill-btn reject po-reject-btn" type="button" aria-label="Reject PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% endif %}
                   {% elif po.status == 'approved' or po.status == 'partial' %}
+                    {# PurchaseReceiveView: AnyStaffMixin — every logged-in role may receive, no gate needed #}
                     <button class="pill-btn po-receive-btn" type="button" aria-label="Receive items" data-items="{{ po.receive_items_json }}"><svg class="icon icon-sm"><use href="#icon-package-check"></use></svg></button>
                   {% endif %}
                   {% if po.cancellable %}
-                    <button class="pill-btn reject po-cancel-btn" type="button" aria-label="Cancel PO" title="Cancel PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {# PurchaseCancelView: SupervisorRequiredMixin #}
+                    {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                      <button class="pill-btn reject po-cancel-btn" type="button" aria-label="Cancel PO" title="Cancel PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% endif %}
                   {% endif %}
                 </div>
               </td>

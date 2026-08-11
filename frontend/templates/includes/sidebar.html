@@ -73,10 +73,13 @@
 
     <div class="nav-group">
       <div class="nav-group-label">Insights</div>
-      <a href="/reports/" class="nav-item {% if active_nav|default:"dashboard" == 'reports' %}is-active{% endif %}">
-        <svg class="icon"><use href="#icon-bar-chart"></use></svg>
-        <span>Reports</span>
-      </a>
+      {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+        {# ReportsView: SupervisorRequiredMixin — not one of this task's named 3, but the same mixin/visibility gap, so gated the same way #}
+        <a href="/reports/" class="nav-item {% if active_nav|default:"dashboard" == 'reports' %}is-active{% endif %}">
+          <svg class="icon"><use href="#icon-bar-chart"></use></svg>
+          <span>Reports</span>
+        </a>
+      {% endif %}
       <a href="/notifications/" class="nav-item {% if active_nav|default:"dashboard" == 'notifications' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-bell"></use></svg>
         <span>Notifications</span>
@@ -84,21 +87,24 @@
       </a>
     </div>
 
-    <div class="nav-group">
-      <div class="nav-group-label">Administration</div>
-      <a href="/users/" class="nav-item {% if active_nav|default:"dashboard" == 'users' %}is-active{% endif %}">
-        <svg class="icon"><use href="#icon-users"></use></svg>
-        <span>Users &amp; Roles</span>
-      </a>
-      <a href="/audit-log/" class="nav-item {% if active_nav|default:"dashboard" == 'audit-log' %}is-active{% endif %}">
-        <svg class="icon"><use href="#icon-shield"></use></svg>
-        <span>Audit Log</span>
-      </a>
-      <a href="/settings/" class="nav-item {% if active_nav|default:"dashboard" == 'settings' %}is-active{% endif %}">
-        <svg class="icon"><use href="#icon-settings"></use></svg>
-        <span>Settings</span>
-      </a>
-    </div>
+    {% if request.user.role == 'admin' %}
+      {# UserListCreateView/AuditLogListView/SettingsView: AdminRequiredMixin #}
+      <div class="nav-group">
+        <div class="nav-group-label">Administration</div>
+        <a href="/users/" class="nav-item {% if active_nav|default:"dashboard" == 'users' %}is-active{% endif %}">
+          <svg class="icon"><use href="#icon-users"></use></svg>
+          <span>Users &amp; Roles</span>
+        </a>
+        <a href="/audit-log/" class="nav-item {% if active_nav|default:"dashboard" == 'audit-log' %}is-active{% endif %}">
+          <svg class="icon"><use href="#icon-shield"></use></svg>
+          <span>Audit Log</span>
+        </a>
+        <a href="/settings/" class="nav-item {% if active_nav|default:"dashboard" == 'settings' %}is-active{% endif %}">
+          <svg class="icon"><use href="#icon-settings"></use></svg>
+          <span>Settings</span>
+        </a>
+      </div>
+    {% endif %}
 
   </nav>
 

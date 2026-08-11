@@ -2,7 +2,7 @@
 
 > **Read this file first, before any other document, before writing any code.**
 > This file is the permanent engineering memory of the project. It reflects the
-> **actual current state of the repository** as of 2026-07-31, updated after:
+> **actual current state of the repository** as of 2026-08-02, updated after:
 > (1) four frontend routing/consistency bug fixes, (2) **Backend Phase 1** —
 > full Django ORM schema (16 models), (3) **Backend Phase 2** — all 16
 > registered in Django admin, (4) **Backend Phase 3/3.4/3.5** —
@@ -144,6 +144,19 @@
 > which the browser parsed as a real tag and swallowed the entire rest of
 > the page — worth remembering harder than BUG-03 alone implied.
 > See `docs/frontend_work.md` for a frontend-only summary.
+> **(16) Backend Phase 8** — the last 5 mock pages (Reports, Notifications,
+> Users & Roles, Audit Log, Settings) are all real now: real querysets/
+> forms, real RBAC (`AdminRequiredMixin` on Audit Log/Users/Settings,
+> `SupervisorRequiredMixin` on Reports, plain `LoginRequiredMixin` on
+> Notifications), no mock data left anywhere in the app except Inventory's
+> deliberately-unwired read-only list. Reports exports real PDF (ReportLab,
+> chosen over `10_REPORTS.md`'s own WeasyPrint example for zero native
+> deps — disclosed choice within the doc's own stated options, see §15)
+> and CSV for all 9 documented types. Notifications' topbar badge actually
+> polls now. Users & Roles required one disclosed field-list deviation —
+> a required password field the mock didn't have, since a `User` without
+> one can never log in. 125 tests passing (was 100). See §15 for the full
+> writeup.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
 > file wins for "what exists today."** The other docs win for "what the
@@ -363,22 +376,37 @@ What is actually built and working:
 - ✅ **Reusable component JS library** — `dom-utils.js`, `form-validation.js`,
   `mock-catalog.js`, `line-items.js`, `table-filter.js`,
   `async-run-button.js`, `chart-colors.js`.
-- ✅ **Reports page** (`reports/reports.html`) — 9 report-type cards +
-  Sales Report / Low Stock Report preview panels, `table-filter.js` wired.
-  Static mock data only, no backend query.
-- ✅ **Notifications page** (`notifications/notifications.html`) — 8 mock
-  rows (read/unread states), plus the topbar dropdown (above). Static mock,
-  decorative mark-as-read.
-- ✅ **Users & Roles page** (`users/users.html`) — user list + stat strip +
-  working "Add User" modal (fields exactly match `SCHEMA.md`'s `User`
-  model: full_name, username, employee_id, email, role). Static mock, no
-  RBAC, no persistence.
-- ✅ **Audit Log page** (`audit/audit_log.html`) — 8 mock log rows,
-  search/module/status filtering via `table-filter.js`. Static mock, not
-  reading real `AuditLog` rows.
-- ✅ **Settings page** (`settings/settings.html`) — single form, all 13
-  `SystemSettings` fields, decorative Save button. Static mock, no
-  persistence.
+- ✅ **Reports module (real, Phase 8)** — `frontend/reports.py`'s 9 report
+  builders (Inventory/Purchase/Sales/Movement/Adjustment/Low Stock/Out of
+  Stock/AI Forecast/AI Classification), each exporting real PDF (ReportLab
+  — chosen over WeasyPrint for zero native deps on this Windows dev
+  environment, both documented as acceptable in `TECH_STACK.md`) and CSV;
+  Sales/Low Stock keep their full HTML preview from the mock, the other 7
+  export straight from their card (no preview panel existed for those in
+  the mock either); every export audit-logged
+  (`REPORT_GENERATED`/`REPORT_EXPORTED_PDF`/`REPORT_EXPORTED_CSV`);
+  `SupervisorRequiredMixin`-gated.
+- ✅ **Notifications module (real, Phase 8)** — real `Notification`
+  queryset for the logged-in user; mark-read/mark-all-read/unread-count
+  endpoints; topbar bell badge (`#notifBadge`) polls `/notifications/
+  unread-count/` every 30s and only shows when something's actually
+  unread — no role gate, any authenticated user sees their own.
+- ✅ **Users & Roles module (real, Phase 8)** — real `User` queryset +
+  role counts; "Add user" gained a required password field the Phase 3.6
+  mock explicitly didn't have — disclosed deviation, not a silent one: a
+  `User` saved without one gets `set_unusable_password()` and can never
+  log in (see `UserForm`'s docstring, `frontend/forms.py`). Deactivate/
+  Reactivate wired for real; an admin cannot deactivate their own account.
+  `AdminRequiredMixin`-gated.
+- ✅ **Audit Log module (real, Phase 8)** — real `AuditLog` queryset
+  (latest 500), `AdminRequiredMixin`-gated; module/status filter still
+  client-side (`table-filter.js`), now against real data.
+- ✅ **Settings module (real, Phase 8)** — real `SystemSettings` singleton
+  (`SystemSettingsForm`), `AdminRequiredMixin`-gated; every optional
+  numeric/text field left blank on submit falls back to the row's own
+  current value, not the model's class default — a plain fallback to the
+  class default would silently blank out a real admin-configured value on
+  any partial save.
 - Verified regression-free (Phase 3.65): no leaked `{# #}` comment text, no
   `[hidden]`/`display` cascade bugs, no console errors across all 5 pages —
   see §15.
@@ -389,11 +417,7 @@ What is actually built and working:
   list pages (Phase 2) now actually render — verified live. See §15.
 
 Not built at all (0%):
-- ❌ RBAC enforcement, session logic, real login view
-- ❌ Any DRF/API layer, any views/forms calling the new services at all
-- ❌ Persistence/backend wiring for Reports, Notifications, Users & Roles,
-  Audit Log, Settings — all 5 have real frontend mock pages (above) but
-  none reads from `frontend/services.py` or the database yet.
+- ❌ Any DRF/API layer
 - ❌ Celery/Redis/background jobs
 - ❌ Real scikit-learn forecasting model, real classification job
 - ❌ Any persistence — every "submit" button either does nothing or
@@ -625,12 +649,16 @@ nothing calls.
 - **URLs**: `config/urls.py` registers 3 top-level patterns: `/admin/`,
   `/accounts/` (Django's built-in `django.contrib.auth.urls`, namespaced
   `accounts`), and `/` (includes `frontend.urls`, namespaced `frontend`).
-  `frontend/urls.py` registers 19 routes: the 17 GET-rendered template
-  routes (`""` landing, `dashboard/`, `products/`, `categories/`,
-  `suppliers/`, `purchases/`, `sales/`, `inventory/`, `adjustments/`,
-  `ai/forecasting/`, `ai/slow-moving/`, the 5 Phase 3.6 routes —
-  `reports/`, `notifications/`, `users/`, `audit-log/`, `settings/` —
-  plus `login/`) and 2 new real ones (Phase 4): `logout/`, `profile/`.
+  `frontend/urls.py` registers 33 routes as of Phase 8 (was 31 after Phase
+  7): the original GET-rendered template routes (landing/dashboard/login/
+  logout/profile/inventory/AI pages), the 12 Purchase/Sale/Adjustment
+  workflow routes (Phase 7), `reports/`/`notifications/`/`users/`/
+  `audit-log/`/`settings/` (all 5 already existed as routes, now pointing
+  at real class-based views instead of one-line `render()` functions), and
+  Phase 8's 6 net-new sub-routes: `reports/export/<slug:report_type>/`,
+  `notifications/<pk>/read/`, `notifications/read-all/`,
+  `notifications/unread-count/`, `users/<pk>/deactivate/`,
+  `users/<pk>/reactivate/`.
 - **Views (Phase 4 auth + Phase 5/6/7 real modules)**: `frontend/views.py`'s
   `login`/`logout_view`/`profile_view` (Phase 4); `ProductListCreateView`
   (Phase 5 — GET renders the real `Product` queryset, POST validates via
@@ -653,9 +681,19 @@ nothing calls.
   (confirm()/prompt() dialogs on the client, no bespoke confirmation
   modals built beyond the one genuinely new UI needed — Purchase's
   Receive modal, since partial receiving needs real per-line input).
-  Every *other* view (Inventory, Users & Roles, Settings, ...) is still
-  the original one-line `render()` — no forms, no querysets, no auth
-  checks, no ORM usage.
+  Phase 8 replaces the remaining 5 one-line `render()` views:
+  `AuditLogListView` (read-only, `AdminRequiredMixin`); `NotificationListView`
+  plus `NotificationMarkReadView`/`NotificationMarkAllReadView`/
+  `NotificationUnreadCountView` (`LoginRequiredMixin` only — any
+  authenticated user, no role gate, since these are always scoped to
+  `request.user`'s own rows); `UserListCreateView` plus
+  `UserDeactivateView`/`UserReactivateView` (`AdminRequiredMixin`;
+  self-deactivation blocked); `SettingsView` (`AdminRequiredMixin`, GET+POST
+  against the `SystemSettings` singleton); `ReportsView` plus
+  `ReportExportView` (`SupervisorRequiredMixin`, delegate to the 9 builders
+  in the new `frontend/reports.py`, same small-dedicated-module pattern as
+  `frontend/audit.py`/`frontend/notifications.py`). Every view in this
+  project now does real work — none is still a placeholder `render()`.
 - **RBAC (Phase 4 mechanism, real since Phase 5)**: `frontend/decorators.py`
   (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
   and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
@@ -669,10 +707,17 @@ nothing calls.
   three. **Confirmed live and by test (Phase 7) that `SupervisorRequiredMixin`
   is genuinely a hierarchy** — `required_roles = [UserRole.ADMIN,
   UserRole.SUPERVISOR]` — not an exact-role check that would incorrectly
-  lock out Admins; nothing needed fixing here. Inventory/Users & Roles/
-  Settings/etc. remain unguarded (see §12/§16). DRF's `BasePermission`
-  classes (`IsAdmin` etc.) from the same doc were explicitly out of
-  scope — DRF isn't installed.
+  lock out Admins; nothing needed fixing here, and Phase 8 re-confirmed it
+  by test on Reports too, not just Purchases. Phase 8 gives
+  `AdminRequiredMixin` its first real (non-throwaway) use — Audit Log,
+  Users & Roles, Settings — and plain Django `LoginRequiredMixin` its
+  first use anywhere in this project, on Notifications (correctly
+  role-less: every user's notifications are their own). Every view in the
+  app is now RBAC-gated one way or another — Inventory is the one
+  remaining read-only view with no mixin at all (see §12/§16), by design,
+  not oversight (it has no create/write action to gate). DRF's
+  `BasePermission` classes (`IsAdmin` etc.) from the same doc were
+  explicitly out of scope — DRF isn't installed.
 - **Forms (Phase 5/6/7 — real ModelForms)**: `frontend/forms.py`'s
   `ProductForm` (Phase 5) — server-side enforcement of what the JS modal
   previously only checked client-side (unique SKU/barcode via Django's
@@ -696,6 +741,17 @@ nothing calls.
   helper (also form-only-field territory: line items aren't a Django
   formset here). Unlike Phase 5/6, checking these three against
   `SCHEMA.md` found no mismatch to fix — see §15's Phase 7 entry.
+  `UserForm`/`SystemSettingsForm` (Phase 8) — `UserForm` adds a required
+  `password` field the mock explicitly hadn't had (see §2's Users & Roles
+  entry for why), run through the same `validate_password()`/
+  `AUTH_PASSWORD_VALIDATORS` stack `profile_view` already used (Phase 4);
+  `SystemSettingsForm` is the first form in this project where every
+  field is optional on the form despite most having no `blank=True` on
+  the model — `SystemSettings` is a singleton always edited via
+  `instance=`, so a blank submission falls back to that instance's
+  current value in `clean()`, not the model's class default (falling back
+  to the class default would silently blank out a real admin-configured
+  value on every save that happens to omit a field).
   `ReasonForm` is shared by `PurchaseOrder.reject`/`InventoryAdjustment.reject`,
   the first form in this project reused across two unrelated models.
 - **Validators (Phase 4)**: `frontend/validators.py`'s
@@ -1041,15 +1097,16 @@ re-enabled, nothing left disabled.
 - ✅ Adjustments (real, Phase 7 — list + Add modal against the live DB, approve/reject workflow, RBAC-guarded)
 - ✅ Demand Forecasting (`/ai/forecasting/`)
 - ✅ Slow-Moving & Dead Stock (`/ai/slow-moving/`)
-- ✅ Reports (`/reports/`, Phase 3.6 — 9 report types listed, 2 with mock tables)
-- ✅ Notifications (`/notifications/`, Phase 3.6 — list page + topbar dropdown)
-- ✅ Users & Roles (`/users/`, Phase 3.6 — list + Add User modal)
-- ✅ Audit Log (`/audit-log/`, Phase 3.6 — filterable mock log)
-- ✅ Settings (`/settings/`, Phase 3.6 — single form, all SystemSettings fields)
+- ✅ Reports (`/reports/`, real, Phase 8 — 9 report types, all export real PDF/CSV; Sales/Low Stock keep a real HTML preview, RBAC-guarded Supervisor+)
+- ✅ Notifications (`/notifications/`, real, Phase 8 — real per-user list, mark-read/mark-all, 30s-polling topbar badge)
+- ✅ Users & Roles (`/users/`, real, Phase 8 — list + Add User (now with password) against the live DB, Deactivate/Reactivate, RBAC-guarded Admin-only)
+- ✅ Audit Log (`/audit-log/`, real, Phase 8 — real `AuditLog` queryset, RBAC-guarded Admin-only)
+- ✅ Settings (`/settings/`, real, Phase 8 — real `SystemSettings` singleton, RBAC-guarded Admin-only)
 
-All 15 sidebar links now resolve to a real page. All 5 above are static
-mocks like every pre-Phase-3.6 page — nothing here reads from
-`frontend/services.py` or the database yet (see §16).
+All 15 sidebar links now resolve to a real page, and every one of them is
+real (Phase 8 was the last batch — see §16). Inventory is the only page
+left with no create/write action to gate; every other page now runs
+through a real form/queryset and a real RBAC mixin.
 
 ---
 
@@ -1127,17 +1184,19 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
 kept together here rather than scattered, since they were all found in
 the same phase):
 
-- **RBAC mechanism now applied to 6 real modules — Products (Phase 5),
-  Categories, Suppliers (Phase 6), Purchases, Sales, Adjustments (Phase 7).**
+- **RBAC mechanism now applied to 11 real modules — Products (Phase 5),
+  Categories, Suppliers (Phase 6), Purchases, Sales, Adjustments (Phase 7),
+  Audit Log, Users & Roles, Settings, Reports, Notifications (Phase 8).**
   `AnyStaffMixin` guards every create/list/submit/receive view;
-  `SupervisorRequiredMixin` (first real use, Phase 7) guards every
-  approve/reject/cancel view; logged-out requests redirect to login,
-  confirmed live and by test across all six. Every *other* page view
-  (Inventory, Users & Roles, Settings, Reports, Notifications, Audit Log)
-  is still a bare `render()` with no `@login_required` and no role
-  check — open to anyone, logged in or not, until those modules get
-  wired in the same way. This remains a real, current security gap for
-  every module except the six above.
+  `SupervisorRequiredMixin` guards every approve/reject/cancel view plus
+  Reports (Phase 8, re-confirmed the Admin-or-Supervisor hierarchy holds
+  there too); `AdminRequiredMixin` gets its first real use on Audit Log/
+  Users & Roles/Settings; plain `LoginRequiredMixin` guards Notifications
+  (correctly role-less — every user's notifications are their own);
+  logged-out requests redirect to login, confirmed live and by test across
+  all eleven. **Inventory is now the only view in the entire app with no
+  RBAC mixin** — by design, not a gap: it's read-only with no create/write
+  action to gate (see §16).
 - **Phase 5 verification surfaced two pre-existing quirks in the shared
   modal architecture** (`modal-form.js`/`form-validation.js`), neither
   introduced this phase — see `docs/bugsfound.md` BUG-32/33 for full
@@ -1787,6 +1846,81 @@ session history, not `git log`:
     templates for the BUG-03/BUG-36 multi-line-comment pattern ahead of
     Phase 8. 40 `{# #}` instances across 14 files, every one closing on
     its own line; zero multi-line, no fixes needed.
+30. **Backend Phase 8: Audit Log, Notifications, Users & Roles, Settings,
+    Reports** — the last 5 mock pages from Phase 3.6 are all real now, in
+    that order (read-only/no-new-service first). `AuditLogListView` reads
+    the real, still-immutable `AuditLog` table. Notifications gets a real
+    per-user list, mark-read/mark-all/unread-count endpoints, and the
+    topbar bell badge actually polls every 30s now instead of always
+    showing a dot. Users & Roles required one disclosed field-list
+    deviation from the mock — a required password field, since a `User`
+    saved without one can never log in (`UserForm`'s docstring) — plus
+    real Deactivate/Reactivate with a self-deactivation guard. Settings
+    wires the `SystemSettings` singleton with a blank-falls-back-to-
+    current-value rule so a partial save can't blank out real config.
+    Reports needed a new PDF library — chose ReportLab over
+    `10_REPORTS.md`'s own WeasyPrint example (both documented as
+    acceptable in `TECH_STACK.md`; ReportLab has zero native deps, a real
+    concern on this Windows dev box) — and a new `frontend/reports.py`
+    holding all 9 report builders + the PDF/CSV generators, same pattern
+    as `frontend/audit.py`/`frontend/notifications.py`. All 9 report types
+    export real PDF and CSV; Sales/Low Stock also kept their full HTML
+    preview from the mock, the other 7 (which never had a preview panel)
+    export straight from their card. `SupervisorRequiredMixin` gates
+    Reports (re-confirmed the Admin-or-Supervisor hierarchy holds there
+    too, not just Purchases); `AdminRequiredMixin` gets its first real use
+    on the other three. No mock/schema mismatch found in Audit Log/
+    Notifications/Settings/Reports — Users & Roles' password gap was the
+    only deviation, and it was disclosed, not silent. 25 new tests (RBAC
+    gate + one success path per module, following Phase 6's live-
+    verification-primary precedent rather than Phase 7's full transition-
+    matrix mandate, since this task didn't repeat that instruction) — 125
+    tests passing (was 100). Inventory is now the only view in the app
+    with no RBAC mixin, by design (read-only, no write action to gate).
+31. **Phase 8.5: role-aware UI + message feedback** — Phase 8's own RBAC
+    verification found the server-side block was correct but invisible:
+    `dashboard_base.html` never rendered `{% if messages %}` anywhere (only
+    `accounts/login.html`/`accounts/profile.html` did), so
+    `RoleRequiredMixin`'s `messages.error(request, 'Access denied.')`
+    (`frontend/mixins.py`) was silently dropped on every one of the 21
+    guarded views across 11 modules, every time it fired — one source line,
+    newly surfaced everywhere at once by adding the exact same `{% if
+    messages %}`/`.form-alert` block `login.html` already used, into
+    `dashboard_base.html`'s `<main>` instead of inventing new markup.
+    Action buttons also rendered for every role regardless of which mixin
+    actually guarded the endpoint behind them — added `{% if
+    request.user.role == 'admin' or request.user.role == 'supervisor' %}`
+    around Purchases' approve/reject/cancel, Adjustments' approve/reject,
+    and Sales' cancel (each matched 1:1 to that button's own
+    `SupervisorRequiredMixin`-guarded view, not a separately-invented
+    split), plus the same treatment on the sidebar's Users & Roles/Audit
+    Log/Settings links (`AdminRequiredMixin`) and — beyond this task's
+    literal 3-link list, but the identical class of gap — the Reports link
+    (`SupervisorRequiredMixin`), disclosed as a deliberate scope extension
+    for consistency rather than left half-fixed. Root-caused a second,
+    subtler bug along the way: `fetch()` follows a 302 redirect
+    transparently, so a blocked staff user's Approve click got back a 200
+    (the dashboard page) and the client-side code read that as success,
+    silently reloading with no explanation — even *after* hiding the
+    button, a direct POST would still hit this. Fixed by extracting the
+    5 near-identical `getCsrfToken()`/`postAction()` copies already
+    duplicated across `purchase-form.js`/`sale-form.js`/
+    `adjustment-form.js`/`user-form.js`/`notifications.js` into one new
+    `frontend/static/js/row-actions.js` (per this project's own standing
+    rule — §18 — to consolidate duplicate logic rather than add a 6th
+    copy), whose `postAction()` checks `Response.redirected` before
+    `response.ok` and reports `{blocked: true}` instead of a false
+    success; `reportResult()` shows a real "You don't have permission to
+    do that." Verified live (Playwright, all three roles): staff sees no
+    approve/reject/cancel anywhere and none of the 4 admin/supervisor
+    sidebar links; supervisor sees the actions and Reports but not
+    Users/Audit/Settings; admin sees everything. Bypassing the
+    now-hidden button entirely via a direct `RowActions.postAction()` call
+    still correctly reported `blocked: true` and left the PO's `status`/
+    `approved_by` unchanged in the database — hiding the button changed
+    nothing about server-side enforcement, only whether the (still-
+    necessary) block is ever visible. 125/125 tests still passing (none
+    of this touched Python).
 
 ---
 
@@ -1795,26 +1929,22 @@ session history, not `git log`:
 Highest priority first:
 
 1. **Wire the RBAC decorator/mixin (§5, Phase 4) and the service layer
-   into real module views, together, module by module** — Products
-   (Phase 5), Categories, Suppliers (Phase 6), Purchases, Sales,
-   Adjustments (Phase 7) are done, see §2/§5/§12/§15. Inventory is next —
-   it's documented as read-only/API-driven only (§6/§13), so "wiring it
-   in" means a real list view, not a create form. After that, the
-   backlog is the 5 Phase 3.6 mock pages (Reports, Notifications, Users &
-   Roles, Audit Log, Settings, §11) — none of which involve
-   `InventoryService` or an approval workflow, closer to Categories/
-   Suppliers' shape than Purchase/Sale/Adjustment's. Until this happens,
-   every page except login/logout/profile and the 6 Phase 5/6/7 modules
-   remains open to anyone (§12) — treat this as a security gap, not just
-   an incompleteness note.
+   into real module views, together, module by module** — **done.**
+   Products (Phase 5), Categories, Suppliers (Phase 6), Purchases, Sales,
+   Adjustments (Phase 7), Audit Log, Notifications, Users & Roles,
+   Settings, Reports (Phase 8) are all real now, see §2/§5/§12/§15.
+   Inventory is the one remaining page with no create/write action, so it
+   stays a plain read-only view by design — nothing left to wire there
+   beyond that.
 2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
    (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
    `12_SEARCH.md`, `14_SETTINGS.md`).
 3. **Then** password reset (deferred from Phase 4), DRF API layer + its
    `BasePermission` classes (`02_RBAC.md`, deferred from Phase 4 — DRF
    still isn't installed), Celery (needed for the notification email
-   `.delay()` upgrade — see §2), and the real AI pipelines — in that
-   order.
+   `.delay()` upgrade — see §2 — and for `10_REPORTS.md`'s own async
+   report-generation pattern, currently synchronous), and the real AI
+   pipelines — in that order.
 
 ---
 
@@ -1831,13 +1961,11 @@ Grouped by module, per the documentation:
   email)/logout/profile update against `frontend.User`, session timeout,
   account lockout, Argon2 hashing, `StrongPasswordValidator`. Still
   needed: password reset via email (explicitly deferred).
-- **RBAC**: ✅ **mechanism done** (Backend Phase 4, §5) —
-  decorators/mixins per the 3-role matrix in `02_RBAC.md`, proven against
-  throwaway views. Still needed: applying it to every real module view
-  (§16 top priority — this is the actual enforcement, not yet real
-  anywhere), template-level role conditionals (`{% if
-  request.user.role == ... %}` — trivial once views pass real `request.user`
-  context, not attempted yet), DRF `BasePermission` classes (needs DRF).
+- **RBAC**: ✅ **mechanism done, applied everywhere it needs to be, and now
+  UI-honest about it too** (Backend Phase 4 mechanism; enforcement landed
+  module by module through Phase 5–8; template-level role conditionals +
+  Django messages actually rendering landed Phase 8.5, see §12/§15/§16).
+  Still needed: DRF `BasePermission` classes (needs DRF).
 - **Products**: real CRUD — ✅ **create + list done** (Phase 5, §2/§5),
   SKU auto-generation implemented per `03_PRODUCTS.md`'s own documented
   format and disclosed as its own architecture decision (§13, Phase 5.5 —
@@ -1861,25 +1989,27 @@ Grouped by module, per the documentation:
 - **Inventory service**: ✅ **done** (Backend Phase 3/3.8, §2) —
   `InventoryService`, `select_for_update()`-safe. Still just a read-only
   list page (§6/§13 — documented as API-driven only, deliberately no
-  create form) — "wiring it in" (§16 #1) means RBAC + a real queryset on
-  the existing list view, not a new create flow.
+  create form), and deliberately still the one view with no RBAC mixin —
+  read-only with no write action to gate (§12/§16).
 - **Dashboard**: real KPI/stat aggregation replacing hardcoded numbers (no
   dedicated doc — infer from the existing `dashboard.html` mock + general
   patterns in other module docs).
-- **Reports**: all 9 report types (Inventory, Purchase, Sales, Movement,
-  Adjustment, Low Stock, Out of Stock, AI Forecast, AI Slow-Moving), PDF
-  (WeasyPrint) + CSV export, Supervisor+ only.
-- **Notifications**: ✅ service **done** (`notify_user`/`notify_supervisors`,
-  Phase 3.5, §2), sync email not Celery. Still missing: list page,
-  mark-read, 30s polling badge (topbar bell still decorative).
+- **Reports**: ✅ **done** (Backend Phase 8, §2/§5/§15) — all 9 report
+  types, PDF (ReportLab, not WeasyPrint — see §15's Phase 8 entry for why)
+  + CSV export, `SupervisorRequiredMixin`-gated, every export audit-logged.
+- **Notifications**: ✅ **done** (Backend Phase 8, §2/§5/§15) — real list
+  page, mark-read/mark-all-read, 30s-polling topbar badge that only shows
+  when something's unread. Service layer (`notify_user`/
+  `notify_supervisors`) was already done since Phase 3.5; still sync email
+  not Celery (§2).
 - **Search** (no dedicated doc — see §12): global search, filters, AI
   classification filter per `INDEX.md`'s one-line description.
-- **Audit**: ✅ service **done** (`log_action()`, Phase 3.5, §2), called
-  from every Purchase/Sale/Adjustment service method. Still missing:
-  admin-only viewer page.
-- **Settings** (no dedicated doc — see §12): company info, thresholds, AI
-  config admin UI, backed by the already-existing `SystemSettings`
-  singleton model.
+- **Audit**: ✅ **done** (Backend Phase 8, §2/§5/§15) — real, `Admin`-only
+  viewer page on top of the `log_action()` service that's been recording
+  since Phase 3.5.
+- **Settings** (no dedicated doc — see §12): ✅ **done** (Backend Phase 8,
+  §2/§5/§15) — real admin UI on the existing `SystemSettings` singleton,
+  blank-falls-back-to-current-value on every optional field.
 - **AI — Demand Forecasting**: real pandas/scikit-learn pipeline, model
   persistence, Celery Beat schedule, confidence scoring, reorder
   recommendations — writing into the already-existing `DemandForecast`

@@ -1,11 +1,14 @@
 /* ==========================================================================
-   USER-FORM.JS — Add User form: field config + turning a valid submit into
-   a new row in the users table. Shares its validation/reset/submit flow
-   with product-form.js/category-form.js/supplier-form.js via modal-form.js.
+   USER-FORM.JS — Add User form (fetch()-based onSubmit, Phase 5.5 contract)
+   plus the real Deactivate/Reactivate row actions and the search/role/
+   status client-side filter (table-filter.js), for users/users.html
+   (Phase 8).
    ========================================================================== */
 
 (function () {
   "use strict";
+
+  var FV = window.FormValidation;
 
   var FORM_ID = "addUserForm";
   var MODAL_ID = "addUserModal";
@@ -16,91 +19,108 @@
     "user-username": "Username",
     "user-employee-id": "Employee ID",
     "user-email": "Email",
+    "user-password": "Password",
     "user-role": "Role"
   };
 
   var REQUIRED_FIELD_IDS = [
-    "user-full-name", "user-username", "user-employee-id", "user-email", "user-role"
+    "user-full-name", "user-username", "user-employee-id", "user-email", "user-password", "user-role"
   ];
 
-  var ROLE_LABELS = {
-    admin: "System Administrator",
-    supervisor: "Inventory Supervisor",
-    staff: "Inventory Staff"
-  };
-
-  var ROLE_BADGE_CLASSES = {
-    admin: "badge-indigo",
-    supervisor: "badge-warning",
-    staff: "badge-success"
+  var SERVER_FIELD_MAP = {
+    full_name: "user-full-name",
+    username: "user-username",
+    employee_id: "user-employee-id",
+    email: "user-email",
+    password: "user-password",
+    role: "user-role"
   };
 
   function getField(id) {
     return document.getElementById(id);
   }
 
-  function buildUserRow(data) {
-    var row = document.createElement("tr");
-
-    var nameCell = document.createElement("td");
-    nameCell.textContent = data.full_name;
-    var sub = document.createElement("div");
-    sub.className = "cell-sub";
-    sub.textContent = data.employee_id;
-    nameCell.appendChild(sub);
-    row.appendChild(nameCell);
-
-    var usernameCell = document.createElement("td");
-    usernameCell.className = "mono";
-    usernameCell.textContent = data.username;
-    row.appendChild(usernameCell);
-
-    var emailCell = document.createElement("td");
-    emailCell.textContent = data.email;
-    row.appendChild(emailCell);
-
-    var roleCell = document.createElement("td");
-    var roleBadge = document.createElement("span");
-    roleBadge.className = "badge " + (ROLE_BADGE_CLASSES[data.role] || "badge-indigo");
-    roleBadge.textContent = ROLE_LABELS[data.role] || data.role;
-    roleCell.appendChild(roleBadge);
-    row.appendChild(roleCell);
-
-    var statusCell = document.createElement("td");
-    var statusBadge = document.createElement("span");
-    statusBadge.className = "badge badge-success";
-    statusBadge.textContent = "Active";
-    statusCell.appendChild(statusBadge);
-    row.appendChild(statusCell);
-
-    var actionsCell = document.createElement("td");
-    var actions = document.createElement("div");
-    actions.className = "widget-actions";
-    actions.appendChild(DomUtils.buildActionButton("Edit user", "icon-edit"));
-    actions.appendChild(DomUtils.buildActionButton("Deactivate user", "icon-x"));
-    actionsCell.appendChild(actions);
-    row.appendChild(actionsCell);
-
-    return row;
+  function clearFormError() {
+    var box = getField("addUserFormError");
+    if (box) { box.hidden = true; box.textContent = ""; }
   }
 
-  function addUserToTable(data) {
+  function showFormError(message) {
+    var box = getField("addUserFormError");
+    if (box) { box.hidden = false; box.textContent = message; }
+  }
+
+  function applyServerErrors(errors) {
+    Object.keys(errors).forEach(function (fieldName) {
+      var fieldId = SERVER_FIELD_MAP[fieldName];
+      var field = fieldId ? getField(fieldId) : null;
+      var entries = errors[fieldName];
+      var text = (entries && entries.length && entries[0].message) || "This field is invalid.";
+      if (field) {
+        FV.setFieldError(field, text);
+      } else {
+        showFormError(text);
+      }
+    });
+  }
+
+  function onSubmit(form) {
+    clearFormError();
+    return fetch(form.getAttribute("action") || window.location.pathname, {
+      method: "POST",
+      body: new FormData(form)
+    }).then(function (response) {
+      return response.json().catch(function () { return null; }).then(function (payload) {
+        if (response.ok) {
+          window.location.reload();
+          return true;
+        }
+        if (payload && payload.errors) {
+          applyServerErrors(payload.errors);
+        } else {
+          showFormError("Could not create this user. Please try again.");
+        }
+        return false;
+      });
+    }).catch(function () {
+      showFormError("Could not reach the server. Please try again.");
+      return false;
+    });
+  }
+
+  /* --------------------------------------------------- row actions --- */
+
+  function handleRowAction(event) {
+    var row = event.target.closest("tr[data-user-id]");
+    if (!row) return;
+    var userId = row.getAttribute("data-user-id");
     var tableBody = getField(TABLE_BODY_ID);
-    if (!tableBody) return;
-    tableBody.insertBefore(buildUserRow(data), tableBody.firstChild);
-  }
+    var base = tableBody.getAttribute("data-base-url");
 
-  function collectFormData() {
-    return {
-      full_name: getField("user-full-name").value.trim(),
-      username: getField("user-username").value.trim(),
-      employee_id: getField("user-employee-id").value.trim(),
-      email: getField("user-email").value.trim(),
-      role: getField("user-role").value
-    };
+    if (event.target.closest(".user-deactivate-btn")) {
+      if (!confirm("Deactivate this user? They will no longer be able to log in.")) return;
+      RowActions.postAction(base + userId + "/deactivate/").then(RowActions.reportResult);
+    } else if (event.target.closest(".user-reactivate-btn")) {
+      RowActions.postAction(base + userId + "/reactivate/").then(RowActions.reportResult);
+    }
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    var tableBody = getField(TABLE_BODY_ID);
+    if (tableBody) tableBody.addEventListener("click", handleRowAction);
+
+    if (window.TableFilter && getField(TABLE_BODY_ID)) {
+      TableFilter.init({
+        tableBodyId: TABLE_BODY_ID,
+        searchInputId: "userSearch",
+        selectFilters: [
+          { id: "userRoleFilter", attr: "data-role" },
+          { id: "userStatusFilter", attr: "data-status" }
+        ],
+        emptyStateId: "usersEmptyState"
+      });
+    }
+
     if (!getField(FORM_ID)) return;
 
     ModalForm.init({
@@ -108,7 +128,8 @@
       modalId: MODAL_ID,
       fieldLabels: FIELD_LABELS,
       requiredFieldIds: REQUIRED_FIELD_IDS,
-      onSubmit: function () { addUserToTable(collectFormData()); }
+      onReset: clearFormError,
+      onSubmit: onSubmit
     });
   });
 })();

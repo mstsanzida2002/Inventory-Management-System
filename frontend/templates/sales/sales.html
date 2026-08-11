@@ -99,7 +99,10 @@
                 <div class="widget-actions">
                   <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
                   {% if not sale.is_cancelled %}
-                    <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {# SaleCancelView: SupervisorRequiredMixin #}
+                    {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                      <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% endif %}
                   {% endif %}
                 </div>
               </td>

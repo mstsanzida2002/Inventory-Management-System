@@ -96,11 +96,6 @@
 
   /* -------------------------------------------------------- cancel --- */
 
-  function getCsrfToken() {
-    var input = document.querySelector('#addSaleForm input[name=csrfmiddlewaretoken]');
-    return input ? input.value : "";
-  }
-
   function handleRowAction(event) {
     var btn = event.target.closest(".sale-cancel-btn");
     if (!btn) return;
@@ -112,20 +107,7 @@
 
     var tableBody = getField("salesTableBody");
     var base = tableBody ? tableBody.getAttribute("data-base-url") : "/sales/";
-    fetch(base + saleId + "/cancel/", {
-      method: "POST",
-      headers: { "X-CSRFToken": getCsrfToken() }
-    }).then(function (response) {
-      return response.json().catch(function () { return null; }).then(function (payload) {
-        if (response.ok) {
-          window.location.reload();
-          return;
-        }
-        alert((payload && payload.error) || "Could not cancel this sale.");
-      });
-    }).catch(function () {
-      alert("Could not reach the server. Please try again.");
-    });
+    RowActions.postAction(base + saleId + "/cancel/").then(RowActions.reportResult);
   }
 
   document.addEventListener("DOMContentLoaded", function () {

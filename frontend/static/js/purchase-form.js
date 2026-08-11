@@ -106,24 +106,6 @@
 
   /* ---------------------------------------------------- row actions --- */
 
-  function getCsrfToken() {
-    var input = document.querySelector('#addPurchaseForm input[name=csrfmiddlewaretoken]');
-    return input ? input.value : "";
-  }
-
-  function postAction(url, body) {
-    var formData = body || new FormData();
-    return fetch(url, {
-      method: "POST",
-      headers: { "X-CSRFToken": getCsrfToken() },
-      body: formData
-    }).then(function (response) {
-      return response.json().catch(function () { return null; }).then(function (payload) {
-        return { ok: response.ok, payload: payload };
-      });
-    });
-  }
-
   function poActionUrl(poId, action) {
     var tableBody = getField("purchasesTableBody");
     var base = tableBody ? tableBody.getAttribute("data-base-url") : "/purchases/";
@@ -137,33 +119,23 @@
 
     if (event.target.closest(".po-submit-btn")) {
       if (!confirm("Submit this purchase order for approval?")) return;
-      postAction(poActionUrl(poId, "submit")).then(reloadOrAlert);
+      RowActions.postAction(poActionUrl(poId, "submit")).then(RowActions.reportResult);
     } else if (event.target.closest(".po-approve-btn")) {
       if (!confirm("Approve this purchase order?")) return;
-      postAction(poActionUrl(poId, "approve")).then(reloadOrAlert);
+      RowActions.postAction(poActionUrl(poId, "approve")).then(RowActions.reportResult);
     } else if (event.target.closest(".po-reject-btn")) {
       var reason = prompt("Reason for rejecting this purchase order:");
       if (reason === null) return; // cancelled
       if (!reason.trim()) { alert("A reason is required to reject a purchase order."); return; }
       var formData = new FormData();
       formData.append("reason", reason.trim());
-      postAction(poActionUrl(poId, "reject"), formData).then(reloadOrAlert);
+      RowActions.postAction(poActionUrl(poId, "reject"), formData).then(RowActions.reportResult);
     } else if (event.target.closest(".po-cancel-btn")) {
       if (!confirm("Cancel this purchase order? This cannot be undone.")) return;
-      postAction(poActionUrl(poId, "cancel")).then(reloadOrAlert);
+      RowActions.postAction(poActionUrl(poId, "cancel")).then(RowActions.reportResult);
     } else if (event.target.closest(".po-receive-btn")) {
       openReceiveModal(poId, event.target.closest(".po-receive-btn"));
     }
-  }
-
-  function reloadOrAlert(result) {
-    if (result.ok) {
-      window.location.reload();
-      return;
-    }
-    var message = (result.payload && (result.payload.error ||
-      (result.payload.errors && Object.values(result.payload.errors)[0]))) || "Something went wrong.";
-    alert(typeof message === "string" ? message : "Something went wrong.");
   }
 
   /* --------------------------------------------------- receive modal --- */
@@ -251,14 +223,16 @@
 
       var formData = new FormData();
       formData.append("receive_json", JSON.stringify(entries));
-      postAction(poActionUrl(receiveTargetPoId, "receive"), formData).then(function (result) {
+      RowActions.postAction(poActionUrl(receiveTargetPoId, "receive"), formData).then(function (result) {
         if (result.ok) {
           window.location.reload();
           return;
         }
         if (errorBox) {
           errorBox.hidden = false;
-          errorBox.textContent = (result.payload && result.payload.error) || "Could not receive items.";
+          errorBox.textContent = result.blocked
+            ? "You don't have permission to receive items."
+            : (result.payload && result.payload.error) || "Could not receive items.";
         }
       });
     });

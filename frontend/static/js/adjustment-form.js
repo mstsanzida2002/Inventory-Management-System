@@ -99,23 +99,6 @@
 
   /* --------------------------------------------------- row actions --- */
 
-  function getCsrfToken() {
-    var input = document.querySelector('#addAdjustmentForm input[name=csrfmiddlewaretoken]');
-    return input ? input.value : "";
-  }
-
-  function postAction(url, body) {
-    return fetch(url, {
-      method: "POST",
-      headers: { "X-CSRFToken": getCsrfToken() },
-      body: body || new FormData()
-    }).then(function (response) {
-      return response.json().catch(function () { return null; }).then(function (payload) {
-        return { ok: response.ok, payload: payload };
-      });
-    });
-  }
-
   function handleRowAction(event) {
     var row = event.target.closest("tr[data-adjustment-id]");
     if (!row) return;
@@ -125,25 +108,15 @@
 
     if (event.target.closest(".adj-approve-btn")) {
       if (!confirm("Approve this adjustment? Stock will change immediately.")) return;
-      postAction(base + adjustmentId + "/approve/").then(reloadOrAlert);
+      RowActions.postAction(base + adjustmentId + "/approve/").then(RowActions.reportResult);
     } else if (event.target.closest(".adj-reject-btn")) {
       var reason = prompt("Reason for rejecting this adjustment:");
       if (reason === null) return;
       if (!reason.trim()) { alert("A reason is required to reject an adjustment."); return; }
       var formData = new FormData();
       formData.append("reason", reason.trim());
-      postAction(base + adjustmentId + "/reject/", formData).then(reloadOrAlert);
+      RowActions.postAction(base + adjustmentId + "/reject/", formData).then(RowActions.reportResult);
     }
-  }
-
-  function reloadOrAlert(result) {
-    if (result.ok) {
-      window.location.reload();
-      return;
-    }
-    var message = (result.payload && (result.payload.error ||
-      (result.payload.errors && Object.values(result.payload.errors)[0]))) || "Something went wrong.";
-    alert(typeof message === "string" ? message : "Something went wrong.");
   }
 
   document.addEventListener("DOMContentLoaded", function () {

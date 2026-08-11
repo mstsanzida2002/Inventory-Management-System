@@ -8,12 +8,13 @@
 {% block content %}
 
   {% comment %}
-    Frontend-only mock. SystemSettings (SCHEMA.md §13) is a documented
-    singleton, so this is deliberately ONE form page, not a multi-page
-    settings section — every field below is exactly on that model, nothing
-    invented. The Save button is decorative (type="button", no JS) — no
-    real form submission exists yet, matching every other module's
-    not-yet-wired controls.
+    Phase 8 — SystemSettings (SCHEMA.md §13) is a documented singleton, so
+    this stays ONE form page, not a multi-page settings section, exactly as
+    the Phase 3.6 mock already had it. Every field below maps 1:1 onto that
+    model (SystemSettingsForm, frontend/forms.py) — checked against
+    SCHEMA.md, no mismatch found, nothing invented, nothing dropped. Values
+    now come from the real singleton row (SystemSettings.get_settings())
+    instead of hardcoded mock text.
   {% endcomment %}
 
   <div class="page-heading-row">
@@ -22,14 +23,17 @@
       <p class="text-slate">System-wide configuration. One settings record for the whole company.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
-      <button class="btn btn-primary" type="button">
+      <button class="btn btn-primary" type="submit" form="settingsForm">
         <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
         Save changes
       </button>
     </div>
   </div>
 
-  <form id="settingsForm" novalidate>
+  <form id="settingsForm" method="post" action="{% url 'frontend:settings' %}" enctype="multipart/form-data" novalidate>
+    {% csrf_token %}
+    <div class="form-alert form-alert-error" id="settingsFormError" hidden></div>
+    <div class="form-alert form-alert-success" id="settingsFormSuccess" hidden>Settings saved.</div>
 
     {# --------------------------------------------------- Company info #}
     <div class="panel" style="margin-bottom: var(--sp-6);">
@@ -44,7 +48,8 @@
 
           <div class="field field-full">
             <label class="form-label" for="settings-company-name">Company name</label>
-            <input class="input input-plain" type="text" id="settings-company-name" name="company_name" value="Stockwell Distribution Ltd.">
+            <input class="input input-plain" type="text" id="settings-company-name" name="company_name" value="{{ settings.company_name }}">
+            <div class="field-error" id="settings-company-name-error" role="alert"></div>
           </div>
 
           <div class="field field-full">
@@ -53,26 +58,30 @@
               <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
               <span class="file-drop-text">
                 <span class="file-drop-title">Click to upload a logo</span>
-                <div class="file-drop-filename">PNG or JPG, up to 5MB</div>
+                <div class="file-drop-filename">{% if settings.company_logo %}{{ settings.company_logo.name }}{% else %}PNG or JPG, up to 5MB{% endif %}</div>
               </span>
-              <img class="file-drop-preview" alt="" hidden>
+              <img class="file-drop-preview" alt="" {% if settings.company_logo %}src="{{ settings.company_logo.url }}"{% else %}hidden{% endif %}>
             </label>
             <input type="file" class="sr-only" id="settings-company-logo" name="company_logo" accept="image/png,image/jpeg">
+            <div class="field-error" id="settings-company-logo-error" role="alert"></div>
           </div>
 
           <div class="field field-full">
             <label class="form-label" for="settings-company-address">Company address <span class="optional-tag">(optional)</span></label>
-            <textarea class="textarea" id="settings-company-address" name="company_address" rows="2">4400 Riverside Distribution Park, Warehouse 7, Portland, OR</textarea>
+            <textarea class="textarea" id="settings-company-address" name="company_address" rows="2">{{ settings.company_address }}</textarea>
+            <div class="field-error" id="settings-company-address-error" role="alert"></div>
           </div>
 
           <div class="field">
             <label class="form-label" for="settings-company-email">Company email <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="email" id="settings-company-email" name="company_email" value="ops@stockwell.example">
+            <input class="input input-plain" type="email" id="settings-company-email" name="company_email" value="{{ settings.company_email }}">
+            <div class="field-error" id="settings-company-email-error" role="alert"></div>
           </div>
 
           <div class="field">
             <label class="form-label" for="settings-company-phone">Company phone <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="text" id="settings-company-phone" name="company_phone" value="+1 (503) 555-0199">
+            <input class="input input-plain" type="text" id="settings-company-phone" name="company_phone" value="{{ settings.company_phone }}">
+            <div class="field-error" id="settings-company-phone-error" role="alert"></div>
           </div>
 
         </div>
@@ -92,27 +101,32 @@
 
           <div class="field">
             <label class="form-label" for="settings-default-reorder-level">Default reorder level</label>
-            <input class="input input-plain" type="number" id="settings-default-reorder-level" name="default_reorder_level" value="10" min="0" step="1">
+            <input class="input input-plain" type="number" id="settings-default-reorder-level" name="default_reorder_level" value="{{ settings.default_reorder_level }}" min="0" step="1">
+            <div class="field-error" id="settings-default-reorder-level-error" role="alert"></div>
           </div>
 
           <div class="field">
             <label class="form-label" for="settings-forecast-period-weeks">Forecast period (weeks)</label>
-            <input class="input input-plain" type="number" id="settings-forecast-period-weeks" name="forecast_period_weeks" value="4" min="0" step="1">
+            <input class="input input-plain" type="number" id="settings-forecast-period-weeks" name="forecast_period_weeks" value="{{ settings.forecast_period_weeks }}" min="0" step="1">
+            <div class="field-error" id="settings-forecast-period-weeks-error" role="alert"></div>
           </div>
 
           <div class="field">
             <label class="form-label" for="settings-forecast-retrain-days">Forecast retrain interval (days)</label>
-            <input class="input input-plain" type="number" id="settings-forecast-retrain-days" name="forecast_retrain_days" value="7" min="0" step="1">
+            <input class="input input-plain" type="number" id="settings-forecast-retrain-days" name="forecast_retrain_days" value="{{ settings.forecast_retrain_days }}" min="0" step="1">
+            <div class="field-error" id="settings-forecast-retrain-days-error" role="alert"></div>
           </div>
 
           <div class="field">
             <label class="form-label" for="settings-slow-moving-threshold">Slow-moving threshold (days)</label>
-            <input class="input input-plain" type="number" id="settings-slow-moving-threshold" name="slow_moving_threshold_days" value="60" min="0" step="1">
+            <input class="input input-plain" type="number" id="settings-slow-moving-threshold" name="slow_moving_threshold_days" value="{{ settings.slow_moving_threshold_days }}" min="0" step="1">
+            <div class="field-error" id="settings-slow-moving-threshold-error" role="alert"></div>
           </div>
 
           <div class="field">
             <label class="form-label" for="settings-dead-stock-threshold">Dead stock threshold (days)</label>
-            <input class="input input-plain" type="number" id="settings-dead-stock-threshold" name="dead_stock_threshold_days" value="180" min="0" step="1">
+            <input class="input input-plain" type="number" id="settings-dead-stock-threshold" name="dead_stock_threshold_days" value="{{ settings.dead_stock_threshold_days }}" min="0" step="1">
+            <div class="field-error" id="settings-dead-stock-threshold-error" role="alert"></div>
           </div>
 
         </div>
@@ -128,7 +142,8 @@
         <div class="form-grid">
           <div class="field">
             <label class="form-label" for="settings-session-timeout">Session timeout (seconds)</label>
-            <input class="input input-plain" type="number" id="settings-session-timeout" name="session_timeout_seconds" value="3600" min="0" step="1">
+            <input class="input input-plain" type="number" id="settings-session-timeout" name="session_timeout_seconds" value="{{ settings.session_timeout_seconds }}" min="0" step="1">
+            <div class="field-error" id="settings-session-timeout-error" role="alert"></div>
           </div>
         </div>
       </div>
@@ -142,11 +157,11 @@
       <div class="panel-body">
         <div class="flex flex-col gap-3">
           <label class="checkbox-row">
-            <input type="checkbox" name="email_notifications_enabled" id="settings-email-notifications" checked>
+            <input type="checkbox" name="email_notifications_enabled" id="settings-email-notifications" {% if settings.email_notifications_enabled %}checked{% endif %}>
             Enable email notifications
           </label>
           <label class="checkbox-row">
-            <input type="checkbox" name="low_stock_email_enabled" id="settings-low-stock-email" checked>
+            <input type="checkbox" name="low_stock_email_enabled" id="settings-low-stock-email" {% if settings.low_stock_email_enabled %}checked{% endif %}>
             Send low-stock alerts by email
           </label>
         </div>
@@ -155,4 +170,9 @@
 
   </form>
 
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/form-validation.js' %}"></script>
+  <script src="{% static 'js/settings-form.js' %}"></script>
 {% endblock %}

@@ -8,20 +8,20 @@
 {% block content %}
 
   {% comment %}
-    Frontend-only mock. No docs/04_USERS.md or dedicated Users & Roles doc
-    exists (see docs/project_memory.md §12/17) — fields below are exactly
+    Phase 8 — real User queryset, AdminRequiredMixin-gated. Fields are
     SCHEMA.md's User model: username, email, employee_id, full_name, role
-    (UserRole choices: admin/supervisor/staff), is_active. password is
-    deliberately NOT a form field here (not in this task's specified field
-    list) — matching how Product's own is_active isn't asked at creation
-    either; is_active defaults true and only shows as a status badge in
-    the list, same precedent as every other module's Add modal.
+    (UserRole choices: admin/supervisor/staff), plus a password field the
+    Phase 3.6 mock explicitly didn't have — see UserForm's docstring
+    (frontend/forms.py) for why that changed. is_active defaults true and
+    only shows as a status badge in the list (not asked at creation),
+    same precedent as every other module's Add modal; Deactivate/
+    Reactivate are the real controls for flipping it afterward.
   {% endcomment %}
 
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Users &amp; roles</h2>
-      <p class="text-slate">18 system users across 3 roles.</p>
+      <p class="text-slate">{{ counts.total }} system users across 3 roles.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-primary" type="button" data-modal-open="addUserModal">
@@ -36,28 +36,28 @@
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-users"></use></svg>
       <div>
-        <div class="stat-strip-value">18</div>
+        <div class="stat-strip-value">{{ counts.total }}</div>
         <div class="stat-strip-label">Total users</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-shield"></use></svg>
       <div>
-        <div class="stat-strip-value">2</div>
+        <div class="stat-strip-value">{{ counts.admin }}</div>
         <div class="stat-strip-label">Administrators</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-cpu"></use></svg>
       <div>
-        <div class="stat-strip-value">4</div>
+        <div class="stat-strip-value">{{ counts.supervisor }}</div>
         <div class="stat-strip-label">Supervisors</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-box"></use></svg>
       <div>
-        <div class="stat-strip-value">12</div>
+        <div class="stat-strip-value">{{ counts.staff }}</div>
         <div class="stat-strip-label">Staff</div>
       </div>
     </div>
@@ -67,19 +67,19 @@
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:320px;">
         <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" placeholder="Search by name, username, or email...">
+        <input type="search" class="input" id="userSearch" placeholder="Search by name, username, or email...">
       </div>
       <div class="flex gap-3" style="flex-wrap:wrap;">
-        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
-          <option>All roles</option>
-          <option>System Administrator</option>
-          <option>Inventory Supervisor</option>
-          <option>Inventory Staff</option>
+        <select class="input" id="userRoleFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+          <option value="">All roles</option>
+          <option value="admin">System Administrator</option>
+          <option value="supervisor">Inventory Supervisor</option>
+          <option value="staff">Inventory Staff</option>
         </select>
-        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:150px;">
-          <option>All statuses</option>
-          <option>Active</option>
-          <option>Inactive</option>
+        <select class="input" id="userStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:150px;">
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
         </select>
       </div>
     </div>
@@ -97,105 +97,46 @@
               <th></th>
             </tr>
           </thead>
-          <tbody id="usersTableBody">
-
-            <tr>
-              <td>Amara Tenzin<div class="cell-sub">EMP-0001</div></td>
-              <td class="mono">amara.tenzin</td>
-              <td>amara.tenzin@stockwell.example</td>
-              <td><span class="badge badge-indigo">System Administrator</span></td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Priya Nair<div class="cell-sub">EMP-0014</div></td>
-              <td class="mono">priya.nair</td>
-              <td>priya.nair@stockwell.example</td>
-              <td><span class="badge badge-warning">Inventory Supervisor</span></td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Kito Fernandes<div class="cell-sub">EMP-0022</div></td>
-              <td class="mono">kito.fernandes</td>
-              <td>kito.fernandes@stockwell.example</td>
-              <td><span class="badge badge-success">Inventory Staff</span></td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Devlin Okoro<div class="cell-sub">EMP-0031</div></td>
-              <td class="mono">devlin.okoro</td>
-              <td>devlin.okoro@stockwell.example</td>
-              <td><span class="badge badge-success">Inventory Staff</span></td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Sana Malik<div class="cell-sub">EMP-0009</div></td>
-              <td class="mono">sana.malik</td>
-              <td>sana.malik@stockwell.example</td>
-              <td><span class="badge badge-warning">Inventory Supervisor</span></td>
-              <td><span class="badge badge-danger">Inactive</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Reactivate user"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
-            <tr>
-              <td>Elan Voss<div class="cell-sub">EMP-0040</div></td>
-              <td class="mono">elan.voss</td>
-              <td>elan.voss@stockwell.example</td>
-              <td><span class="badge badge-success">Inventory Staff</span></td>
-              <td><span class="badge badge-success">Active</span></td>
-              <td>
-                <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit user"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
-                </div>
-              </td>
-            </tr>
-
+          <tbody id="usersTableBody" data-base-url="{% url 'frontend:users' %}">
+            {% for user in users %}
+              <tr data-user-id="{{ user.pk }}"
+                  data-search="{{ user.full_name|lower }} {{ user.username|lower }} {{ user.email|lower }}"
+                  data-role="{{ user.role }}"
+                  data-status="{% if user.is_active %}active{% else %}inactive{% endif %}">
+                <td>{{ user.full_name }}<div class="cell-sub">{{ user.employee_id }}</div></td>
+                <td class="mono">{{ user.username }}</td>
+                <td>{{ user.email }}</td>
+                <td><span class="badge {{ user.role_badge }}">{{ user.get_role_display }}</span></td>
+                <td>
+                  {% if user.is_active %}
+                    <span class="badge badge-success">Active</span>
+                  {% else %}
+                    <span class="badge badge-danger">Inactive</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div class="widget-actions">
+                    {% if user.is_active %}
+                      <button class="pill-btn user-deactivate-btn" type="button" aria-label="Deactivate user"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% else %}
+                      <button class="pill-btn user-reactivate-btn" type="button" aria-label="Reactivate user"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
           </tbody>
         </table>
+        <div class="empty-state" id="usersEmptyState" hidden>
+          <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
+          <div class="empty-state-title">No users match your filters</div>
+          <p class="empty-state-text">Try a different search term, role, or status.</p>
+        </div>
       </div>
     </div>
 
     <div class="panel-body" style="padding-top:0;">
-      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing 1&ndash;6 of 18 users</p>
-        <div class="flex gap-2">
-          <button class="btn btn-secondary" type="button" disabled>Previous</button>
-          <button class="btn btn-secondary" type="button">Next</button>
-        </div>
-      </div>
+      <p class="text-slate text-xs" style="margin:0;">Showing {{ counts.total }} of {{ counts.total }} users</p>
     </div>
   </div>
 
@@ -213,7 +154,9 @@
         </button>
       </div>
 
-      <form class="modal-body" id="addUserForm" novalidate>
+      <form class="modal-body" id="addUserForm" method="post" action="{% url 'frontend:users' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addUserFormError" hidden></div>
         <div class="form-grid">
 
           <div class="field field-full">
@@ -238,6 +181,12 @@
             <label class="form-label" for="user-email">Email<span class="required-mark">*</span></label>
             <input class="input input-plain" type="email" id="user-email" name="email" placeholder="name@stockwell.example">
             <div class="field-error" id="user-email-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="user-password">Password<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="password" id="user-password" name="password" placeholder="8+ chars, upper/lower/digit/special" autocomplete="new-password">
+            <div class="field-error" id="user-password-error" role="alert"></div>
           </div>
 
           <div class="field field-full">

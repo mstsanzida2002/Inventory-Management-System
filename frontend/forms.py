@@ -22,6 +22,7 @@ from decimal import Decimal, InvalidOperation
 import json
 
 from django import forms
+from django.contrib.auth.password_validation import validate_password
 
 from frontend.models import (
     Category,
@@ -30,7 +31,9 @@ from frontend.models import (
     PurchaseOrder,
     SaleTransaction,
     Supplier,
+    SystemSettings,
     UnitOfMeasurement,
+    User,
 )
 from frontend.validators import validate_product_image
 
@@ -309,6 +312,85 @@ class AdjustmentForm(forms.ModelForm):
         if value is not None and value <= 0:
             raise forms.ValidationError("Quantity must be greater than zero.")
         return value
+
+
+# ---------------------------------------------------------------- Phase 8
+# Users & Roles / Settings. No dedicated doc for either (project_memory.md
+# §12/§17) — built from SCHEMA.md's User/SystemSettings models plus the
+# existing users.html/settings.html mocks.
+
+
+class UserForm(forms.ModelForm):
+    """The users.html mock's own template comment explicitly says password
+    is "deliberately NOT a form field here" (a Phase 3.6-era call made
+    before this page had a real backend to submit to at all). That's no
+    longer tenable now that this creates a real, real User row: a User
+    saved without ever calling set_password() gets Django's
+    set_unusable_password() by default (AbstractBaseUser.set_password(None)),
+    which means the account could never log in — a genuinely broken admin
+    tool, not a faithful "keep the mock's field list" translation. Adding
+    a required password field here is a disclosed judgment call, not a
+    silent deviation: same category of call as Supplier's added "Company
+    name" field (Phase 6) or Purchase's added Submit button (Phase 7) —
+    the mock was missing something the real feature cannot work without.
+    Reuses the exact same StrongPasswordValidator/AUTH_PASSWORD_VALIDATORS
+    stack profile_view already runs a changed password through (Phase 4).
+    """
+
+    password = forms.CharField(widget=forms.PasswordInput, min_length=8)
+
+    class Meta:
+        model = User
+        fields = ["full_name", "username", "employee_id", "email", "role"]
+
+    def clean_password(self):
+        password = self.cleaned_data.get("password", "")
+        validate_password(password)
+        return password
+
+
+class SystemSettingsForm(forms.ModelForm):
+    """settings.html's mock already lists exactly SystemSettings' own
+    fields (its own template comment says so, and checking against
+    SCHEMA.md §13 found no mismatch) — every field below maps 1:1, nothing
+    invented, nothing dropped."""
+
+    class Meta:
+        model = SystemSettings
+        fields = [
+            "company_name", "company_logo", "company_address", "company_email", "company_phone",
+            "default_reorder_level", "forecast_period_weeks", "forecast_retrain_days",
+            "slow_moving_threshold_days", "dead_stock_threshold_days", "session_timeout_seconds",
+            "email_notifications_enabled", "low_stock_email_enabled",
+        ]
+
+    # PositiveIntegerFields with no blank=True on the model (same shape as
+    # ProductForm.reorder_level, Phase 5) — left required=False below so a
+    # blank submission doesn't hard-fail, but unlike a create-only form
+    # like ProductForm, this is always an *update* of the one singleton
+    # row (SystemSettingsForm is only ever instantiated with instance=),
+    # so "left blank" falls back to the row's own current value, not a
+    # hardcoded model default — falling back to the class default here
+    # would silently blank out a real admin-configured value on every
+    # save that happens to omit a field.
+    _FALLBACK_TO_INSTANCE_FIELDS = [
+        "company_name", "default_reorder_level", "forecast_period_weeks",
+        "forecast_retrain_days", "slow_moving_threshold_days",
+        "dead_stock_threshold_days", "session_timeout_seconds",
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in self.fields:
+            self.fields[name].required = False
+        self.fields["company_logo"].validators.append(validate_product_image)
+
+    def clean(self):
+        cleaned = super().clean()
+        for name in self._FALLBACK_TO_INSTANCE_FIELDS:
+            if not cleaned.get(name):
+                cleaned[name] = getattr(self.instance, name)
+        return cleaned
 
 
 class ReasonForm(forms.Form):

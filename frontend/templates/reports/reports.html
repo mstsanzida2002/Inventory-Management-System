@@ -8,21 +8,30 @@
 {% block content %}
 
   {% comment %}
-    Frontend-only mock per docs/10_REPORTS.md. All 9 documented report
-    types are listed below; only Sales and Low Stock have a realistic mock
-    table (matching this project's established "controls exist, aren't
-    wired" pattern from every other list page). date_from/date_to and the
-    PDF/CSV export buttons are decorative, per 10_REPORTS.md's common
-    filter params and generators — no real export exists yet. The
-    category select on each table filters client-side via table-filter.js
-    (see reports.js); date range does not, since TableFilter only matches
-    search text and select attributes, not date ranges.
+    Phase 8 — docs/10_REPORTS.md, real data via frontend/reports.py's 9
+    builders, SupervisorRequiredMixin-gated. The 7 cards that had no
+    preview table in the Phase 3.6 mock (only "Generate", no panel to
+    render into) now link straight to a real PDF/CSV download each —
+    building 7 more preview panels was out of this phase's scope, but
+    every one of the 9 types genuinely exports real PDF/CSV, which is
+    what this phase's own verification bar asks for. Sales/Low Stock keep
+    their full HTML preview, matching the mock's original two-panel
+    design. date_from/date_to/category on both panels feed the *export*
+    links (via reports.js reading the current input values at click time,
+    since PDF/CSV generation reads the same request.GET params
+    10_REPORTS.md documents) — the on-page preview tables themselves stay
+    unfiltered/real-time, same as every other list page in this project.
+    Sales rows dropped the mock's single "Category" column: a real sale
+    can span multiple product categories, so showing one column would be
+    fabricating a value that isn't well-defined — the category filter
+    still exists as a real *export* parameter, just not as an on-page
+    filter for that panel.
   {% endcomment %}
 
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Reports</h2>
-      <p class="text-slate">9 report types sourced from inventory, purchase, sales, and AI data. Supervisor+ only once real auth exists.</p>
+      <p class="text-slate">9 report types sourced from inventory, purchase, sales, and AI data. Supervisor+ only.</p>
     </div>
   </div>
 
@@ -32,14 +41,20 @@
       <span class="kpi-icon tint-indigo" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-layers"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Inventory Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Current stock, value, and status for every product.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'inventory' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'inventory' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
       <span class="kpi-icon tint-indigo" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-cart"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Purchase Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Purchase orders and line items by supplier and date.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'purchases' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'purchases' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
@@ -53,14 +68,20 @@
       <span class="kpi-icon tint-indigo" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-refresh"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Inventory Movement Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Every stock change, in or out, with reference.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'movements' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'movements' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
       <span class="kpi-icon tint-amber" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-sliders"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Inventory Adjustment Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Approved and rejected stock adjustments.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'adjustments' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'adjustments' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
@@ -74,21 +95,30 @@
       <span class="kpi-icon tint-danger" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-alert-circle"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Out of Stock Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Products with zero units on hand.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'out-of-stock' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'out-of-stock' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
       <span class="kpi-icon tint-indigo" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-cpu"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">AI Demand Forecast Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Forecasted demand and recommended reorder quantities.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-forecasts' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-forecasts' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
       <span class="kpi-icon tint-danger" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-trending-down"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">AI Slow-Moving &amp; Dead Stock Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Classification breakdown and recommendations.</p>
-      <button class="btn btn-secondary btn-block" type="button">Generate</button>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-classifications' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-classifications' %}?format=csv">CSV</a>
+      </div>
     </div>
 
   </div>
@@ -98,14 +128,14 @@
     <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3);">
       <div>
         <h3>Sales Report</h3>
-        <p class="panel-sub">Completed transactions, `06_SALES.md`</p>
+        <p class="panel-sub">Completed transactions, docs/06_SALES.md</p>
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap;">
-        <button class="btn btn-secondary" type="button">
+        <button class="btn btn-secondary report-export-btn" type="button" data-panel="sales" data-format="pdf" data-base-url="{% url 'frontend:report_export' 'sales' %}">
           <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
           Export PDF
         </button>
-        <button class="btn btn-secondary" type="button">
+        <button class="btn btn-secondary report-export-btn" type="button" data-panel="sales" data-format="csv" data-base-url="{% url 'frontend:report_export' 'sales' %}">
           <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
           Export CSV
         </button>
@@ -116,20 +146,20 @@
       <div class="flex gap-3" style="flex-wrap:wrap; margin-bottom: var(--sp-5);">
         <div class="field" style="margin-bottom:0; max-width:170px;">
           <label class="form-label" for="salesReportFrom">From</label>
-          <input class="input input-plain" type="date" id="salesReportFrom" value="2026-07-01">
+          <input class="input input-plain" type="date" id="salesReportFrom">
         </div>
         <div class="field" style="margin-bottom:0; max-width:170px;">
           <label class="form-label" for="salesReportTo">To</label>
-          <input class="input input-plain" type="date" id="salesReportTo" value="2026-07-30">
+          <input class="input input-plain" type="date" id="salesReportTo">
         </div>
         <div class="field" style="margin-bottom:0; max-width:200px;">
-          <label class="form-label" for="salesReportCategory">Category</label>
+          <label class="form-label" for="salesReportCategory">Category <span class="optional-tag">(export only)</span></label>
           <div class="select-wrap">
             <select class="input select" id="salesReportCategory">
               <option value="">All categories</option>
-              <option>Medical Supplies</option>
-              <option>Tools</option>
-              <option>Electronics</option>
+              {% for category in categories %}
+                <option value="{{ category.pk }}">{{ category.name }}</option>
+              {% endfor %}
             </select>
             <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
           </div>
@@ -140,14 +170,14 @@
         <div class="stat-strip-item">
           <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
           <div>
-            <div class="stat-strip-value">$45,210</div>
+            <div class="stat-strip-value">${{ sales_summary.total_revenue|floatformat:2 }}</div>
             <div class="stat-strip-label">Total revenue</div>
           </div>
         </div>
         <div class="stat-strip-item">
           <svg class="icon icon-lg"><use href="#icon-receipt"></use></svg>
           <div>
-            <div class="stat-strip-value">128</div>
+            <div class="stat-strip-value">{{ sales_summary.total_transactions }}</div>
             <div class="stat-strip-label">Transactions</div>
           </div>
         </div>
@@ -160,51 +190,26 @@
               <th>Invoice</th>
               <th>Date</th>
               <th>Customer</th>
-              <th>Category</th>
+              <th>Items</th>
               <th>Total</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody id="salesReportTableBody">
-            <tr data-search="inv-20260728-3421" data-category="Medical Supplies">
-              <td class="mono">INV-20260728-3421</td>
-              <td class="mono">Jul 28, 2026</td>
-              <td>Acme Corp</td>
-              <td>Medical Supplies</td>
-              <td class="mono">$1,900.00</td>
-              <td><span class="badge badge-success">Completed</span></td>
-            </tr>
-            <tr data-search="inv-20260727-3418" data-category="Tools">
-              <td class="mono">INV-20260727-3418</td>
-              <td class="mono">Jul 27, 2026</td>
-              <td>&mdash;</td>
-              <td>Tools</td>
-              <td class="mono">$539.94</td>
-              <td><span class="badge badge-success">Completed</span></td>
-            </tr>
-            <tr data-search="inv-20260727-3402" data-category="Electronics">
-              <td class="mono">INV-20260727-3402</td>
-              <td class="mono">Jul 27, 2026</td>
-              <td>BrightPath Retail</td>
-              <td>Electronics</td>
-              <td class="mono">$2,730.00</td>
-              <td><span class="badge badge-danger">Cancelled</span></td>
-            </tr>
-            <tr data-search="inv-20260726-3390" data-category="Medical Supplies">
-              <td class="mono">INV-20260726-3390</td>
-              <td class="mono">Jul 26, 2026</td>
-              <td>Northgate Clinic</td>
-              <td>Medical Supplies</td>
-              <td class="mono">$847.50</td>
-              <td><span class="badge badge-success">Completed</span></td>
-            </tr>
+            {% for row in sales_rows %}
+              <tr>
+                <td class="mono">{{ row.0 }}</td>
+                <td class="mono">{{ row.1 }}</td>
+                <td>{{ row.2 }}</td>
+                <td class="mono">{{ row.3 }}</td>
+                <td class="mono">${{ row.4 }}</td>
+                <td><span class="badge badge-success">{{ row.5 }}</span></td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="6" class="text-slate text-center">No completed sales yet.</td></tr>
+            {% endfor %}
           </tbody>
         </table>
-        <div class="empty-state" id="salesReportEmptyState" hidden>
-          <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
-          <div class="empty-state-title">No transactions match your filters</div>
-          <p class="empty-state-text">Try a different category.</p>
-        </div>
       </div>
     </div>
   </div>
@@ -217,11 +222,11 @@
         <p class="panel-sub">InventoryRecord where status = low_stock</p>
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap;">
-        <button class="btn btn-secondary" type="button">
+        <button class="btn btn-secondary report-export-btn" type="button" data-panel="low-stock" data-format="pdf" data-base-url="{% url 'frontend:report_export' 'low-stock' %}">
           <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
           Export PDF
         </button>
-        <button class="btn btn-secondary" type="button">
+        <button class="btn btn-secondary report-export-btn" type="button" data-panel="low-stock" data-format="csv" data-base-url="{% url 'frontend:report_export' 'low-stock' %}">
           <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
           Export CSV
         </button>
@@ -234,8 +239,9 @@
         <div class="select-wrap">
           <select class="input select" id="lowStockReportCategory">
             <option value="">All categories</option>
-            <option>Tools</option>
-            <option>Office Supplies</option>
+            {% for category in categories %}
+              <option value="{{ category.pk }}">{{ category.name }}</option>
+            {% endfor %}
           </select>
           <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
         </div>
@@ -253,23 +259,18 @@
             </tr>
           </thead>
           <tbody id="lowStockReportTableBody">
-            <tr data-search="cordless drill 18v sku-11832" data-category="Tools">
-              <td>Cordless Drill, 18V<div class="cell-sub">SKU-11832</div></td>
-              <td>Tools</td>
-              <td class="mono">4 units</td>
-              <td class="mono">10</td>
-              <td>Redline Hardware Co.</td>
-            </tr>
-            <tr data-search="a4 copy paper ream sku-30456" data-category="Office Supplies">
-              <td>A4 Copy Paper, Ream<div class="cell-sub">SKU-30456</div></td>
-              <td>Office Supplies</td>
-              <td class="mono">9 units</td>
-              <td class="mono">15</td>
-              <td>Paper Trail Ltd.</td>
-            </tr>
+            {% for row in low_stock_rows %}
+              <tr data-search="{{ row.0|lower }}" data-category="{{ row.1 }}">
+                <td>{{ row.0 }}</td>
+                <td>{{ row.1 }}</td>
+                <td class="mono">{{ row.2 }} units</td>
+                <td class="mono">{{ row.3 }}</td>
+                <td>{{ row.4 }}</td>
+              </tr>
+            {% endfor %}
           </tbody>
         </table>
-        <div class="empty-state" id="lowStockReportEmptyState" hidden>
+        <div class="empty-state" id="lowStockReportEmptyState" {% if low_stock_rows %}hidden{% endif %}>
           <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
           <div class="empty-state-title">No products match your filters</div>
           <p class="empty-state-text">Try a different category.</p>

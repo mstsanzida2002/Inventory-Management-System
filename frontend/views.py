@@ -32,6 +32,7 @@ from django.contrib.auth import (
     update_session_auth_hash,
 )
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -41,6 +42,7 @@ from django.utils import timezone
 from django.views import View
 
 from frontend import audit
+from frontend import reports as report_lib
 from frontend.forms import (
     AdjustmentForm,
     CategoryForm,
@@ -49,13 +51,17 @@ from frontend.forms import (
     ReasonForm,
     SaleTransactionForm,
     SupplierForm,
+    SystemSettingsForm,
+    UserForm,
     parse_line_items,
 )
-from frontend.mixins import AnyStaffMixin, SupervisorRequiredMixin
+from frontend.mixins import AdminRequiredMixin, AnyStaffMixin, SupervisorRequiredMixin
 from frontend.models import (
     AdjustmentStatus,
+    AuditLog,
     Category,
     InventoryAdjustment,
+    Notification,
     NotificationType,
     POStatus,
     Product,
@@ -67,6 +73,7 @@ from frontend.models import (
     SystemSettings,
     UnitOfMeasurement,
     User,
+    UserRole,
 )
 from frontend.notifications import notify_supervisors, notify_user
 from frontend.services import (
@@ -710,17 +717,253 @@ def demand_forecasting(request):
 def slow_moving_dead_stock(request):
     return render(request, "intelligence/slow_moving.html", {"active_nav": "slow-moving"})
 
-def reports(request):
-    return render(request, "reports/reports.html", {"active_nav": "reports"})
+# ------------------------------------------------------------------ Reports
+# Phase 8 — docs/10_REPORTS.md: "All report access is Supervisor+ only and
+# must be audit-logged." SupervisorRequiredMixin (Phase 7, confirmed there
+# to mean Admin-or-Supervisor via the RBAC hierarchy, not an exact-role
+# match) is the same mixin that guards Purchase/Adjustment approve/reject.
+# frontend/reports.py holds the 9 report builders + PDF/CSV generators —
+# kept out of this file the same way frontend/audit.py and
+# frontend/notifications.py already are.
 
-def notifications(request):
-    return render(request, "notifications/notifications.html", {"active_nav": "notifications"})
+class ReportsView(SupervisorRequiredMixin, View):
+    """GET renders the reports page itself: 9 report cards (each linking
+    straight to ReportExportView for PDF/CSV — this page has no per-card
+    HTML preview), plus the two live preview panels the Phase 3.6 mock
+    already had (Sales, Low Stock) with real data. Viewing either preview
+    counts as 10_REPORTS.md's "REPORT_GENERATED | Any report viewed in
+    browser" — logged once per panel on this GET, not once per report
+    type (the other 7 only ever get logged if actually exported, since
+    they're never rendered to the browser)."""
 
-def users(request):
-    return render(request, "users/users.html", {"active_nav": "users"})
+    def get(self, request):
+        sales_title, sales_headers, sales_rows = report_lib.build_sales_report(request)
+        sales_qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED)
+        sales_summary = report_lib.sales_report_summary(sales_qs)
+        low_stock_title, low_stock_headers, low_stock_rows = report_lib.build_low_stock_report(request)
 
-def audit_log(request):
-    return render(request, "audit/audit_log.html", {"active_nav": "audit-log"})
+        audit.log_action(request.user, audit.REPORT_GENERATED, "reports", status="success",
+                          details={"report": "sales"}, request=request)
+        audit.log_action(request.user, audit.REPORT_GENERATED, "reports", status="success",
+                          details={"report": "low_stock"}, request=request)
 
-def settings(request):
-    return render(request, "settings/settings.html", {"active_nav": "settings"})
+        context = {
+            "active_nav": "reports",
+            "categories": Category.objects.filter(is_active=True).order_by("name"),
+            "sales_headers": sales_headers,
+            "sales_rows": sales_rows,
+            "sales_summary": sales_summary,
+            "low_stock_headers": low_stock_headers,
+            "low_stock_rows": low_stock_rows,
+        }
+        return render(request, "reports/reports.html", context)
+
+
+class ReportExportView(SupervisorRequiredMixin, View):
+    """GET .../reports/export/<report_type>/?format=pdf|csv — a plain GET
+    download link, not a fetch()-based endpoint (10_REPORTS.md's own
+    format param is a query string on a GET, not a POST body)."""
+
+    def get(self, request, report_type):
+        builder = report_lib.REPORT_BUILDERS.get(report_type)
+        if builder is None:
+            return JsonResponse({"success": False, "error": "Unknown report type."}, status=404)
+
+        export_format = request.GET.get("format")
+        title, headers, rows = builder(request)
+        filename_base = report_type.replace("-", "_")
+
+        if export_format == "pdf":
+            audit.log_action(request.user, audit.REPORT_EXPORTED_PDF, "reports", status="success",
+                              details={"report": report_type}, request=request)
+            return report_lib.generate_pdf_response(title, headers, rows, f"{filename_base}_report.pdf")
+        elif export_format == "csv":
+            audit.log_action(request.user, audit.REPORT_EXPORTED_CSV, "reports", status="success",
+                              details={"report": report_type}, request=request)
+            return report_lib.generate_csv_response(headers, rows, f"{filename_base}_report.csv")
+
+        return JsonResponse({"success": False, "error": "format must be 'pdf' or 'csv'."}, status=400)
+
+# --------------------------------------------------------- Notifications
+# Phase 8 — docs/11_NOTIFICATIONS.md's list/mark-read/mark-all-read/
+# unread-count views. notify_user()/notify_supervisors() (Phase 3.5,
+# frontend/notifications.py) already write the Notification rows this
+# phase only ever reads/updates is_read on — never creates one directly,
+# matching that module's own "Never create Notification objects directly
+# in other modules" rule. Any authenticated user sees their own
+# notifications (no role gate — 11_NOTIFICATIONS.md's views use
+# @login_required only, not a role-restricted decorator).
+
+# icon id + inline tint style per NotificationType, matching the exact
+# icon/color choices the Phase 3.6 mock already used per notification
+# type (see notifications.html's original mock rows) — kept as a style
+# string (not new CSS classes) since every value here already exists as
+# a design-token CSS var, just applied inline like the mock did.
+_NOTIF_ICON = {
+    NotificationType.LOW_STOCK: ("icon-alert-triangle", "background:var(--c-warning-tint); color:#9C6B12;"),
+    NotificationType.OUT_OF_STOCK: ("icon-alert-circle", "background:var(--c-danger-tint); color:var(--c-danger);"),
+    NotificationType.PO_PENDING: ("icon-clock", "background:var(--c-warning-tint); color:#9C6B12;"),
+    NotificationType.PO_APPROVED: ("icon-check-circle", "background:var(--c-success-tint); color:var(--c-success);"),
+    NotificationType.PO_REJECTED: ("icon-alert-circle", "background:var(--c-danger-tint); color:var(--c-danger);"),
+    NotificationType.ADJ_PENDING: ("icon-clock", "background:var(--c-warning-tint); color:#9C6B12;"),
+    NotificationType.ADJ_APPROVED: ("icon-check-circle", "background:var(--c-success-tint); color:var(--c-success);"),
+    NotificationType.AI_REPLENISH: ("icon-cpu", "background:var(--c-amber-tint); color:#9C6B12;"),
+    NotificationType.AI_SLOW_STOCK: ("icon-trending-down", "background:var(--c-danger-tint); color:var(--c-danger);"),
+    NotificationType.AI_DEAD_STOCK: ("icon-trending-down", "background:var(--c-danger-tint); color:var(--c-danger);"),
+    NotificationType.PASSWORD_CHANGED: ("icon-shield", "background:var(--c-slate-100); color:var(--c-slate);"),
+    NotificationType.SALE_COMPLETED: ("icon-receipt", "background:var(--c-success-tint); color:var(--c-success);"),
+}
+_NOTIF_ICON_DEFAULT = ("icon-bell", "background:var(--c-slate-100); color:var(--c-slate);")
+
+
+class NotificationListView(LoginRequiredMixin, View):
+
+    def get(self, request):
+        notifications = list(
+            Notification.objects.filter(recipient=request.user).order_by("-created_at")[:100]
+        )
+        for notif in notifications:
+            notif.icon_name, notif.icon_style = _NOTIF_ICON.get(notif.type, _NOTIF_ICON_DEFAULT)
+        unread_count = sum(1 for n in notifications if not n.is_read)
+        context = {
+            "active_nav": "notifications",
+            "notifications": notifications,
+            "unread_count": unread_count,
+        }
+        return render(request, "notifications/notifications.html", context)
+
+
+class NotificationMarkReadView(LoginRequiredMixin, View):
+
+    def post(self, request, pk):
+        updated = Notification.objects.filter(pk=pk, recipient=request.user).update(is_read=True)
+        if not updated:
+            return JsonResponse({"success": False, "error": "Notification not found."}, status=404)
+        return JsonResponse({"success": True})
+
+
+class NotificationMarkAllReadView(LoginRequiredMixin, View):
+
+    def post(self, request):
+        Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+        return JsonResponse({"success": True})
+
+
+class NotificationUnreadCountView(LoginRequiredMixin, View):
+
+    def get(self, request):
+        count = Notification.objects.filter(recipient=request.user, is_read=False).count()
+        return JsonResponse({"unread_count": count})
+
+# ------------------------------------------------------------- Users & Roles
+# Phase 8 — no dedicated doc (project_memory.md §12/§17); built from
+# SCHEMA.md's User model + API_CONTRACTS.md's User Management Endpoints
+# table (list/create/deactivate/reactivate, all Admin-only) plus the
+# existing users.html mock. See UserForm's own docstring (frontend/forms.py)
+# for the one disclosed field-list deviation: a required password field,
+# which the mock explicitly didn't have.
+
+_ROLE_BADGE = {UserRole.ADMIN: "badge-indigo", UserRole.SUPERVISOR: "badge-warning", UserRole.STAFF: "badge-success"}
+
+
+class UserListCreateView(AdminRequiredMixin, View):
+
+    def get(self, request):
+        users = list(User.objects.order_by("full_name"))
+        counts = {"total": 0, "admin": 0, "supervisor": 0, "staff": 0}
+        for user in users:
+            user.role_badge = _ROLE_BADGE.get(user.role, "badge-indigo")
+            counts["total"] += 1
+            counts[user.role] += 1
+        context = {"active_nav": "users", "users": users, "counts": counts}
+        return render(request, "users/users.html", context)
+
+    def post(self, request):
+        form = UserForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        user = form.save(commit=False)
+        user.set_password(form.cleaned_data["password"])
+        user.save()
+        audit.log_action(
+            request.user, audit.USER_CREATED, "users",
+            affected_id=user.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class UserDeactivateView(AdminRequiredMixin, View):
+    """API_CONTRACTS.md: `PATCH /api/v1/users/{id}/deactivate/`, Admin
+    only — POST here to match every other action endpoint in this project
+    (approve/reject/cancel are all POST, not PATCH; see Phase 7)."""
+
+    def post(self, request, pk):
+        target = get_object_or_404(User, pk=pk)
+        if target.pk == request.user.pk:
+            return JsonResponse({"success": False, "error": "You cannot deactivate your own account."}, status=400)
+        target.is_active = False
+        target.save(update_fields=["is_active"])
+        audit.log_action(
+            request.user, audit.USER_DEACTIVATED, "users",
+            affected_id=target.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class UserReactivateView(AdminRequiredMixin, View):
+
+    def post(self, request, pk):
+        target = get_object_or_404(User, pk=pk)
+        target.is_active = True
+        target.save(update_fields=["is_active"])
+        audit.log_action(
+            request.user, audit.USER_REACTIVATED, "users",
+            affected_id=target.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+# ------------------------------------------------------------- Audit Log
+# Phase 8 — docs/13_AUDIT.md: "Only System Administrator can view the full
+# audit log" and "read-only — no update, no delete (enforced in model)".
+# AuditLog.save()/delete() already raise PermissionError on any attempt to
+# mutate an existing row (Phase 1) — this view only ever reads.
+
+class AuditLogListView(AdminRequiredMixin, View):
+
+    def get(self, request):
+        logs = list(
+            AuditLog.objects.select_related("user").order_by("-timestamp")[:500]
+        )
+        for log in logs:
+            log.user_label = log.user.full_name if log.user else "System"
+        context = {
+            "active_nav": "audit-log",
+            "logs": logs,
+            "total_count": AuditLog.objects.count(),
+            "modules": sorted(AuditLog.objects.values_list("module", flat=True).distinct()),
+        }
+        return render(request, "audit/audit_log.html", context)
+
+# --------------------------------------------------------------- Settings
+# Phase 8 — SystemSettings (SCHEMA.md §13) is a documented singleton,
+# already enforced at the model level (SystemSettings.save() forces
+# pk=1 — Phase 3.4, BUG-21). This is the one and only place that form is
+# ever rendered/saved from.
+
+class SettingsView(AdminRequiredMixin, View):
+
+    def get(self, request):
+        settings_obj = SystemSettings.get_settings()
+        context = {"active_nav": "settings", "settings": settings_obj}
+        return render(request, "settings/settings.html", context)
+
+    def post(self, request):
+        settings_obj = SystemSettings.get_settings()
+        form = SystemSettingsForm(request.POST, request.FILES, instance=settings_obj)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        form.save()
+        audit.log_action(request.user, audit.SETTINGS_UPDATED, "settings", status="success", request=request)
+        return JsonResponse({"success": True})

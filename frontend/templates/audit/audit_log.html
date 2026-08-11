@@ -8,19 +8,20 @@
 {% block content %}
 
   {% comment %}
-    Frontend-only mock per docs/13_AUDIT.md. Rows use real action constants
-    from frontend/audit.py (AuditLog is IMMUTABLE — model-enforced, see
-    docs/bugsfound.md BUG-20's sibling fix — so this page will only ever
-    be a read-only viewer, matching 13_AUDIT.md's "Admin only" rule; no
-    RBAC gate exists yet, see this task's own scope). module/status filter
-    client-side via table-filter.js (audit-log.js); date range stays
-    decorative like every other list page's date filters.
+    Phase 8 — real AuditLog queryset (AdminRequiredMixin-gated, per
+    13_AUDIT.md's "Admin only" rule). AuditLog is IMMUTABLE — model-enforced
+    (docs/bugsfound.md BUG-20's sibling fix) — so this page is, and will
+    only ever be, a read-only viewer; no edit/delete controls exist here by
+    design. module/status filter client-side via table-filter.js
+    (audit-log.js), against real data-* attributes below; date range stays
+    decorative like every other list page's date filters — no other Phase
+    5-7 list page wired real server-side date filtering either.
   {% endcomment %}
 
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Audit log</h2>
-      <p class="text-slate">Immutable record of every significant action &mdash; System Administrator only once real auth exists.</p>
+      <p class="text-slate">Immutable record of every significant action &mdash; System Administrator only.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-secondary" type="button">
@@ -45,12 +46,9 @@
         </div>
         <select class="input" id="auditModuleFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
           <option value="">All modules</option>
-          <option value="authentication">Authentication</option>
-          <option value="purchases">Purchases</option>
-          <option value="sales">Sales</option>
-          <option value="adjustments">Adjustments</option>
-          <option value="inventory">Inventory</option>
-          <option value="products">Products</option>
+          {% for module in modules %}
+            <option value="{{ module }}">{{ module|title }}</option>
+          {% endfor %}
         </select>
         <div class="segmented" id="auditStatusToggle">
           <button type="button" class="is-active" data-value="">All</button>
@@ -75,87 +73,23 @@
             </tr>
           </thead>
           <tbody id="auditTableBody">
-
-            <tr data-search="amara tenzin po_approved" data-module="purchases" data-status="success">
-              <td class="mono">Jul 30, 2026 09:14</td>
-              <td>Amara Tenzin</td>
-              <td class="mono">PO_APPROVED</td>
-              <td><span class="badge badge-indigo">purchases</span></td>
-              <td class="mono">4821</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">10.0.0.14</td>
-            </tr>
-
-            <tr data-search="kito fernandes sale_created" data-module="sales" data-status="success">
-              <td class="mono">Jul 30, 2026 08:52</td>
-              <td>Kito Fernandes</td>
-              <td class="mono">SALE_CREATED</td>
-              <td><span class="badge badge-indigo">sales</span></td>
-              <td class="mono">3421</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">10.0.0.22</td>
-            </tr>
-
-            <tr data-search="unknown user login_failed" data-module="authentication" data-status="failure">
-              <td class="mono">Jul 30, 2026 07:31</td>
-              <td class="text-slate">Unknown (unauthenticated)</td>
-              <td class="mono">LOGIN_FAILED</td>
-              <td><span class="badge badge-indigo">authentication</span></td>
-              <td class="mono">&mdash;</td>
-              <td><span class="badge badge-danger">Failure</span></td>
-              <td class="mono">203.0.113.8</td>
-            </tr>
-
-            <tr data-search="priya nair adjustment_approved" data-module="adjustments" data-status="success">
-              <td class="mono">Jul 29, 2026 16:40</td>
-              <td>Priya Nair</td>
-              <td class="mono">ADJUSTMENT_APPROVED</td>
-              <td><span class="badge badge-indigo">adjustments</span></td>
-              <td class="mono">521</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">10.0.0.31</td>
-            </tr>
-
-            <tr data-search="system low_stock_alert_sent" data-module="inventory" data-status="success">
-              <td class="mono">Jul 29, 2026 14:02</td>
-              <td class="text-slate">System</td>
-              <td class="mono">LOW_STOCK_ALERT_SENT</td>
-              <td><span class="badge badge-indigo">inventory</span></td>
-              <td class="mono">11832</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">&mdash;</td>
-            </tr>
-
-            <tr data-search="amara tenzin po_rejected" data-module="purchases" data-status="success">
-              <td class="mono">Jul 29, 2026 11:18</td>
-              <td>Amara Tenzin</td>
-              <td class="mono">PO_REJECTED</td>
-              <td><span class="badge badge-indigo">purchases</span></td>
-              <td class="mono">4816</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">10.0.0.14</td>
-            </tr>
-
-            <tr data-search="kito fernandes product_created" data-module="products" data-status="success">
-              <td class="mono">Jul 28, 2026 15:55</td>
-              <td>Kito Fernandes</td>
-              <td class="mono">PRODUCT_CREATED</td>
-              <td><span class="badge badge-indigo">products</span></td>
-              <td class="mono">20194</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">10.0.0.22</td>
-            </tr>
-
-            <tr data-search="priya nair login_success" data-module="authentication" data-status="success">
-              <td class="mono">Jul 28, 2026 08:03</td>
-              <td>Priya Nair</td>
-              <td class="mono">LOGIN_SUCCESS</td>
-              <td><span class="badge badge-indigo">authentication</span></td>
-              <td class="mono">&mdash;</td>
-              <td><span class="badge badge-success">Success</span></td>
-              <td class="mono">10.0.0.31</td>
-            </tr>
-
+            {% for log in logs %}
+              <tr data-search="{{ log.user_label|lower }} {{ log.action|lower }}" data-module="{{ log.module }}" data-status="{{ log.status }}">
+                <td class="mono">{{ log.timestamp|date:"M d, Y H:i" }}</td>
+                <td{% if not log.user %} class="text-slate"{% endif %}>{{ log.user_label }}</td>
+                <td class="mono">{{ log.action }}</td>
+                <td><span class="badge badge-indigo">{{ log.module }}</span></td>
+                <td class="mono">{{ log.affected_id|default:"&mdash;" }}</td>
+                <td>
+                  {% if log.status == "success" %}
+                    <span class="badge badge-success">Success</span>
+                  {% else %}
+                    <span class="badge badge-danger">Failure</span>
+                  {% endif %}
+                </td>
+                <td class="mono">{{ log.ip_address|default:"&mdash;" }}</td>
+              </tr>
+            {% endfor %}
           </tbody>
         </table>
 
@@ -169,7 +103,7 @@
 
     <div class="panel-body" style="padding-top:0;">
       <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing 1&ndash;8 of 2,940 log entries</p>
+        <p class="text-slate text-xs" style="margin:0;">Showing {{ logs|length }} of {{ total_count }} log entries</p>
         <div class="flex gap-2">
           <button class="btn btn-secondary" type="button" disabled>Previous</button>
           <button class="btn btn-secondary" type="button" disabled>Next</button>

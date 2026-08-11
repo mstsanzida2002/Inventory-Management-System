@@ -1616,3 +1616,308 @@ class AdjustmentWorkflowViewTests(TestCase):
 
         adjustment.refresh_from_db()
         self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
+
+
+# --------------------------------------------------------------- Phase 8
+# Audit Log, Notifications, Users & Roles, Settings, Reports. Real HTTP
+# round-trips through frontend/urls.py, same style as Phase 7's workflow
+# tests above — RBAC gate + one success-path assertion per module,
+# following Phase 6/7's live-verification-primary precedent rather than
+# Phase 7's full transition-matrix mandate (this task's own instructions
+# didn't repeat that "write tests alongside" requirement), but still
+# regression-covering every module's admin/supervisor-only gate since
+# those are the security-sensitive part of each one.
+
+class AuditLogViewTests(TestCase):
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='auditadmin', email='auditadmin@example.com', password='x',
+            employee_id='EMP-8001', full_name='Audit Admin', role=UserRole.ADMIN,
+        )
+        self.staff = User.objects.create_user(
+            username='auditstaff', email='auditstaff@example.com', password='x',
+            employee_id='EMP-8002', full_name='Audit Staffer', role=UserRole.STAFF,
+        )
+        AuditLog.objects.create(user=self.admin, action='LOGIN_SUCCESS', module='authentication', status='success')
+
+    def test_admin_sees_real_log_rows(self):
+        self.client.login(username='auditadmin', password='x')
+        response = self.client.get(reverse('frontend:audit_log'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'LOGIN_SUCCESS')
+
+    def test_staff_blocked(self):
+        self.client.login(username='auditstaff', password='x')
+        response = self.client.get(reverse('frontend:audit_log'))
+        self.assertRedirects(response, reverse('frontend:dashboard'))
+
+    def test_anonymous_redirected_to_login(self):
+        response = self.client.get(reverse('frontend:audit_log'))
+        self.assertRedirects(response, f"{reverse('frontend:login')}?next={reverse('frontend:audit_log')}")
+
+    def test_audit_log_rows_are_immutable_even_from_this_view(self):
+        """This view never attempts a write, but the model-level guarantee
+        (Phase 1/BUG-20's sibling) is what actually makes 13_AUDIT.md's
+        "read-only" rule safe to rely on here — regression-guard it."""
+        log = AuditLog.objects.first()
+        log.status = 'failure'
+        with self.assertRaises(PermissionError):
+            log.save()
+
+
+class NotificationViewTests(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='notifuser', email='notifuser@example.com', password='x',
+            employee_id='EMP-8010', full_name='Notif User', role=UserRole.STAFF,
+        )
+        self.other = User.objects.create_user(
+            username='notifother', email='notifother@example.com', password='x',
+            employee_id='EMP-8011', full_name='Notif Other', role=UserRole.STAFF,
+        )
+        self.n1 = Notification.objects.create(recipient=self.user, type=NotificationType.LOW_STOCK, title='T1', message='M1')
+        self.n2 = Notification.objects.create(recipient=self.user, type=NotificationType.SALE_COMPLETED, title='T2', message='M2')
+        self.other_notif = Notification.objects.create(recipient=self.other, type=NotificationType.LOW_STOCK, title='T3', message='M3')
+
+    def test_list_shows_only_own_notifications(self):
+        self.client.login(username='notifuser', password='x')
+        response = self.client.get(reverse('frontend:notifications'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'T1')
+        self.assertNotContains(response, 'T3')
+
+    def test_unread_count_reflects_only_own_unread(self):
+        self.client.login(username='notifuser', password='x')
+        response = self.client.get(reverse('frontend:notification_unread_count'))
+        self.assertEqual(response.json(), {'unread_count': 2})
+
+    def test_mark_read_only_affects_own_notification(self):
+        self.client.login(username='notifuser', password='x')
+        response = self.client.post(reverse('frontend:notification_read', args=[self.other_notif.pk]))
+        self.assertEqual(response.status_code, 404)
+        self.other_notif.refresh_from_db()
+        self.assertFalse(self.other_notif.is_read, "cross-user mark-read must not succeed")
+
+        response = self.client.post(reverse('frontend:notification_read', args=[self.n1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.n1.refresh_from_db()
+        self.assertTrue(self.n1.is_read)
+
+    def test_mark_all_read(self):
+        self.client.login(username='notifuser', password='x')
+        self.client.post(reverse('frontend:notification_read_all'))
+        self.n1.refresh_from_db()
+        self.n2.refresh_from_db()
+        self.assertTrue(self.n1.is_read)
+        self.assertTrue(self.n2.is_read)
+        self.other_notif.refresh_from_db()
+        self.assertFalse(self.other_notif.is_read)
+
+    def test_anonymous_blocked_from_every_endpoint(self):
+        for url in (
+            reverse('frontend:notifications'),
+            reverse('frontend:notification_unread_count'),
+        ):
+            self.assertEqual(self.client.get(url).status_code, 302)
+
+
+class UserManagementViewTests(TestCase):
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='umadmin', email='umadmin@example.com', password='x',
+            employee_id='EMP-8020', full_name='UM Admin', role=UserRole.ADMIN,
+        )
+        self.staff = User.objects.create_user(
+            username='umstaff', email='umstaff@example.com', password='x',
+            employee_id='EMP-8021', full_name='UM Staffer', role=UserRole.STAFF,
+        )
+
+    def valid_payload(self, **overrides):
+        payload = {
+            'full_name': 'New Person', 'username': 'newperson', 'employee_id': 'EMP-8099',
+            'email': 'newperson@example.com', 'password': 'Str0ng!Passw0rd', 'role': 'staff',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_admin_can_create_user_with_working_password(self):
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:users'), self.valid_payload())
+        self.assertEqual(response.status_code, 200, response.content)
+
+        created = User.objects.get(username='newperson')
+        self.assertTrue(created.check_password('Str0ng!Passw0rd'))
+        self.assertTrue(created.is_active)
+        self.assertTrue(AuditLog.objects.filter(action='USER_CREATED', affected_id=created.pk).exists())
+
+    def test_weak_password_rejected(self):
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:users'), self.valid_payload(password='weak'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('password', response.json()['errors'])
+        self.assertFalse(User.objects.filter(username='newperson').exists())
+
+    def test_staff_cannot_create_user(self):
+        self.client.login(username='umstaff', password='x')
+        response = self.client.post(reverse('frontend:users'), self.valid_payload())
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(User.objects.filter(username='newperson').exists())
+
+    def test_deactivate_and_reactivate(self):
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:user_deactivate', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.staff.refresh_from_db()
+        self.assertFalse(self.staff.is_active)
+        self.assertTrue(AuditLog.objects.filter(action='USER_DEACTIVATED', affected_id=self.staff.pk).exists())
+
+        response = self.client.post(reverse('frontend:user_reactivate', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.is_active)
+
+    def test_admin_cannot_deactivate_own_account(self):
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:user_deactivate', args=[self.admin.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+
+
+class SettingsViewTests(TestCase):
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='setadmin', email='setadmin@example.com', password='x',
+            employee_id='EMP-8030', full_name='Settings Admin', role=UserRole.ADMIN,
+        )
+        self.staff = User.objects.create_user(
+            username='setstaff', email='setstaff@example.com', password='x',
+            employee_id='EMP-8031', full_name='Settings Staffer', role=UserRole.STAFF,
+        )
+
+    def test_admin_can_view_and_update_the_singleton(self):
+        self.client.login(username='setadmin', password='x')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Updated Co', 'default_reorder_level': '25',
+            'session_timeout_seconds': '1800',
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+
+        settings_obj = SystemSettings.get_settings()
+        self.assertEqual(settings_obj.pk, 1)
+        self.assertEqual(settings_obj.company_name, 'Updated Co')
+        self.assertEqual(settings_obj.default_reorder_level, 25)
+        self.assertTrue(AuditLog.objects.filter(action='SETTINGS_UPDATED').exists())
+
+    def test_blank_optional_int_field_falls_back_to_current_value_not_model_default(self):
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.forecast_period_weeks = 12
+        settings_obj.save()
+
+        self.client.login(username='setadmin', password='x')
+        response = self.client.post(reverse('frontend:settings'), {'company_name': 'X'})
+        self.assertEqual(response.status_code, 200, response.content)
+
+        settings_obj.refresh_from_db()
+        self.assertEqual(settings_obj.forecast_period_weeks, 12, "blank submit must not reset to the model's class default")
+
+    def test_still_exactly_one_row_after_repeated_saves(self):
+        self.client.login(username='setadmin', password='x')
+        for _ in range(3):
+            self.client.post(reverse('frontend:settings'), {'company_name': 'Loop Co'})
+        self.assertEqual(SystemSettings.objects.count(), 1)
+
+    def test_staff_blocked(self):
+        self.client.login(username='setstaff', password='x')
+        response = self.client.get(reverse('frontend:settings'))
+        self.assertRedirects(response, reverse('frontend:dashboard'))
+        response = self.client.post(reverse('frontend:settings'), {'company_name': 'Hacked Co'})
+        self.assertEqual(response.status_code, 302)
+        self.assertNotEqual(SystemSettings.get_settings().company_name, 'Hacked Co')
+
+
+class ReportsViewTests(TestCase):
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='repsuper', email='repsuper@example.com', password='x',
+            employee_id='EMP-8040', full_name='Reports Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.staff = User.objects.create_user(
+            username='repstaff', email='repstaff@example.com', password='x',
+            employee_id='EMP-8041', full_name='Reports Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Report Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Report Supply', company_name='Report Supply Co', contact_person='Jo',
+            email='reportsupply@example.com', phone='555-0500', address='1 Report Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='REP-SKU-001', name='Report Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(self.product)
+
+    REPORT_SLUGS = [
+        'inventory', 'purchases', 'sales', 'movements', 'adjustments',
+        'low-stock', 'out-of-stock', 'ai-forecasts', 'ai-classifications',
+    ]
+
+    def test_supervisor_can_view_reports_page(self):
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:reports'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_admin_hierarchy_also_allowed(self):
+        """Confirms SupervisorRequiredMixin's Admin-or-Supervisor hierarchy
+        (established Phase 7) holds for Reports too, not just Purchases."""
+        admin = User.objects.create_user(
+            username='repadmin', email='repadmin@example.com', password='x',
+            employee_id='EMP-8042', full_name='Reports Admin', role=UserRole.ADMIN,
+        )
+        self.client.login(username='repadmin', password='x')
+        response = self.client.get(reverse('frontend:reports'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_staff_blocked_from_page_and_every_export(self):
+        self.client.login(username='repstaff', password='x')
+        self.assertEqual(self.client.get(reverse('frontend:reports')).status_code, 302)
+        for slug in self.REPORT_SLUGS:
+            url = reverse('frontend:report_export', args=[slug]) + '?format=pdf'
+            self.assertEqual(self.client.get(url).status_code, 302, f"{slug} export must also be blocked")
+
+    def test_every_report_type_exports_valid_pdf_and_csv(self):
+        self.client.login(username='repsuper', password='x')
+        for slug in self.REPORT_SLUGS:
+            base = reverse('frontend:report_export', args=[slug])
+
+            pdf_response = self.client.get(base + '?format=pdf')
+            self.assertEqual(pdf_response.status_code, 200, slug)
+            self.assertEqual(pdf_response['Content-Type'], 'application/pdf')
+            self.assertTrue(pdf_response.content.startswith(b'%PDF-'), f"{slug} PDF must start with the PDF magic bytes")
+
+            csv_response = self.client.get(base + '?format=csv')
+            self.assertEqual(csv_response.status_code, 200, slug)
+            self.assertEqual(csv_response['Content-Type'], 'text/csv')
+
+        self.assertTrue(AuditLog.objects.filter(action='REPORT_EXPORTED_PDF').exists())
+        self.assertTrue(AuditLog.objects.filter(action='REPORT_EXPORTED_CSV').exists())
+
+    def test_invalid_format_rejected(self):
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=xml')
+        self.assertEqual(response.status_code, 400)
+
+    def test_unknown_report_type_404s(self):
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:report_export', args=['not-a-real-report']) + '?format=pdf')
+        self.assertEqual(response.status_code, 404)
+
+    def test_inventory_report_reflects_real_stock(self):
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:report_export', args=['inventory']) + '?format=csv')
+        self.assertIn(b'REP-SKU-001', response.content)

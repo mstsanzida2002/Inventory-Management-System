@@ -8,21 +8,21 @@
 {% block content %}
 
   {% comment %}
-    Frontend-only mock per docs/11_NOTIFICATIONS.md. Rows reuse the exact
-    title/message copy the Phase 3.5 notify_user()/notify_supervisors()
-    call sites in frontend/services.py actually generate, for continuity
-    with the rest of the mock data. "Mark as read"/"Mark all as read" are
-    decorative — no mark-read endpoint exists yet (that's Phase 8, same as
-    the list/mark-read/polling-badge views documented in 11_NOTIFICATIONS.md).
+    Phase 8 — real Notification queryset for request.user (any logged-in
+    user, no role gate — 11_NOTIFICATIONS.md's views use @login_required
+    only). "Mark as read"/"Mark all as read" now call real endpoints via
+    notifications.js. Icon/tint per row comes from views.py's
+    _NOTIF_ICON map — same exact styling the Phase 3.6 mock hardcoded per
+    notification type, now data-driven off Notification.type instead.
   {% endcomment %}
 
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Notifications</h2>
-      <p class="text-slate">4 unread of 8 shown &mdash; low-stock alerts, purchase order approvals, and AI insights land here.</p>
+      <p class="text-slate">{{ unread_count }} unread of {{ notifications|length }} shown &mdash; low-stock alerts, purchase order approvals, and AI insights land here.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
-      <button class="btn btn-secondary" type="button">
+      <button class="btn btn-secondary" type="button" id="markAllReadBtn">
         <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
         Mark all as read
       </button>
@@ -31,117 +31,34 @@
 
   <div class="panel">
     <div class="panel-body no-top-pad">
-      <div class="widget-list">
-
-        <div class="widget-row" style="align-items:flex-start;">
-          <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
-            <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="flex items-center gap-2">
-              <span style="width:7px; height:7px; border-radius:50%; background:var(--c-indigo); flex-shrink:0;" aria-hidden="true"></span>
-              <div class="widget-title">Out of Stock: Nitrile Gloves, Box of 100</div>
-              <span class="badge badge-danger">Critical</span>
+      <div class="widget-list" id="notificationsList" data-base-url="{% url 'frontend:notifications' %}">
+        {% for notif in notifications %}
+          <div class="widget-row" data-notification-id="{{ notif.pk }}" style="align-items:flex-start;{% if notif.is_read %} opacity:0.72;{% endif %}">
+            <span class="widget-icon" style="{{ notif.icon_style }}">
+              <svg class="icon icon-sm"><use href="#{{ notif.icon_name }}"></use></svg>
+            </span>
+            <div class="widget-main">
+              <div class="flex items-center gap-2">
+                {% if not notif.is_read %}
+                  <span style="width:7px; height:7px; border-radius:50%; background:var(--c-indigo); flex-shrink:0;" aria-hidden="true"></span>
+                {% endif %}
+                <div class="widget-title"{% if notif.is_read %} style="font-weight:600;"{% endif %}>{{ notif.title }}</div>
+                {% if notif.is_critical %}<span class="badge badge-danger">Critical</span>{% endif %}
+              </div>
+              <p class="text-sm text-slate" style="margin:0.2rem 0;">{{ notif.message }}</p>
+              <div class="widget-meta">{{ notif.created_at|timesince }} ago</div>
             </div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Nitrile Gloves, Box of 100 [SKU-20194] is now out of stock.</p>
-            <div class="widget-meta">2 minutes ago</div>
+            {% if not notif.is_read %}
+              <button class="pill-btn notif-mark-read-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+            {% endif %}
           </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start;">
-          <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
-            <svg class="icon icon-sm"><use href="#icon-clock"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="flex items-center gap-2">
-              <span style="width:7px; height:7px; border-radius:50%; background:var(--c-indigo); flex-shrink:0;" aria-hidden="true"></span>
-              <div class="widget-title">PO PO-20260728-4821 Awaiting Approval</div>
-            </div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Kito Fernandes submitted PO-20260728-4821 for approval.</p>
-            <div class="widget-meta">38 minutes ago</div>
+        {% empty %}
+          <div class="empty-state">
+            <span class="empty-state-icon"><svg class="icon"><use href="#icon-bell"></use></svg></span>
+            <div class="empty-state-title">No notifications yet</div>
+            <p class="empty-state-text">Low-stock alerts, approvals, and AI insights will show up here.</p>
           </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start;">
-          <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
-            <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="flex items-center gap-2">
-              <span style="width:7px; height:7px; border-radius:50%; background:var(--c-indigo); flex-shrink:0;" aria-hidden="true"></span>
-              <div class="widget-title">Low Stock Alert: Cordless Drill, 18V</div>
-            </div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Cordless Drill, 18V [SKU-11832] has 4 units remaining (reorder level: 10).</p>
-            <div class="widget-meta">1 hour ago</div>
-          </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start;">
-          <span class="widget-icon" style="background:var(--c-amber-tint); color:#9C6B12;">
-            <svg class="icon icon-sm"><use href="#icon-cpu"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="flex items-center gap-2">
-              <span style="width:7px; height:7px; border-radius:50%; background:var(--c-indigo); flex-shrink:0;" aria-hidden="true"></span>
-              <div class="widget-title">AI Replenishment Recommendation</div>
-            </div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Stainless Water Bottle, 750ml is forecasted to sell out within 14 days at current velocity.</p>
-            <div class="widget-meta">3 hours ago</div>
-          </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start; opacity:0.72;">
-          <span class="widget-icon" style="background:var(--c-success-tint); color:var(--c-success);">
-            <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="widget-title" style="font-weight:600;">PO PO-20260726-1190 Approved</div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Your purchase order PO-20260726-1190 has been approved.</p>
-            <div class="widget-meta">Yesterday</div>
-          </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start; opacity:0.72;">
-          <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
-            <svg class="icon icon-sm"><use href="#icon-trending-down"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="widget-title" style="font-weight:600;">AI Slow-Moving Stock Alert</div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Industrial Shelving Unit has been reclassified as slow-moving (142 days since last sale).</p>
-            <div class="widget-meta">2 days ago</div>
-          </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start; opacity:0.72;">
-          <span class="widget-icon" style="background:var(--c-success-tint); color:var(--c-success);">
-            <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="widget-title" style="font-weight:600;">Sale Completed &mdash; INV-20260726-3390</div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Sale INV-20260726-3390 for $847.50 was confirmed.</p>
-            <div class="widget-meta">2 days ago</div>
-          </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
-        <div class="widget-row" style="align-items:flex-start; opacity:0.72;">
-          <span class="widget-icon" style="background:var(--c-slate-100); color:var(--c-slate);">
-            <svg class="icon icon-sm"><use href="#icon-shield"></use></svg>
-          </span>
-          <div class="widget-main">
-            <div class="widget-title" style="font-weight:600;">Password Changed</div>
-            <p class="text-sm text-slate" style="margin:0.2rem 0;">Your account password was changed successfully.</p>
-            <div class="widget-meta">5 days ago</div>
-          </div>
-          <button class="pill-btn" type="button" aria-label="Mark as read"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-        </div>
-
+        {% endfor %}
       </div>
     </div>
   </div>

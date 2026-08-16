@@ -5056,3 +5056,25 @@ from decisions made and corrections applied during development:
   row. Don't assume a documented invariant is code-enforced without
   checking; when building anything downstream (admin, services, tests),
   verify it directly against the model source, not the comment.
+
+## Phase G — Commit and Push a Large Backlog (2026-08-16)
+
+The last real commit before this one was `1dd31d4 Phase 8.5`; everything
+from Phase 8.6 through 8.99j (and 8.99i-D) had accumulated uncommitted
+across this whole session. Ran the full secret-safety checklist before
+touching anything: `.env` confirmed gitignored and never committed in repo
+history (zero compromise, no remediation needed); no secret in `git diff
+--cached` (nothing staged yet) or in a tracked-file grep for
+`EMAIL_HOST_PASSWORD`/`SECRET_KEY`/etc.; `.env.example` confirmed
+placeholder-only. Found one real gap — `test-results/` (Playwright
+artifacts) existed on disk, untracked, uncovered by `.gitignore` — fixed
+by adding it plus `ai_models/` (Phase 11, proactive) to `.gitignore`.
+`manage.py check` and the full suite (287 tests) both passed clean on the
+pre-commit tree. Given the scale (63 files, ~11.3k insertions touching
+nearly every core module), split-by-phase commits via `git add -p` risked
+leaving an intermediate commit in a broken state that `manage.py
+check`/tests can't validate in isolation — used one comprehensive commit
+(`7a7272b`) with a phase-organized body instead, per the task's own
+sanctioned fallback. Pushed `c2807e9..7a7272b` to `origin/main` with
+nothing else queued behind it (fetch showed local exactly 1 ahead, no
+divergence).

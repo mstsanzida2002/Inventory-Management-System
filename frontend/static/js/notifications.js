@@ -35,18 +35,31 @@
   }
 
   /* --------------------------------------------------------- Badge poll --- */
+  // Phase 8.99f-2: the sidebar's own notification badge (nav-item-badge,
+  // includes/sidebar.html) used to be a hardcoded "6" from the Phase 3.6
+  // mock era. Rather than give it a second query/poll of its own, this
+  // one fetch now drives both it and the topbar dot — same data, same
+  // instant, same "hide entirely at zero" rule, so the two can't disagree.
   function pollUnreadCount() {
-    var badge = document.getElementById("notifBadge");
-    if (!badge) return;
+    var dot = document.getElementById("notifBadge");
+    var sidebarBadge = document.getElementById("sidebarNotifBadge");
+    if (!dot && !sidebarBadge) return;
     fetch("/notifications/unread-count/")
       .then(function (response) { return response.json(); })
-      .then(function (data) { badge.hidden = !data.unread_count; })
-      .catch(function () { /* leave the badge as-is on a transient network error */ });
+      .then(function (data) {
+        var hasUnread = !!data.unread_count;
+        if (dot) dot.hidden = !hasUnread;
+        if (sidebarBadge) {
+          sidebarBadge.hidden = !hasUnread;
+          sidebarBadge.textContent = data.unread_count;
+        }
+      })
+      .catch(function () { /* leave both badges as-is on a transient network error */ });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
     initListPage();
-    if (document.getElementById("notifBadge")) {
+    if (document.getElementById("notifBadge") || document.getElementById("sidebarNotifBadge")) {
       pollUnreadCount();
       setInterval(pollUnreadCount, 30000);
     }

@@ -10,9 +10,14 @@
   {% comment %}
     Phase 4 — real view (frontend.views.profile_view), not a mock. Fields
     match 01_AUTH.md's profile_update_view reference code exactly:
-    full_name, contact_number, profile_image, new_password. No confirm-
-    password field — the doc's own reference code doesn't have one either,
-    and validate_password() (server-side) is the actual enforcement point.
+    full_name, contact_number, profile_image.
+
+    Phase 8.98a — password change moved off this form's old inline
+    "new password" field (no current-password check, no confirm field —
+    both real gaps for a self-service change) into its own real modal,
+    posting to the dedicated frontend:change_password endpoint. Same
+    validate_password() enforcement as before, now with a required
+    current-password check and a confirm field that must match.
   {% endcomment %}
 
   {% if messages %}
@@ -63,7 +68,17 @@
 
           <div class="field field-full">
             <label class="form-label" for="profile-image">Profile photo <span class="optional-tag">(optional)</span></label>
-            <input type="file" id="profile-image" name="profile_image" accept="image/png,image/jpeg,image/webp">
+            <div class="flex" style="align-items:center; gap: var(--sp-4);">
+              <div class="avatar" style="width:64px; height:64px; font-size: var(--fs-md);">
+                {% if user.profile_image %}
+                  <img src="{{ user.profile_image.url }}" alt="">
+                {% else %}
+                  {{ user.get_initials|default:"—" }}
+                {% endif %}
+              </div>
+              <input type="file" id="profile-image" name="profile_image" accept="image/png,image/jpeg,image/webp">
+            </div>
+            <p class="text-slate" style="font-size: var(--fs-xs); margin-top: var(--sp-2);">JPG, PNG, or WEBP, up to 5MB.</p>
           </div>
 
         </div>
@@ -72,16 +87,14 @@
 
     <div class="panel" style="margin-bottom: var(--sp-6);">
       <div class="panel-header">
-        <h3>Change password</h3>
-        <p class="panel-sub">Leave blank to keep your current password.</p>
+        <h3>Password</h3>
+        <p class="panel-sub">Change the password you use to sign in.</p>
       </div>
       <div class="panel-body">
-        <div class="form-grid">
-          <div class="field field-full">
-            <label class="form-label" for="profile-new-password">New password</label>
-            <input class="input input-plain" type="password" id="profile-new-password" name="new_password" autocomplete="new-password">
-          </div>
-        </div>
+        <button type="button" class="btn btn-secondary" data-modal-open="changePasswordModal">
+          <svg class="icon icon-sm"><use href="#icon-shield"></use></svg>
+          Change password
+        </button>
       </div>
     </div>
 
@@ -91,4 +104,63 @@
     </button>
   </form>
 
+  {# ------------------------------------------------- Change password modal #}
+  <div class="modal-overlay" id="changePasswordModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="changePasswordModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="changePasswordModalTitle">Change password</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="changePasswordForm" method="post" action="{% url 'frontend:change_password' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="changePasswordFormError" hidden></div>
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="cp-current-password">Current password<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="password" id="cp-current-password" name="current_password" autocomplete="current-password">
+            <div class="field-error" id="cp-current-password-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="cp-new-password">New password<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="password" id="cp-new-password" name="new_password" autocomplete="new-password">
+            <div class="field-error" id="cp-new-password-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="cp-confirm-password">Confirm new password<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="password" id="cp-confirm-password" name="confirm_password" autocomplete="new-password">
+            <div class="field-error" id="cp-confirm-password-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="changePasswordForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Change password
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/modal.js' %}"></script>
+  <script src="{% static 'js/form-validation.js' %}"></script>
+  <script src="{% static 'js/dom-utils.js' %}"></script>
+  <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/change-password-form.js' %}"></script>
 {% endblock %}

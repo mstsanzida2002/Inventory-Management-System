@@ -1,0 +1,166 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Movement History{% endblock %}
+{% block page_eyebrow %}Operations{% endblock %}
+{% block page_title %}Movement History{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+    Phase 8.98 — the "Movement history" button on Inventory used to do
+    nothing (BUG-44's Part-1 companion finding). This is the real page:
+    the full InventoryMovement ledger (Phase 3, immutable — save()/
+    delete() raise per BUG-20), read-only throughout, no create/edit path
+    anywhere on this page or its view.
+
+    Phase 8.99d — every filter (date range, product, type, and search) is
+    now one server-side GET form, all reaching frontend/reports.py's
+    shared filter_movements() — the exact function the CSV/PDF export
+    also calls, so what's exported always matches what's filtered here.
+    table-filter.js is no longer loaded on this page (still used by
+    Forecasting/Slow-Moving): a client-side-only search could never be
+    reflected in an export, which defeats this phase's whole point, and
+    the ledger's unbounded growth is the same reason date range went
+    server-side in the first place (BUG-45) — it applies to search too.
+    The ?product=<id> deep-link from Inventory's per-row links now lands
+    in this same form as a real, visible, pre-selected <select> rather
+    than a separate hidden-input-only mechanism.
+  {% endcomment %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Movement history</h2>
+      <p class="text-slate">
+        {% if filtered_product %}
+          Every stock change recorded for <strong>{{ filtered_product.name }}</strong>.
+        {% else %}
+          Every stock change ever recorded — the immutable inventory ledger.
+        {% endif %}
+      </p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <a href="{% url 'frontend:movement_history_export' %}?{{ export_querystring }}" class="btn btn-secondary">
+        <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
+        Export CSV
+      </a>
+      <a href="{% url 'frontend:movement_history_export' %}?{{ export_querystring }}{% if export_querystring %}&{% endif %}format=pdf" class="btn btn-secondary">
+        <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
+        Export PDF
+      </a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header" style="align-items:flex-end; flex-wrap:wrap; gap: var(--sp-4); padding-bottom: var(--sp-5);">
+      <form method="get" class="flex gap-3" style="flex-wrap:wrap; align-items:flex-end;">
+        <div class="field" style="margin-bottom:0; max-width:160px;">
+          <label class="form-label" for="movementDateFrom">From date</label>
+          <input class="input input-plain" type="date" id="movementDateFrom" name="date_from" value="{{ date_from }}">
+        </div>
+        <div class="field" style="margin-bottom:0; max-width:160px;">
+          <label class="form-label" for="movementDateTo">To date</label>
+          <input class="input input-plain" type="date" id="movementDateTo" name="date_to" value="{{ date_to }}">
+        </div>
+        <div class="field" style="margin-bottom:0; max-width:220px;">
+          <label class="form-label" for="movementProduct">Product</label>
+          <div class="select-wrap">
+            <select class="input select" id="movementProduct" name="product">
+              <option value="">All products</option>
+              {% for product in products %}
+                <option value="{{ product.pk }}" {% if product_id == product.pk|stringformat:"s" %}selected{% endif %}>{{ product.name }}</option>
+              {% endfor %}
+            </select>
+            <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:0; max-width:170px;">
+          <label class="form-label" for="movementTypeFilter">Type</label>
+          <div class="select-wrap">
+            <select class="input select" id="movementTypeFilter" name="movement_type">
+              <option value="">All types</option>
+              {% for value, label in movement_types %}
+                <option value="{{ value }}" {% if movement_type == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:0; max-width:220px;">
+          <label class="form-label" for="movementSearch">Search</label>
+          <div style="position:relative;">
+            <svg class="field-icon"><use href="#icon-search"></use></svg>
+            <input type="search" class="input" id="movementSearch" name="q" value="{{ search }}" placeholder="Product or SKU...">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        {% if date_from or date_to or product_id or movement_type or search %}
+          <a href="{% url 'frontend:movement_history' %}" class="btn btn-secondary">Clear</a>
+        {% endif %}
+      </form>
+    </div>
+
+    <div class="panel-body no-top-pad">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Product</th>
+              <th>Type</th>
+              <th>Qty change</th>
+              <th>Stock before</th>
+              <th>Stock after</th>
+              <th>Reference</th>
+              <th>Performed by</th>
+            </tr>
+          </thead>
+          <tbody id="movementTableBody">
+            {% for movement in page %}
+            <tr>
+              <td class="mono">{{ movement.created_at|date:"M d, Y H:i" }}</td>
+              <td>
+                {{ movement.product.name }}
+                <div class="cell-sub">{{ movement.product.sku }}</div>
+              </td>
+              <td><span class="badge badge-indigo">{{ movement.get_movement_type_display }}</span></td>
+              <td class="mono">{% if movement.quantity_change > 0 %}+{% endif %}{{ movement.quantity_change }}</td>
+              <td class="mono">{{ movement.stock_before }}</td>
+              <td class="mono">{{ movement.stock_after }}</td>
+              <td class="mono">{{ movement.reference_label }}</td>
+              <td>{{ movement.performed_by.full_name }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="8" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                No movements recorded{% if date_from or date_to or filtered_product or movement_type or search %} for this filter{% endif %}.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel-body" style="padding-top:0;">
+      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+        <p class="text-slate text-xs" style="margin:0;">
+          Showing {{ page.start_index }}&ndash;{{ page.end_index }} of {{ total_count }} movements
+        </p>
+        <div class="flex gap-2">
+          {% if page.has_previous %}
+            <a href="?{% if export_querystring %}{{ export_querystring }}&{% endif %}page={{ page.previous_page_number }}" class="btn btn-secondary">Previous</a>
+          {% else %}
+            <button class="btn btn-secondary" type="button" disabled>Previous</button>
+          {% endif %}
+          {% if page.has_next %}
+            <a href="?{% if export_querystring %}{{ export_querystring }}&{% endif %}page={{ page.next_page_number }}" class="btn btn-secondary">Next</a>
+          {% else %}
+            <button class="btn btn-secondary" type="button" disabled>Next</button>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}

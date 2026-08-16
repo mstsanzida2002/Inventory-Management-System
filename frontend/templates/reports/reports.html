@@ -193,9 +193,11 @@
               <th>Items</th>
               <th>Total</th>
               <th>Status</th>
+              <th>Reason</th>
             </tr>
           </thead>
           <tbody id="salesReportTableBody">
+            {# Phase 8.99c: build_sales_report() now returns every status, not just completed (see frontend/reports.py's own comment) — badge class follows row.5's label instead of being hardcoded to badge-success. #}
             {% for row in sales_rows %}
               <tr>
                 <td class="mono">{{ row.0 }}</td>
@@ -203,10 +205,16 @@
                 <td>{{ row.2 }}</td>
                 <td class="mono">{{ row.3 }}</td>
                 <td class="mono">${{ row.4 }}</td>
-                <td><span class="badge badge-success">{{ row.5 }}</span></td>
+                <td>
+                  {% if row.5 == "Completed" %}<span class="badge badge-success">{{ row.5 }}</span>
+                  {% elif row.5 == "Pending Approval" %}<span class="badge badge-warning">{{ row.5 }}</span>
+                  {% elif row.5 == "Draft" %}<span class="badge badge-indigo">{{ row.5 }}</span>
+                  {% else %}<span class="badge badge-danger">{{ row.5 }}</span>{% endif %}
+                </td>
+                <td>{{ row.6 }}</td>
               </tr>
             {% empty %}
-              <tr><td colspan="6" class="text-slate text-center">No completed sales yet.</td></tr>
+              <tr><td colspan="7" class="text-slate text-center">No sales yet.</td></tr>
             {% endfor %}
           </tbody>
         </table>

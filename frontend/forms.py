@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 import json
 
 from django import forms
-from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 
 from frontend.models import (
     Category,
@@ -52,7 +52,7 @@ class ProductForm(forms.ModelForm):
         model = Product
         fields = [
             "name", "sku", "barcode", "category", "supplier", "brand",
-            "unit", "purchase_price", "selling_price", "reorder_level",
+            "unit", "purchase_price", "selling_price", "tax_rate", "reorder_level",
             "description", "image",
         ]
 
@@ -68,6 +68,10 @@ class ProductForm(forms.ModelForm):
         # see class docstring.
         self.fields["unit"].required = False
         self.fields["reorder_level"].required = False
+        # Phase 8.98c — optional, defaults to 0% (no tax), matching the
+        # model's own default; same optional-with-fallback treatment as
+        # unit/reorder_level above.
+        self.fields["tax_rate"].required = False
         self.fields["image"].validators.append(validate_product_image)
         # 03_PRODUCTS.md: "Category | Required, must be active" / "Supplier
         # | Required, must be active" — restrict the valid choice sets
@@ -102,6 +106,14 @@ class ProductForm(forms.ModelForm):
         value = self.cleaned_data.get("selling_price")
         if value is not None and value < 0:
             raise forms.ValidationError("Selling price cannot be negative.")
+        return value
+
+    def clean_tax_rate(self):
+        value = self.cleaned_data.get("tax_rate")
+        if value is None:
+            return 0
+        if value < 0:
+            raise forms.ValidationError("Tax rate cannot be negative.")
         return value
 
     @staticmethod
@@ -191,6 +203,16 @@ def parse_line_items(raw_json, min_quantity=1):
     instances and Decimal-coerced discount/tax (same coercion
     InventoryService/PurchaseOrderItem.save() already do — see BUG-23/24);
     errors is a list of user-facing strings, empty if items is usable.
+
+    Phase 8.98c: `tax` is never read from the raw item — line-items.js no
+    longer sends one at all (tax moved to Product.tax_rate, no longer a
+    per-transaction form field), and even if a stale client or a raw POST
+    did send one, it's ignored here. This is the one shared place both
+    Purchase and Sale line items pass through, so it's the natural single
+    point to set tax authoritatively from the product — everything
+    downstream (the view's `PurchaseOrderItem.objects.create()`,
+    `SaleService.create_sale()`) just uses whatever this function already
+    put in `item['tax']`.
     """
     try:
         raw_items = json.loads(raw_json or "[]")
@@ -231,13 +253,15 @@ def parse_line_items(raw_json, min_quantity=1):
 
         try:
             discount = Decimal(str(raw.get("discount") or 0))
-            tax = Decimal(str(raw.get("tax") or 0))
         except InvalidOperation:
-            errors.append(f"Line {index}: discount/tax must be numeric.")
+            errors.append(f"Line {index}: discount must be numeric.")
             continue
-        if discount < 0 or tax < 0:
-            errors.append(f"Line {index}: discount/tax cannot be negative.")
+        if discount < 0:
+            errors.append(f"Line {index}: discount cannot be negative.")
             continue
+
+        # Product.tax_rate is the only source — never the client.
+        tax = product.tax_rate
 
         parsed.append({
             "product": product, "quantity": quantity,
@@ -268,15 +292,36 @@ class PurchaseOrderForm(forms.ModelForm):
         # inactive supplier."
         self.fields["supplier"].queryset = Supplier.objects.filter(is_active=True)
 
+    def clean_expected_delivery(self):
+        """Phase 8.98b: expected_delivery can't be in the past, and can't
+        be before order_date. order_date itself is never user-submitted —
+        not in this form's `fields` at all — and always equal to exactly
+        "today" (Asia/Dhaka) at the moment this PO is actually saved
+        (`PurchaseOrder.save()`, Phase 8.99 — was `auto_now_add=True`,
+        which reads the OS clock's raw local date rather than
+        TIME_ZONE's; fixed to set `timezone.localdate()` explicitly since
+        `auto_now_add` silently ignores TIME_ZONE for plain DateFields).
+        That makes "not in the past" and "not before order_date" the same
+        real-world check, computed against Asia/Dhaka's current date
+        (`timezone.localdate()`, the Phase 8.6 timezone convention) rather
+        than the server's raw OS clock — the client-side `min=` on the
+        date input (purchases.html) uses this same server-computed date,
+        not the browser's local one, so the two can't disagree."""
+        expected_delivery = self.cleaned_data.get("expected_delivery")
+        if expected_delivery and expected_delivery < timezone.localdate():
+            raise forms.ValidationError("Expected delivery date cannot be in the past.")
+        return expected_delivery
+
 
 class SaleTransactionForm(forms.ModelForm):
     """Header fields only, same split as PurchaseOrderForm above.
     customer_name/notes are both genuinely optional on the model
     (blank=True) — matches 06_SALES.md's "Customer info | Optional" rule
     exactly, no mismatch to fix. No status field here (unlike Category/
-    Supplier) — SaleTransaction.status defaults to COMPLETED and the
-    documented workflow has no draft/pending state for a sale; setting it
-    is SaleService.cancel_sale()'s job, not this form's."""
+    Supplier) — SaleTransaction.status defaults to DRAFT (Phase 8.99b,
+    mirroring PurchaseOrder's own default) and every transition from
+    there is SaleService's job (submit_for_approval/approve_sale/
+    reject_sale/cancel_sale), never this form's."""
 
     class Meta:
         model = SaleTransaction
@@ -321,32 +366,24 @@ class AdjustmentForm(forms.ModelForm):
 
 
 class UserForm(forms.ModelForm):
-    """The users.html mock's own template comment explicitly says password
+    """The users.html mock's own template comment originally said password
     is "deliberately NOT a form field here" (a Phase 3.6-era call made
-    before this page had a real backend to submit to at all). That's no
-    longer tenable now that this creates a real, real User row: a User
-    saved without ever calling set_password() gets Django's
-    set_unusable_password() by default (AbstractBaseUser.set_password(None)),
-    which means the account could never log in — a genuinely broken admin
-    tool, not a faithful "keep the mock's field list" translation. Adding
-    a required password field here is a disclosed judgment call, not a
-    silent deviation: same category of call as Supplier's added "Company
-    name" field (Phase 6) or Purchase's added Submit button (Phase 7) —
-    the mock was missing something the real feature cannot work without.
-    Reuses the exact same StrongPasswordValidator/AUTH_PASSWORD_VALIDATORS
-    stack profile_view already runs a changed password through (Phase 4).
-    """
-
-    password = forms.CharField(widget=forms.PasswordInput, min_length=8)
+    before this page had a real backend to submit to at all). Phase 8 added
+    a required password field to close that gap — disclosed there as its
+    own judgment call (project_memory.md §13) — but Phase 8.98e reverses it
+    again, deliberately: the Admin must never choose or see a new user's
+    password at all now, so there is no password field on this form for a
+    second time, this time because the field imposing a choice is itself
+    the thing being removed, not because of a still-missing backend.
+    UserListCreateView.post() generates a random, StrongPasswordValidator-
+    passing password via frontend.validators.generate_strong_password(),
+    calls set_password() with it directly, and emails it to the new user —
+    entirely outside this form, and never returned in this view's own
+    response."""
 
     class Meta:
         model = User
         fields = ["full_name", "username", "employee_id", "email", "role"]
-
-    def clean_password(self):
-        password = self.cleaned_data.get("password", "")
-        validate_password(password)
-        return password
 
 
 class SystemSettingsForm(forms.ModelForm):
@@ -394,12 +431,11 @@ class SystemSettingsForm(forms.ModelForm):
 
 
 class ReasonForm(forms.Form):
-    """Shared by PurchaseOrder.reject and InventoryAdjustment.reject —
-    both services require a non-empty reason (PurchaseService.reject()'s
-    `reason` param feeds PurchaseOrder.rejected_reason, a required-content
-    TextField in practice even though blank=True at the model level; same
-    for InventoryAdjustment.rejected_reason). One shared form instead of
-    two identical ones."""
+    """Shared by PurchaseOrder.reject, InventoryAdjustment.reject,
+    SaleTransaction.reject (Phase 8.99b), and — Phase 8.99c — both
+    services' cancel() too (PurchaseOrder.cancelled_reason/
+    SaleTransaction.cancelled_reason). Every one of these requires a
+    non-empty reason; one shared form instead of five identical ones."""
     reason = forms.CharField(widget=forms.Textarea, min_length=1, error_messages={
         "required": "A reason is required.",
         "min_length": "A reason is required.",

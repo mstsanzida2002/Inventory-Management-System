@@ -78,6 +78,35 @@ python -c "import secrets; print(secrets.token_urlsafe(50))"
 
 ---
 
+## Deliverability Notes (Phase 8.99f-7)
+
+Proven working, locally, over real Gmail SMTP (Phase 8.99f/f-5): the one
+thing that actually matters on plain Gmail SMTP is that
+`DEFAULT_FROM_EMAIL` matches `EMAIL_HOST_USER` exactly — Gmail
+rejects/rewrites a `From` address that doesn't match the authenticated
+account. There is no SPF/DKIM/domain-authentication concern to configure
+here, because the sending domain (`gmail.com`) is Google's own — that
+only becomes relevant once sending as a custom domain address (Phase D).
+
+**Flagged for Phase D, not built now:**
+- **SPF/DKIM/DMARC** become the deployment's own concern the moment
+  `DEFAULT_FROM_EMAIL` moves off `@gmail.com` onto a custom domain
+  (e.g. `noreply@stockwell.example`) — typically handled by whichever
+  transactional email provider is used at that point (DNS records they
+  generate for you), not hand-rolled.
+- **A transactional email provider (SendGrid, Mailgun, Amazon SES, etc.)
+  is the recommended production choice over personal Gmail SMTP.** Gmail
+  has low daily send limits (roughly 500/day on a free account) and an
+  App Password is a personal-account credential, not a production service
+  auth story — fine, and already proven, for local dev/demo use; not
+  where a real deployment's outbound mail should live. Swapping providers
+  is a `.env`-only change (`EMAIL_HOST`/`PORT`/`HOST_USER`/`HOST_PASSWORD`
+  point at the new provider's SMTP relay; `EMAIL_BACKEND` stays Django's
+  own SMTP backend) — no code change, matching how console vs. Gmail SMTP
+  already differ only by environment.
+
+---
+
 ## How Variables Are Loaded
 
 `python-decouple` reads from `.env` automatically:

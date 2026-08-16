@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -45,6 +46,13 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Phase 8.99 — DEPLOYMENT.md's documented placement ("must be second").
+    # Serves STATIC_ROOT directly from the WSGI process — no separate CDN/
+    # nginx static tier needed on Render. Also active under DEBUG=True
+    # (harmless — Django's own static-file dev serving still runs first
+    # via urls.py's staticfiles_urlpatterns) so `collectstatic` + a local
+    # DEBUG=False run can be verified before ever touching Render.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -86,6 +94,12 @@ DATABASES = {
         'PASSWORD': os.environ['DB_PASSWORD'],
         'HOST': os.environ.get('DB_HOST', 'localhost'),
         'PORT': os.environ.get('DB_PORT', '5432'),
+        # Phase 8.99 — 'prefer' is psycopg's own default when unset, so
+        # this is a no-op locally; lets DB_SSLMODE=require be set in
+        # Render if the managed Postgres connection needs it enforced
+        # (Render's external DB URLs generally do; internal/same-region
+        # connections generally don't) without a code change either way.
+        'OPTIONS': {'sslmode': os.environ.get('DB_SSLMODE', 'prefer')},
     }
 }
 
@@ -160,7 +174,16 @@ CSRF_COOKIE_SECURE = not DEBUG
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Phase 8.6 (BUG-37) — the business operates in Bangladesh; every rendered
+# timestamp (AuditLog especially — a compliance record) should read in
+# local Bangladesh time, not UTC. USE_TZ stays True: everything is still
+# stored in the database as real UTC instants (Postgres `timestamptz`) —
+# only the *display* conversion changes. Django performs this conversion
+# automatically wherever a value passes through `{{ value|date:... }}` or
+# `timezone.localtime()`, so no per-view changes were needed beyond the
+# dashboard greeting (frontend/views.py), which now also reads
+# `timezone.localtime()` for consistency.
+TIME_ZONE = 'Asia/Dhaka'
 
 USE_I18N = True
 
@@ -172,13 +195,58 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Phase 8.99 — collectstatic's target directory, gathered from
+# frontend/static/ via AppDirectoriesFinder (frontend is in INSTALLED_APPS;
+# no STATICFILES_DIRS needed, nothing else is a static source). Required
+# for both `manage.py collectstatic` (DEPLOYMENT.md's build command) and
+# WhiteNoiseMiddleware, which serves straight out of this directory.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Django 4.2+ replaces STATICFILES_STORAGE with this dict — Django 6.0.7
+# (this project's version) no longer recognizes the old setting name at
+# all. Overriding only 'staticfiles'; 'default' (MEDIA_ROOT uploads) stays
+# Django's own FileSystemStorage, unchanged — WhiteNoise never touches
+# media, only static. CompressedManifestStaticFilesStorage gzips each file
+# and content-hashes filenames (cache-busting `main.a1b2c3.js`-style names)
+# — under DEBUG=True this app has no cache-busting at all today (see
+# project_memory.md's Phase 8.98a stale-cache incident); this fixes that
+# for every static asset once deployed, not just the one file that bit
+# that phase.
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
+
 # Media files (user uploads: Product.image, User.profile_image,
 # SystemSettings.company_logo). BUG-10 (Phase 1) only installed Pillow to
 # satisfy manage.py check's ImageField requirement — it never configured
 # these, so nothing was actually servable until now (Phase 5). Dev-only
-# serving is wired in config/urls.py, gated on DEBUG.
+# serving is wired in config/urls.py, gated on DEBUG or
+# SERVE_MEDIA_IN_PRODUCTION below.
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Phase 8.99 — RECOMMENDATION, decision deliberately left to the deployer
+# rather than picked silently (see docs/project_memory.md Phase 8.99
+# entry for the full writeup): this still writes to the local filesystem
+# at MEDIA_ROOT. Render's default disk is ephemeral — every uploaded
+# Product/Profile image is lost on the next deploy or restart unless a
+# Render **persistent disk** is mounted at this exact path. Recommended
+# path for this app's actual scale (small business inventory tool, not
+# high-traffic): attach a Render persistent disk, then set
+# SERVE_MEDIA_IN_PRODUCTION=True. For a larger/multi-instance deployment,
+# external object storage (S3/Cloudinary via `django-storages`, not
+# installed — would need a new dependency and real cloud credentials
+# neither available nor verifiable in this phase) is the better long-term
+# answer and the natural next step. Defaults to False so a fresh deploy
+# with no disk attached fails LOUD (every image 404s) rather than
+# silently "working" until the first redeploy wipes it — flip only once
+# the disk is actually mounted.
+SERVE_MEDIA_IN_PRODUCTION = os.environ.get('SERVE_MEDIA_IN_PRODUCTION', 'False') == 'True'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -191,3 +259,76 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # actually leaves the machine; override via .env once real SMTP exists.
 EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@stockwell.local')
+
+# Phase 8.99 — ENVIRONMENT.md documents these 5 SMTP vars, but until now
+# only EMAIL_BACKEND/DEFAULT_FROM_EMAIL were actually read anywhere in this
+# file: setting EMAIL_BACKEND=...smtp.EmailBackend alone would have silently
+# fallen back to Django's own SMTP defaults (localhost:25, no auth) rather
+# than a real provider — a real, deploy-blocking gap for Phase 8.98e's
+# emailed-credentials feature specifically, since that feature has no
+# fallback delivery path at all if the email never sends (see
+# project_memory.md's Phase 8.99 entry). Blank/insecure defaults here are
+# intentional: this app must fail loud (a real connection error in the
+# logs) rather than silently pretend to send mail it can't.
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+# Phase 8.99f-7 — a hung Gmail/network connection would otherwise block
+# the request indefinitely (Python's smtplib has no default timeout);
+# this makes a stalled send fail fast, as a normal caught exception
+# send_new_user_credentials_email()/_maybe_send_email() already handle,
+# rather than hanging the whole request. 10s is generous for a real SMTP
+# handshake+send; env-overridable for a slower link if ever needed.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
+
+# Phase 8.99f-7 — belt-and-suspenders on top of Django's own, already-
+# reliable safety net: `manage.py test` calls
+# django.test.utils.setup_test_environment(), which unconditionally
+# overrides EMAIL_BACKEND to the locmem backend before any test runs,
+# regardless of what .env says (confirmed live: running the full suite
+# with a real Gmail app password sitting in EMAIL_HOST_PASSWORD sent
+# zero real email — every test still used mail.outbox). This guard exists
+# only so that mechanism is never the *only* thing standing between a
+# populated EMAIL_HOST_PASSWORD and a real Gmail send during this
+# project's own `manage.py test` invocation specifically — if the test
+# subcommand is being run, pin locmem here too, before Django's own
+# override even executes.
+if len(sys.argv) > 1 and sys.argv[1] == 'test':
+    EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+
+
+# Production security headers (Phase 8.99 — SECURITY.md's "Production
+# Security Settings" block). Tied to `not DEBUG`, the same established
+# pattern SESSION_COOKIE_SECURE/CSRF_COOKIE_SECURE above already use
+# (project_memory.md §13: no separate dev/production settings module
+# exists, so this project conditions on DEBUG instead of importing a
+# different file) — never True under local `runserver` (which serves
+# plain HTTP; an SSL redirect there would just break every local request),
+# always True once DEBUG=False is set for real in Render.
+SECURE_SSL_REDIRECT = not DEBUG
+SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0  # 1 year, matches SECURITY.md
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = not DEBUG
+# Render terminates TLS at its own edge/load balancer and forwards plain
+# HTTP to this app — without telling Django which header marks a request
+# as "was actually HTTPS at the edge," SECURE_SSL_REDIRECT above sees every
+# forwarded request as insecure and redirects it again, forever (an
+# infinite-redirect loop, not a cosmetic issue) — a well-known gotcha on
+# every Heroku-style PaaS, not spec'd in SECURITY.md/DEPLOYMENT.md but
+# required for SECURE_SSL_REDIRECT to actually work there. Render sets
+# this header on every proxied request; safe to leave set under DEBUG too
+# since it only takes effect when the header is actually present.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Safe in both dev and prod — no HTTP-vs-HTTPS dependency, so not DEBUG-gated.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+# Matches SECURITY.md; also Django's own default when XFrameOptionsMiddleware
+# is installed (already was) — set explicitly per the doc rather than
+# relying on the implicit default.
+X_FRAME_OPTIONS = 'DENY'
+# SECURITY.md also lists SECURE_BROWSER_XSS_FILTER — deliberately omitted:
+# Django removed this setting in 4.0 (browsers themselves dropped the
+# X-XSS-Protection header it controlled as ineffective/risky years ago).
+# Setting it under Django 6.0.7 (this project's version) is simply inert,
+# not a real control — disclosed here rather than added as dead cargo.

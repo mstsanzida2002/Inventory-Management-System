@@ -57,17 +57,17 @@
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
         <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" placeholder="Search by PO number or supplier...">
+        <input type="search" class="input" id="purchaseSearch" placeholder="Search by PO number or supplier...">
       </div>
-      <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
-        <option>All statuses</option>
-        <option>Draft</option>
-        <option>Pending approval</option>
-        <option>Approved</option>
-        <option>Partially received</option>
-        <option>Received</option>
-        <option>Rejected</option>
-        <option>Cancelled</option>
+      <select class="input" id="purchaseStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+        <option value="">All statuses</option>
+        <option value="draft">Draft</option>
+        <option value="pending">Pending approval</option>
+        <option value="approved">Approved</option>
+        <option value="partial">Partially received</option>
+        <option value="received">Received</option>
+        <option value="rejected">Rejected</option>
+        <option value="cancelled">Cancelled</option>
       </select>
     </div>
 
@@ -80,6 +80,7 @@
               <th>Supplier</th>
               <th>Created by</th>
               <th>Order date</th>
+              <th>Expected delivery</th>
               <th>Total</th>
               <th>Status</th>
               <th></th>
@@ -87,7 +88,7 @@
           </thead>
           <tbody id="purchasesTableBody" data-base-url="{% url 'frontend:purchases' %}">
             {% for po in orders %}
-            <tr data-po-id="{{ po.pk }}">
+            <tr data-po-id="{{ po.pk }}" data-search="{{ po.po_number|lower }} {{ po.supplier.company_name|lower }}" data-status="{{ po.status }}">
               <td class="mono">{{ po.po_number }}</td>
               <td>
                 {{ po.supplier.company_name }}
@@ -95,8 +96,12 @@
               </td>
               <td>{{ po.created_by.get_full_name }}</td>
               <td class="mono">{{ po.order_date|date:"d M Y" }}</td>
+              <td class="mono">{{ po.expected_delivery|date:"d M Y"|default:"—" }}</td>
               <td class="mono">${{ po.total_cost|floatformat:2 }}</td>
-              <td><span class="badge {{ po.status_badge }}">{{ po.get_status_display }}</span></td>
+              <td>
+                {# Phase 8.99c: cancellation/rejection reason surfaced as a native title tooltip on the status badge — reachable on hover, no new modal/column needed. #}
+                <span class="badge {{ po.status_badge }}" {% if po.display_reason %}title="{{ po.display_reason }}"{% endif %}>{{ po.get_status_display }}</span>
+              </td>
               <td>
                 <div class="widget-actions">
                   {% if po.status == 'draft' %}
@@ -118,12 +123,15 @@
                       <button class="pill-btn reject po-cancel-btn" type="button" aria-label="Cancel PO" title="Cancel PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
                     {% endif %}
                   {% endif %}
+                  <a class="pill-btn" href="{% url 'frontend:purchase_pdf' po.pk %}" aria-label="Download PDF" title="Download PDF">
+                    <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
+                  </a>
                 </div>
               </td>
             </tr>
             {% empty %}
             <tr>
-              <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+              <td colspan="8" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
                 No purchase orders yet — click "New purchase order" to create the first one.
               </td>
             </tr>
@@ -150,7 +158,7 @@
     A template tag so it's inert markup, read by purchase-form.js at init.
   {% endcomment %}
   <template id="realProductOptions">
-    {% for product in products %}<option value="{{ product.pk }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
+    {% for product in products %}<option value="{{ product.pk }}" data-tax-rate="{{ product.tax_rate }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
   </template>
 
   {% comment %}
@@ -196,7 +204,7 @@
 
           <div class="field">
             <label class="form-label" for="purchase-expected-delivery">Expected delivery <span class="optional-tag">(optional)</span></label>
-            <input class="input input-plain" type="date" id="purchase-expected-delivery" name="expected_delivery">
+            <input class="input input-plain" type="date" id="purchase-expected-delivery" name="expected_delivery" min="{{ today|date:'Y-m-d' }}">
             <div class="field-error" id="purchase-expected-delivery-error" role="alert"></div>
           </div>
 
@@ -220,7 +228,7 @@
             <div class="line-items" id="purchase-line-items"></div>
             <div class="field-error" id="purchase-items-error" role="alert"></div>
             <div class="line-items-footer">
-              <span class="line-items-grand-total">Total: <span class="mono" id="purchase-grand-total">$0.00</span></span>
+              <span class="line-items-grand-total">Total (incl. tax): <span class="mono" id="purchase-grand-total">$0.00</span></span>
             </div>
           </div>
 
@@ -291,5 +299,6 @@
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
   <script src="{% static 'js/line-items.js' %}"></script>
+  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/purchase-form.js' %}"></script>
 {% endblock %}

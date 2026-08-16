@@ -13,10 +13,10 @@
       <p class="text-slate">{{ counts.total }} product{{ counts.total|pluralize }} across {{ categories|length }} categor{{ categories|length|pluralize:"y,ies" }} and {{ suppliers|length }} supplier{{ suppliers|length|pluralize }}.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
-      <button class="btn btn-secondary" type="button">
+      <a href="{% url 'frontend:product_export' %}" class="btn btn-secondary">
         <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
         Export
-      </button>
+      </a>
       <button class="btn btn-primary" type="button" data-modal-open="addProductModal">
         <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
         Add product
@@ -61,20 +61,20 @@
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
         <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" placeholder="Search products by name or SKU...">
+        <input type="search" class="input" id="productSearch" placeholder="Search products by name or SKU...">
       </div>
       <div class="flex gap-3" style="flex-wrap:wrap;">
-        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
-          <option>All categories</option>
+        <select class="input" id="productCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+          <option value="">All categories</option>
           {% for category in categories %}
-            <option>{{ category.name }}</option>
+            <option value="{{ category.pk }}">{{ category.name }}</option>
           {% endfor %}
         </select>
-        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-          <option>All statuses</option>
-          <option>In stock</option>
-          <option>Low stock</option>
-          <option>Out of stock</option>
+        <select class="input" id="productStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+          <option value="">All statuses</option>
+          <option value="In stock">In stock</option>
+          <option value="Low stock">Low stock</option>
+          <option value="Out of stock">Out of stock</option>
         </select>
       </div>
     </div>
@@ -93,9 +93,9 @@
               <th></th>
             </tr>
           </thead>
-          <tbody id="productsTableBody">
+          <tbody id="productsTableBody" data-base-url="{% url 'frontend:products' %}">
             {% for product in products %}
-            <tr>
+            <tr data-product-id="{{ product.pk }}" data-product="{{ product.edit_json }}" data-search="{{ product.name|lower }} {{ product.sku|lower }}" data-category="{{ product.category.pk }}" data-status="{{ product.stock_label }}">
               <td>
                 {{ product.name }}
                 <div class="cell-sub">{{ product.sku }}</div>
@@ -107,8 +107,20 @@
               <td><span class="badge {{ product.stock_badge }}">{{ product.stock_label }}</span></td>
               <td>
                 <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+                  {# ProductUpdateView: AnyStaffMixin — every logged-in role may edit, no gate needed #}
+                  <button class="pill-btn product-edit-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                    {# Phase 8.99i: icon-x for deactivate (was icon-trash — the same icon Delete uses below, misleadingly implying destruction for what's actually a reversible soft-deactivate). ProductDeactivateView/ProductReactivateView: SupervisorRequiredMixin. #}
+                    {% if product.is_active %}
+                      <button class="pill-btn reject product-deactivate-btn" type="button" aria-label="Deactivate product"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% else %}
+                      <button class="pill-btn product-reactivate-btn" type="button" aria-label="Reactivate product"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                    {% endif %}
+                    {% if product.deletable %}
+                      {# ProductDeleteView: only ever succeeds for a product with zero purchase/sale/adjustment history — everyone else must be deactivated instead. #}
+                      <button class="pill-btn reject product-delete-btn" type="button" aria-label="Delete product" title="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+                    {% endif %}
+                  {% endif %}
                 </div>
               </td>
             </tr>
@@ -233,6 +245,12 @@
           </div>
 
           <div class="field">
+            <label class="form-label" for="product-tax-rate">Tax rate % <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="number" id="product-tax-rate" name="tax_rate" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
+            <div class="field-error" id="product-tax-rate-error" role="alert"></div>
+          </div>
+
+          <div class="field">
             <label class="form-label" for="product-reorder-level">Reorder level <span class="optional-tag">(optional)</span></label>
             <input class="input input-plain" type="number" id="product-reorder-level" name="reorder_level" placeholder="0" step="1" min="0" inputmode="numeric">
             <div class="field-error" id="product-reorder-level-error" role="alert"></div>
@@ -278,6 +296,163 @@
     </div>
   </div>
 
+  {% comment %}
+    Edit product modal (Phase 8.99e) — this project's first per-entity
+    edit UI. A separate modal/form from Add rather than one form toggling
+    mode: ModalForm.init() is called once per (formId, modalId) pair and
+    is designed to support exactly this (see modal-form.js's own header).
+    Pre-filled entirely client-side from each row's own data-product JSON
+    (product-form.js), no fetch-before-open round trip needed — the same
+    "compute once server-side, read via data-*" pattern the Receive modal
+    already uses for its per-line quantities (purchases.html).
+
+    SKU is read-only here (disclosed decision, see ProductUpdateView's
+    own docstring in frontend/views.py) — shown so the user can still see
+    it, but disabled so it can never be part of what's posted; the server
+    enforces this independently regardless of what the client sends.
+  {% endcomment %}
+  <div class="modal-overlay" id="editProductModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editProductModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="editProductModalTitle">Edit product</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="editProductForm" method="post" action="" enctype="multipart/form-data" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="editProductFormError" hidden></div>
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="edit-product-name">Product name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="edit-product-name" name="name">
+            <div class="field-error" id="edit-product-name-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-sku">SKU</label>
+            <input class="input input-plain" type="text" id="edit-product-sku" disabled>
+            <div class="field-error" id="edit-product-sku-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-barcode">Barcode <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="edit-product-barcode" name="barcode" placeholder="e.g. 8901030875021">
+            <div class="field-error" id="edit-product-barcode-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-category">Category<span class="required-mark">*</span></label>
+            <div class="select-wrap">
+              <select class="input select" id="edit-product-category" name="category">
+                <option value="" selected disabled>Select category</option>
+                {% for category in categories %}
+                  <option value="{{ category.pk }}">{{ category.name }}</option>
+                {% endfor %}
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="edit-product-category-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-brand">Brand <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="edit-product-brand" name="brand" placeholder="e.g. MedLine">
+            <div class="field-error" id="edit-product-brand-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-supplier">Supplier<span class="required-mark">*</span></label>
+            <div class="select-wrap">
+              <select class="input select" id="edit-product-supplier" name="supplier">
+                <option value="" selected disabled>Select supplier</option>
+                {% for supplier in suppliers %}
+                  <option value="{{ supplier.pk }}">{{ supplier.company_name }}</option>
+                {% endfor %}
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="edit-product-supplier-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-unit">Unit <span class="optional-tag">(optional)</span></label>
+            <div class="select-wrap">
+              <select class="input select" id="edit-product-unit" name="unit">
+                <option value="" selected>Select unit</option>
+                {% for value, label in unit_choices %}
+                  <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="edit-product-unit-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-purchase-price">Purchase price<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="number" id="edit-product-purchase-price" name="purchase_price" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
+            <div class="field-error" id="edit-product-purchase-price-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-selling-price">Selling price<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="number" id="edit-product-selling-price" name="selling_price" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
+            <div class="field-error" id="edit-product-selling-price-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-tax-rate">Tax rate % <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="number" id="edit-product-tax-rate" name="tax_rate" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
+            <div class="field-error" id="edit-product-tax-rate-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-product-reorder-level">Reorder level <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="number" id="edit-product-reorder-level" name="reorder_level" placeholder="0" step="1" min="0" inputmode="numeric">
+            <div class="field-error" id="edit-product-reorder-level-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="edit-product-description">Product description <span class="optional-tag">(optional)</span></label>
+            <textarea class="textarea" id="edit-product-description" name="description" rows="3"></textarea>
+            <div class="field-error" id="edit-product-description-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="edit-product-image">Product image <span class="optional-tag">(optional — leave blank to keep the current image)</span></label>
+            <label class="file-drop" for="edit-product-image">
+              <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
+              <span class="file-drop-text">
+                <span class="file-drop-title">Click to replace the image</span>
+                <div class="file-drop-filename" id="edit-product-image-filename">PNG, JPG, or WEBP, up to 5MB</div>
+              </span>
+              <img class="file-drop-preview" id="edit-product-image-preview" alt="" hidden>
+            </label>
+            <input type="file" class="sr-only" id="edit-product-image" name="image" accept="image/png,image/jpeg,image/webp">
+            <div class="field-error" id="edit-product-image-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="editProductForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save changes
+        </button>
+      </div>
+
+    </div>
+  </div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -285,5 +460,6 @@
   <script src="{% static 'js/form-validation.js' %}"></script>
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/product-form.js' %}"></script>
 {% endblock %}

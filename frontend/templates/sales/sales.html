@@ -10,7 +10,7 @@
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Sales</h2>
-      <p class="text-slate">Cancelling a sale restores stock immediately — history is preserved for demand forecasting.</p>
+      <p class="text-slate">Needs Supervisor or Admin approval before stock moves.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-primary" type="button" data-modal-open="addSaleModal">
@@ -36,6 +36,13 @@
         <div class="stat-strip-label">Transactions today</div>
       </div>
     </div>
+    <div class="stat-strip-item is-warning">
+      <svg class="icon icon-lg"><use href="#icon-clock"></use></svg>
+      <div>
+        <div class="stat-strip-value">{{ counts.pending }}</div>
+        <div class="stat-strip-label">Pending approval</div>
+      </div>
+    </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-trending-up"></use></svg>
       <div>
@@ -57,12 +64,15 @@
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
         <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" placeholder="Search by invoice number or customer...">
+        <input type="search" class="input" id="saleSearch" placeholder="Search by invoice number or customer...">
       </div>
-      <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-        <option>All statuses</option>
-        <option>Completed</option>
-        <option>Cancelled</option>
+      <select class="input" id="saleStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+        <option value="">All statuses</option>
+        <option value="draft">Draft</option>
+        <option value="pending">Pending Approval</option>
+        <option value="completed">Completed</option>
+        <option value="rejected">Rejected</option>
+        <option value="cancelled">Cancelled</option>
       </select>
     </div>
 
@@ -82,28 +92,37 @@
           </thead>
           <tbody id="salesTableBody" data-base-url="{% url 'frontend:sales' %}">
             {% for sale in sales %}
-            <tr data-sale-id="{{ sale.pk }}">
+            <tr data-sale-id="{{ sale.pk }}" data-search="{{ sale.invoice_number|lower }} {{ sale.customer_name|lower }}" data-status="{{ sale.status }}">
               <td class="mono">{{ sale.invoice_number }}</td>
               <td>{{ sale.customer_name|default:"Walk-in customer" }}</td>
               <td class="mono">{{ sale.transaction_date|date:"d M Y" }}</td>
               <td class="mono">{{ sale.item_count }}</td>
               <td class="mono">${{ sale.total_amount|floatformat:2 }}</td>
               <td>
-                {% if sale.is_cancelled %}
-                  <span class="badge badge-danger">Cancelled</span>
-                {% else %}
-                  <span class="badge badge-success">Completed</span>
-                {% endif %}
+                {# Phase 8.99c: cancellation/rejection reason surfaced as a native title tooltip on the status badge — mirrors purchases.html exactly. #}
+                <span class="badge {{ sale.status_badge }}" {% if sale.display_reason %}title="{{ sale.display_reason }}"{% endif %}>{{ sale.get_status_display }}</span>
               </td>
               <td>
                 <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="View invoice"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
-                  {% if not sale.is_cancelled %}
+                  {% if sale.status == 'draft' %}
+                    {# SaleSubmitView: AnyStaffMixin — every logged-in role may submit, no gate needed #}
+                    <button class="pill-btn sale-submit-btn" type="button" aria-label="Submit for approval" title="Submit for approval"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                  {% elif sale.status == 'pending' %}
+                    {# SaleApproveView/SaleRejectView: SupervisorRequiredMixin #}
+                    {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                      <button class="pill-btn approve sale-approve-btn" type="button" aria-label="Approve sale"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                      <button class="pill-btn reject sale-reject-btn" type="button" aria-label="Reject sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% endif %}
+                  {% endif %}
+                  {% if sale.cancellable %}
                     {# SaleCancelView: SupervisorRequiredMixin #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
                       <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
                     {% endif %}
                   {% endif %}
+                  <a class="pill-btn" href="{% url 'frontend:sale_pdf' sale.pk %}" aria-label="Download PDF" title="Download PDF">
+                    <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
+                  </a>
                 </div>
               </td>
             </tr>
@@ -136,7 +155,7 @@
     A template tag so it's inert markup, read by sale-form.js at init.
   {% endcomment %}
   <template id="realProductOptions">
-    {% for product in products %}<option value="{{ product.pk }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
+    {% for product in products %}<option value="{{ product.pk }}" data-tax-rate="{{ product.tax_rate }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
   </template>
 
   {% comment %}
@@ -145,6 +164,11 @@
     (customer_name, notes, items[{product_id, quantity, unit_price, discount,
     tax}]) — invoice_number, created_by, transaction_date, status, and
     total_amount are all auto-set server-side, not user input.
+
+    Phase 8.99b: a sale no longer completes immediately on creation — it's
+    saved as a Draft, same as a new Purchase Order, and needs Submit ->
+    (Supervisor/Admin) Approve before stock actually moves. Modal copy
+    updated so "Complete sale" doesn't lie about what this button does now.
   {% endcomment %}
   <div class="modal-overlay" id="addSaleModal" data-modal aria-hidden="true">
     <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="addSaleModalTitle">
@@ -152,7 +176,7 @@
       <div class="modal-header">
         <div>
           <h3 class="modal-title" id="addSaleModalTitle">New sale</h3>
-          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+          <p class="modal-subtitle">Saved as a draft. Fields marked <span class="required-mark">*</span> are required.</p>
         </div>
         <button type="button" class="pill-btn" data-modal-close aria-label="Close">
           <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
@@ -190,7 +214,7 @@
             <div class="line-items" id="sale-line-items"></div>
             <div class="field-error" id="sale-items-error" role="alert"></div>
             <div class="line-items-footer">
-              <span class="line-items-grand-total">Total: <span class="mono" id="sale-grand-total">$0.00</span></span>
+              <span class="line-items-grand-total">Total (incl. tax): <span class="mono" id="sale-grand-total">$0.00</span></span>
             </div>
           </div>
 
@@ -207,7 +231,7 @@
         <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
         <button type="submit" form="addSaleForm" class="btn btn-primary">
           <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
-          Complete sale
+          Save draft
         </button>
       </div>
 
@@ -222,5 +246,6 @@
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
   <script src="{% static 'js/line-items.js' %}"></script>
+  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/sale-form.js' %}"></script>
 {% endblock %}

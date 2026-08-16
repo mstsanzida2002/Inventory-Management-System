@@ -24,10 +24,10 @@
       <p class="text-slate">Immutable record of every significant action &mdash; System Administrator only.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
-      <button class="btn btn-secondary" type="button">
+      <a href="{% url 'frontend:audit_log_export' %}" class="btn btn-secondary">
         <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
         Export CSV
-      </button>
+      </a>
     </div>
   </div>
 

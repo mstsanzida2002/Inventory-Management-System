@@ -67,27 +67,25 @@
   }
 
   /* ------------------------------------------------- Sales/Purchases chart */
-  function initSalesChart() {
-    var canvas = document.getElementById("salesChart");
-    if (!canvas || typeof Chart === "undefined") return;
+  function readDashboardChartData() {
+    var el = document.getElementById("dashboardChartData");
+    if (!el) return null;
+    try {
+      return JSON.parse(el.textContent);
+    } catch (e) {
+      return null;
+    }
+  }
 
-    var datasets = {
-      daily: {
-        labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-        sales:    [4200, 4830, 3950, 5210, 6040, 7120, 5460],
-        purchases:[2100, 1800, 3200, 1500, 2600, 1900, 1200]
-      },
-      weekly: {
-        labels: ["Week 1", "Week 2", "Week 3", "Week 4"],
-        sales:    [28400, 31200, 26900, 34700],
-        purchases:[14200, 16800, 12100, 18900]
-      },
-      monthly: {
-        labels: ["Feb", "Mar", "Apr", "May", "Jun", "Jul"],
-        sales:    [98200, 104500, 112300, 108900, 121400, 126800],
-        purchases:[52100, 58300, 49700, 61200, 55600, 64100]
-      }
-    };
+  function initSalesChart(chartData) {
+    var canvas = document.getElementById("salesChart");
+    if (!canvas || typeof Chart === "undefined" || !chartData) return;
+
+    // Real data (Phase 8.96, docs/09_DASHBOARD.md §3a) — daily/weekly/monthly
+    // series computed server-side in frontend/views.py's dashboard(), passed
+    // via {{ chart_data|json_script:"dashboardChartData" }}. Keys match the
+    // segmented control's data-range values exactly.
+    var datasets = chartData.sales_purchases;
 
     var ctx = canvas.getContext("2d");
     var chart = new Chart(ctx, {
@@ -173,19 +171,23 @@
   }
 
   /* --------------------------------------------------- Inventory movement */
-  function initInventoryChart() {
+  function initInventoryChart(chartData) {
     var canvas = document.getElementById("inventoryChart");
-    if (!canvas || typeof Chart === "undefined") return;
+    if (!canvas || typeof Chart === "undefined" || !chartData) return;
     var ctx = canvas.getContext("2d");
+
+    // Real data (Phase 8.96, docs/09_DASHBOARD.md §3b) — received/dispatched
+    // by InventoryMovement.quantity_change sign, last 6 months.
+    var series = chartData.inventory_movement;
 
     new Chart(ctx, {
       type: "line",
       data: {
-        labels: ["Feb", "Mar", "Apr", "May", "Jun", "Jul"],
+        labels: series.labels,
         datasets: [
           {
             label: "Stock In",
-            data: [6200, 7100, 5900, 8300, 7600, 8900],
+            data: series.received,
             borderColor: COLORS.success,
             backgroundColor: "rgba(31,169,122,0.10)",
             tension: 0.35,
@@ -195,7 +197,7 @@
           },
           {
             label: "Stock Out",
-            data: [5400, 6300, 6800, 7100, 6900, 7700],
+            data: series.dispatched,
             borderColor: COLORS.danger,
             backgroundColor: "rgba(225,75,75,0.08)",
             tension: 0.35,
@@ -234,7 +236,8 @@
   document.addEventListener("DOMContentLoaded", function () {
     initSidebarToggle();
     initDropdowns();
-    initSalesChart();
-    initInventoryChart();
+    var chartData = readDashboardChartData();
+    initSalesChart(chartData);
+    initInventoryChart(chartData);
   });
 })();

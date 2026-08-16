@@ -6,6 +6,14 @@
    so this is one engine, config-driven, instead of two near-identical
    implementations.
 
+   Phase 8.98c: tax is no longer a user input here — it's a read-only
+   display sourced from the selected product option's `data-tax-rate`
+   attribute (rendered server-side from Product.tax_rate). This engine
+   still computes an indicative line total/grand total client-side for
+   instant feedback, but the server (frontend/pricing.py's
+   calculate_line_total, fed by Product.tax_rate — never this file) is
+   the authoritative source once the form is submitted.
+
    Usage:
      var items = LineItems.create({
        containerId: "purchase-line-items",
@@ -15,7 +23,7 @@
        productOptionsHtml: MockCatalog.productOptionsHtml
      });
      items.validate({ minQuantity: 1 });   // true/false, paints inline errors
-     items.getItems();                     // [{ productLabel, quantity, unitPrice, discount, tax }]
+     items.getItems();                     // [{ productLabel, quantity, unitPrice, discount }]
      items.reset();                        // back to exactly one empty row
    ========================================================================== */
 
@@ -41,13 +49,19 @@
       row.querySelectorAll(".has-error").forEach(function (el) { el.classList.remove("has-error"); });
     }
 
+    function selectedTaxRate(select) {
+      var option = select.options[select.selectedIndex];
+      return (option && Number(option.getAttribute("data-tax-rate"))) || 0;
+    }
+
     function recalculate() {
       var grandTotal = 0;
       container.querySelectorAll(".line-item-row").forEach(function (row) {
         var quantity = Number(row.querySelector(".line-item-qty").value) || 0;
         var unitPrice = Number(row.querySelector(".line-item-price").value) || 0;
         var discount = Number(row.querySelector(".line-item-discount").value) || 0;
-        var tax = Number(row.querySelector(".line-item-tax").value) || 0;
+        var tax = selectedTaxRate(row.querySelector(".line-item-product"));
+        row.querySelector(".line-item-tax-display").textContent = tax.toFixed(2) + "%";
         var lineTotal = computeLineTotal(quantity, unitPrice, discount, tax);
         row.querySelector(".line-item-total").textContent = formatCurrency(lineTotal);
         grandTotal += lineTotal;
@@ -89,9 +103,9 @@
 
       var taxField = document.createElement("div");
       taxField.className = "line-item-tax-field";
-      var tax = document.createElement("input");
-      tax.className = "input input-plain line-item-tax";
-      tax.type = "number"; tax.min = "0"; tax.step = "0.01"; tax.placeholder = "0";
+      var tax = document.createElement("div");
+      tax.className = "line-item-tax-display mono";
+      tax.textContent = "0.00%";
       taxField.appendChild(tax);
 
       var total = document.createElement("div");
@@ -112,10 +126,10 @@
       row.appendChild(total);
       row.appendChild(removeBtn);
 
-      [qty, price, discount, tax].forEach(function (input) {
+      [qty, price, discount].forEach(function (input) {
         input.addEventListener("input", recalculate);
       });
-      select.addEventListener("change", function () { clearRowErrors(row); });
+      select.addEventListener("change", function () { clearRowErrors(row); recalculate(); });
       removeBtn.addEventListener("click", function () {
         if (container.querySelectorAll(".line-item-row").length <= 1) return; // always keep one row
         row.remove();
@@ -188,8 +202,7 @@
             productLabel: select.value,
             quantity: Number(row.querySelector(".line-item-qty").value) || 0,
             unitPrice: Number(row.querySelector(".line-item-price").value) || 0,
-            discount: Number(row.querySelector(".line-item-discount").value) || 0,
-            tax: Number(row.querySelector(".line-item-tax").value) || 0
+            discount: Number(row.querySelector(".line-item-discount").value) || 0
           };
         })
         .filter(function (item) { return item.productLabel && item.quantity && item.unitPrice; });

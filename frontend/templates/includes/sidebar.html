@@ -59,17 +59,20 @@
       </a>
     </div>
 
-    <div class="nav-group">
-      <div class="nav-group-label">Intelligence</div>
-      <a href="/ai/forecasting/" class="nav-item {% if active_nav|default:"dashboard" == 'forecasting' %}is-active{% endif %}">
-        <svg class="icon"><use href="#icon-cpu"></use></svg>
-        <span>Demand Forecasting</span>
-      </a>
-      <a href="/ai/slow-moving/" class="nav-item {% if active_nav|default:"dashboard" == 'slow-moving' %}is-active{% endif %}">
-        <svg class="icon"><use href="#icon-trending-down"></use></svg>
-        <span>Slow-Moving &amp; Dead Stock</span>
-      </a>
-    </div>
+    {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+      {# Phase 8.99j: DemandForecastingView/SlowMovingDeadStockView are now SupervisorRequiredMixin (BUG-43's fix) — staff can't open either page, so the links are hidden for them too, matching the Reports link's own pattern just below. #}
+      <div class="nav-group">
+        <div class="nav-group-label">Intelligence</div>
+        <a href="/ai/forecasting/" class="nav-item {% if active_nav|default:"dashboard" == 'forecasting' %}is-active{% endif %}">
+          <svg class="icon"><use href="#icon-cpu"></use></svg>
+          <span>Demand Forecasting</span>
+        </a>
+        <a href="/ai/slow-moving/" class="nav-item {% if active_nav|default:"dashboard" == 'slow-moving' %}is-active{% endif %}">
+          <svg class="icon"><use href="#icon-trending-down"></use></svg>
+          <span>Slow-Moving &amp; Dead Stock</span>
+        </a>
+      </div>
+    {% endif %}
 
     <div class="nav-group">
       <div class="nav-group-label">Insights</div>
@@ -83,7 +86,8 @@
       <a href="/notifications/" class="nav-item {% if active_nav|default:"dashboard" == 'notifications' %}is-active{% endif %}">
         <svg class="icon"><use href="#icon-bell"></use></svg>
         <span>Notifications</span>
-        <span class="nav-item-badge">6</span>
+        {# Phase 8.99f-2: was a hardcoded "6" (Phase 3.6 mock era, never wired to anything). Now driven by the same notifications.js poll that already drives the topbar bell dot (#notifBadge) — one fetch, two badges kept in sync, not a second mechanism. Hidden by default, same as the topbar dot, until the first poll resolves. #}
+        <span class="nav-item-badge" id="sidebarNotifBadge" hidden></span>
       </a>
     </div>
 
@@ -110,7 +114,13 @@
 
   <div class="sidebar-footer">
     <div class="sidebar-user">
-      <div class="avatar">{{ request.user.get_initials|default:"AT" }}</div>
+      <div class="avatar">
+        {% if request.user.profile_image %}
+          <img src="{{ request.user.profile_image.url }}" alt="">
+        {% else %}
+          {{ request.user.get_initials|default:"AT" }}
+        {% endif %}
+      </div>
       <div>
         <div class="sidebar-user-name">{{ request.user.get_full_name|default:"Amara Tenzin" }}</div>
         <div class="sidebar-user-role">{{ request.user.role|default:"System Administrator" }}</div>

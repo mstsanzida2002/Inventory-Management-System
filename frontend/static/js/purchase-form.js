@@ -12,11 +12,11 @@
    still runs in extraValidate exactly as before — BUG-33's fix (Phase 5.6)
    means that's now safe by construction, not just in this one case.
 
-   Approve/submit/cancel use a plain confirm() and reject uses a plain
-   prompt() for the reason, rather than building bespoke confirmation
-   modals the existing mock never had — Receive is the one action that
-   genuinely needs a real modal (per-line quantities), so that's the only
-   new modal built here.
+   Approve/submit use a plain confirm(); reject and cancel (Phase 8.99c —
+   cancel now requires a reason too) both use a plain prompt() for the
+   reason, rather than building bespoke confirmation modals the existing
+   mock never had — Receive is the one action that genuinely needs a real
+   modal (per-line quantities), so that's the only new modal built here.
    ========================================================================== */
 
 (function () {
@@ -131,8 +131,12 @@
       formData.append("reason", reason.trim());
       RowActions.postAction(poActionUrl(poId, "reject"), formData).then(RowActions.reportResult);
     } else if (event.target.closest(".po-cancel-btn")) {
-      if (!confirm("Cancel this purchase order? This cannot be undone.")) return;
-      RowActions.postAction(poActionUrl(poId, "cancel")).then(RowActions.reportResult);
+      var cancelReason = prompt("Reason for cancelling this purchase order? This cannot be undone.");
+      if (cancelReason === null) return; // cancelled
+      if (!cancelReason.trim()) { alert("A reason is required to cancel a purchase order."); return; }
+      var cancelFormData = new FormData();
+      cancelFormData.append("reason", cancelReason.trim());
+      RowActions.postAction(poActionUrl(poId, "cancel"), cancelFormData).then(RowActions.reportResult);
     } else if (event.target.closest(".po-receive-btn")) {
       openReceiveModal(poId, event.target.closest(".po-receive-btn"));
     }
@@ -253,6 +257,14 @@
     var tableBody = getField("purchasesTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
     initReceiveForm();
+
+    if (window.TableFilter && tableBody) {
+      TableFilter.init({
+        tableBodyId: "purchasesTableBody",
+        searchInputId: "purchaseSearch",
+        selectFilters: [{ id: "purchaseStatusFilter", attr: "data-status" }]
+      });
+    }
 
     if (!getField(FORM_ID)) return;
 

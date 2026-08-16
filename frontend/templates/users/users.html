@@ -121,6 +121,14 @@
                     {% else %}
                       <button class="pill-btn user-reactivate-btn" type="button" aria-label="Reactivate user"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                     {% endif %}
+                    {% if user.resendable %}
+                      {# UserResendCredentialsView: shown while the user has never logged in — the real signal the original credentials never got used. Generates and emails a fresh password. #}
+                      <button class="pill-btn user-resend-btn" type="button" aria-label="Resend credentials" title="Resend credentials"><svg class="icon icon-sm"><use href="#icon-refresh"></use></svg></button>
+                    {% endif %}
+                    {% if user.deletable %}
+                      {# UserDeleteView: only ever succeeds for a user with zero activity history — everyone else must be deactivated instead. #}
+                      <button class="pill-btn reject user-delete-btn" type="button" aria-label="Delete user" title="Delete user"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+                    {% endif %}
                   </div>
                 </td>
               </tr>
@@ -157,6 +165,14 @@
       <form class="modal-body" id="addUserForm" method="post" action="{% url 'frontend:users' %}" novalidate>
         {% csrf_token %}
         <div class="form-alert form-alert-error" id="addUserFormError" hidden></div>
+        {% comment %}
+          Phase 8.98e: no password field — a strong password is generated
+          server-side and emailed to the new user. You (the Admin) never
+          see it.
+        {% endcomment %}
+        <div class="form-alert form-alert-info">
+          A temporary password will be generated automatically and emailed to this user — you won't see it. They'll be prompted to change it after signing in.
+        </div>
         <div class="form-grid">
 
           <div class="field field-full">
@@ -181,12 +197,6 @@
             <label class="form-label" for="user-email">Email<span class="required-mark">*</span></label>
             <input class="input input-plain" type="email" id="user-email" name="email" placeholder="name@stockwell.example">
             <div class="field-error" id="user-email-error" role="alert"></div>
-          </div>
-
-          <div class="field field-full">
-            <label class="form-label" for="user-password">Password<span class="required-mark">*</span></label>
-            <input class="input input-plain" type="password" id="user-password" name="password" placeholder="8+ chars, upper/lower/digit/special" autocomplete="new-password">
-            <div class="field-error" id="user-password-error" role="alert"></div>
           </div>
 
           <div class="field field-full">
@@ -224,5 +234,6 @@
   <script src="{% static 'js/form-validation.js' %}"></script>
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/user-form.js' %}"></script>
 {% endblock %}

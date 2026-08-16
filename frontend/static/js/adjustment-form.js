@@ -123,6 +123,17 @@
     var tableBody = getField("adjustmentsTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
 
+    if (window.TableFilter && tableBody) {
+      TableFilter.init({
+        tableBodyId: "adjustmentsTableBody",
+        searchInputId: "adjustmentSearch",
+        selectFilters: [
+          { id: "adjustmentTypeFilter", attr: "data-type" },
+          { id: "adjustmentStatusFilter", attr: "data-status" }
+        ]
+      });
+    }
+
     if (!getField(FORM_ID)) return;
 
     ModalForm.init({

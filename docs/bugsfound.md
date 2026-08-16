@@ -69,6 +69,25 @@ For full narrative context on any bug, see `docs/project_memory.md`
 | BUG-34 | Product creation wrote a real `InventoryMovement` with no true cause, violating this project's own prior architecture decision | `docs/project_memory.md` §13 ("No 'Add Inventory Transaction' modal" decision) — Phase 5's own implementation | ✅ Fixed (Phase 5.5) |
 | BUG-35 | Category/Supplier mock modals had fields with no schema backing (category parent/code; supplier code/city/country/postal_code/website/tax_id/notes) and mislabeled most of Supplier's genuinely-required fields as optional | `SCHEMA.md` §2 Category, §3 Supplier vs. Phase 3's hand-built `categories.html`/`suppliers.html` modals | ✅ Fixed (Phase 6) |
 | BUG-36 | A multi-line Django `{# #}` comment leaked as literal text containing a `<template>` substring, which the browser parsed as a real tag and swallowed the rest of the page's body into an inert fragment | N/A — implementation bug (recurrence of BUG-03's exact root cause, in a new file, with a much worse blast radius) | ✅ Fixed (Phase 7) |
+| BUG-37 | Users & Roles' search/role/status filter silently did nothing — `users.html` never loaded `table-filter.js`, even though `user-form.js` calls `TableFilter.init()`; Products/Suppliers/Purchases/Sales/Adjustments' filter controls were decorative (no script, no ids, no data-* hooks); Inventory's page was still 100% hardcoded mock underneath its controls | N/A — implementation bug | ✅ Fixed (Phase 8.6 — Users; Phase 8.7 — the other 5; Phase 8.9 — Inventory, once the real page existed to filter) |
+| BUG-38 | Timestamps displayed in UTC instead of Bangladesh time everywhere, AuditLog included | N/A — implementation bug (`TIME_ZONE = 'UTC'` left at the Django default) | ✅ Fixed (Phase 8.6) |
+| BUG-39 | Dashboard greeting hardcoded to "Good morning" regardless of actual time of day | N/A — implementation bug (mock-era placeholder text never made dynamic) | ✅ Fixed (Phase 8.6) |
+| BUG-40 | Dashboard greeting showed "Amara" for every logged-in user — `request.user.first_name` doesn't exist on the custom `frontend.User` model, so it silently resolved empty and the `\|default:"Amara"` mock fallback fired unconditionally | `SCHEMA.md` §1 User (no `first_name` field — only `full_name`) vs. `dashboard.html`'s hand-built mock markup | ✅ Fixed (Phase 8.6) |
+| BUG-41 | `project_memory.md` marked the Dashboard page ✅, but `dashboard()` passes no queryset context at all — every KPI card, both charts, and all 4 widgets are hardcoded; only the greeting/user name (BUG-39/40) are real | N/A — documentation-accuracy bug, not a code defect | ✅ Fixed (Phase 8.96 — Dashboard genuinely built against `docs/09_DASHBOARD.md`, approved Phase 8.95/8.95.1) |
+| BUG-42 | `dashboard()` had no `@login_required`/RBAC mixin at all — harmless while the page was fabricated (BUG-41), a real risk once Phase 8.96 made it compute genuine business data | N/A — implementation gap, not sourced from any doc | ✅ Fixed (Phase 8.97 Part A — `AnyStaffMixin`) |
+| BUG-43 | `demand_forecasting`/`slow_moving_dead_stock` views also have no auth requirement at all — same shape as BUG-42, lower severity since both pages are still 100% disclosed mock (no real data to expose) | N/A — implementation gap | ✅ Fixed (Phase 8.99j — `SupervisorRequiredMixin`, both layers: server-side gate + sidebar nav gating) |
+| BUG-44 | "Export CSV"/"Export" buttons on Audit Log, Products, and Suppliers pages are decorative — no click handler, no real CSV/PDF generation, unlike Reports' genuinely-wired export (`ReportExportView`) | N/A — implementation gap, pre-existing since each page's own phase (Products/Suppliers Phase 5/6, Audit Log Phase 8) but never itemized by name until this audit | ✅ Fixed (Phase 8.98 — real CSV on all 3, plus Movement History's new export) |
+| BUG-45 | Inventory's "Movement history" button (page-level and per-row) did nothing — no page existed to open | N/A — implementation gap, pre-existing since Phase 8.9 built the rest of the Inventory page around it | ✅ Fixed (Phase 8.98 — real `MovementHistoryListView`) |
+| BUG-46 | `frontend/reports.py`'s `_date_bounds()` built naive datetimes and compared them against a `USE_TZ=True` `DateTimeField`, triggering a `RuntimeWarning` on every date-filtered report/export — silently correct by Django's own coercion, but noisy, and never actually exercised by any test until Phase 8.98's own new date-filtered export test | N/A — implementation gap, latent since Phase 8 (Reports), first exercised by a test in Phase 8.98 | ✅ Fixed (Phase 8.98 — `timezone.make_aware()`) |
+| BUG-47 | `PurchaseOrder.order_date`/`SaleTransaction.transaction_date` (`DateField(auto_now_add=True)`) and their PO/invoice number generation read the OS clock's raw local date / raw UTC respectively, ignoring `TIME_ZONE` entirely — invisible on this project's Dhaka-clocked dev machine, would have produced wrong dates *and* wrong identifiers on a UTC production server near Dhaka midnight | N/A — implementation bug (a well-known Django `DateField.auto_now_add` gotcha, flagged but not fixed as a "related finding" inside BUG-38, Phase 8.6) | ✅ Fixed (Phase 8.99, pre-deploy blocker) |
+| BUG-48 | A password changed via the "Forgot password?" email-reset flow wrote no `AuditLog` row and notified no Admin — Django's own `PasswordResetConfirmView` never goes through `change_password_view`, which is the only place those two calls lived — while the identical change made via the profile modal was fully recorded. A genuine compliance-record gap: an Admin-invisible way to change a password, invisible specifically because reset was still a disabled link when the modal (and its audit/notify calls) were built | N/A — implementation gap, not sourced from any doc (`01_AUTH.md`'s own reference `PasswordResetConfirmView` usage has no audit/notify call either — same gap, undetected because the flow itself was never finished until now) | ✅ Fixed (Phase 8.99a) |
+| BUG-49 | Movement History's export silently disagreed with the page: date-range used two different comparisons between the page (`created_at__date__gte`) and the export (`_date_bounds()`'s timezone-aware range), and the export had no product/movement-type/search filtering at all — a user could filter by type on screen and export the CSV/PDF believing it reflected that filter, when it silently exported every type | `docs/project_memory.md` §2/§15 item 40, `docs/bugsfound.md` BUG-45's own Phase 8.98 entry (which documented the client-side search/type split as deliberate, not anticipating this consequence) | ✅ Fixed (Phase 8.99d) |
+| BUG-50 | Sidebar notification badge (`includes/sidebar.html`) showed a hardcoded, static "6" for every user regardless of their real unread count — a Phase 3.6 mock-era literal that Phase 8's real `NotificationUnreadCountView`/topbar-bell-poll work never replaced, unlike the topbar dot it sits right next to | N/A — implementation gap, same class as BUG-37/39/40 (a mock leftover from before the page went real, never swept up when the rest of the page did) | ✅ Fixed (Phase 8.99f-2) |
+| BUG-51 | A multi-line `{# #}` comment in the Add User modal (`users.html`, just above the info banner) didn't close on its own line, so it rendered as literal visible page text — the "stray lines" in the popup | N/A — implementation bug; a third occurrence of BUG-03's exact root cause (BUG-36 was the second), in a third file | ✅ Fixed (Phase 8.99f-4) |
+| BUG-52 | Add User's real success path returned a bare `{"success": True}` with no user-visible confirmation — indistinguishable, from the browser, between "the credentials email really sent" and "it silently failed." The same shape as Phase 8.99f-3's stranded-account finding (a failed send and a real one looking identical), just on the happy path instead of the failure path — no Add-modal in this app has ever shown a success toast, which is fine when the new row is its own confirmation (Products) but not here, where the meaningful outcome (did the email arrive) is invisible in the table | N/A — implementation gap, not sourced from any doc | ✅ Fixed (Phase 8.99f-4) |
+| BUG-53 | The Add User success message claimed "credentials emailed to X" even on the console email backend, where nothing actually leaves the machine — `send_mail()` never raises on that backend, it just prints to whichever terminal runs the Django process, so `email_sent` was `True` in exactly the same way for a real SMTP send and a local-only print. This is why the feature "worked" during this session's own scripted SMTP verification (always run with real SMTP temporarily enabled) but not for a real admin click against the resting dev environment (console by default) | N/A — implementation gap; a genuine, previously-unmodeled distinction between "the mail API didn't raise" and "an email actually left the machine" | ✅ Fixed (Phase 8.99f-5) |
+| BUG-54 | `.env.example`'s `EMAIL_BACKEND`/`DEFAULT_FROM_EMAIL` were set to placeholder VALUES (`KEY=something`) rather than omitted — since `os.environ.get(KEY, default)` only falls through to `config/settings.py`'s own safe default when the key is genuinely absent, a present-but-different value there is fine, but the *intent* (a truly optional, backend-agnostic example) was undermined by hardcoding a specific backend choice into the "example" file itself, and a literal blank (`KEY=`, considered during the same fix) would have been worse — present-but-empty overrides the default with `''` and crashes on an empty backend import path. Confirmed live before fixing, not assumed | N/A — implementation gap introduced by Phase 8.99f-6's own `.env.example` addition, caught and corrected one phase later | ✅ Fixed (Phase 8.99f-7) |
+| BUG-55 | Products' Deactivate row pill used `icon-trash` — the same icon used everywhere else in this app for a genuine, permanent delete (Users' real Delete button, and the new Product/Category/Supplier Delete buttons built this same phase) — visually implying destruction for what's actually a reversible soft-deactivate | N/A — implementation bug, pre-existing since Phase 8.99e built the Deactivate button; only surfaced once genuine Delete buttons using the same icon existed side-by-side with it | ✅ Fixed (Phase 8.99i — `icon-x` for deactivate on all three modules, matching Purchases/Sales/Adjustments/Users' own convention; `icon-trash` reserved for true delete) |
 
 ---
 
@@ -871,3 +890,723 @@ comment isn't just cosmetic — if its text happens to contain something
 that looks like an HTML tag (`<template>`, `<select>`, `<table>`, and a
 few others all have special parsing rules), it can silently take down
 everything after it on the page.
+
+### BUG-37 — Users & Roles' filter controls were dead (missing `<script>` tag)
+**Root cause:** `frontend/static/js/user-form.js` (Phase 8) always called
+`TableFilter.init({...})` for the search box + role/status selects,
+guarded only by `if (window.TableFilter && ...)`. That guard silently
+no-ops when `window.TableFilter` is undefined — and it was: `users.html`'s
+`extra_js` block loaded `modal.js`/`form-validation.js`/`dom-utils.js`/
+`modal-form.js`/`user-form.js`, but never `table-filter.js` itself, unlike
+every other real consumer of it (`audit_log.html`, `reports.html`,
+`forecasting.html`, `slow_moving.html` all load it explicitly). The real
+`data-search`/`data-role`/`data-status` attributes and empty-state markup
+were all present and correct — only the script tag was missing.
+**Source Documentation:** N/A — implementation bug, not sourced from any
+project doc.
+**Status:** ✅ Fixed (Phase 8.6) — added
+`<script src="{% static 'js/table-filter.js' %}"></script>` to
+`users.html`'s `extra_js` block, before `user-form.js`. Re-verified live
+(Playwright, real DB data): a bogus search term correctly hides all rows
+and shows the empty state; filtering by role correctly narrows the table.
+Every other page that actually loads `table-filter.js` (Forecasting,
+Slow-Moving, Audit Log, Reports) was independently re-verified working in
+the same sweep — none had this bug. Products/Categories/Suppliers/
+Purchases/Sales/Inventory/Adjustments/Notifications never load
+`table-filter.js` at all — their visible search/select controls are
+decorative by design, already tracked as known debt (`project_memory.md`
+§10/§12), not a regression from Phase 5-8 and not touched here.
+
+**Phase 8.7 — case (c) closed:** Products/Suppliers/Purchases/Sales/
+Adjustments now load `table-filter.js` too — same shared module, no new
+filtering mechanism. Each needed: (1) the missing `<script>` tag, (2)
+`id`s on the search input and select(s) (none had one — the module keys
+off DOM ids, not just presence), and (3) `data-search`/`data-<column>`
+attributes on each `<tr>` (also missing everywhere — the mock-era rows
+only ever had visual columns, no filter hooks). Status/type `<select>`
+options had no `value` attribute either, meaning the browser defaulted
+each option's value to its own display text ("Pending approval",
+"Increase", ...) — harmless for a decorative control, but would have
+silently broken filtering by matching against `po.status`'s real lowercase
+choice values (`pending`, `approved`, ...) with the human label instead;
+every option got an explicit `value="<real choice value>"` matching the
+model's `TextChoices`. Two pages checked out as genuinely nothing to wire,
+not overlooked:
+- **Categories** (`categories.html`) has no search box or select at all —
+  just a grid of cards. No filter control exists to connect.
+- **Inventory** (`inventory.html`) has real-looking filter controls, but
+  `frontend/views.py`'s `inventory()` view is still a one-line `render()`
+  with no queryset — every row in the table is hardcoded mock HTML (SKU-
+  20194, SKU-11832, ...), not real `InventoryRecord` data. `project_memory.md`
+  §2 currently lists this page with a ✅ ("read-only by design"), which is
+  misleading: read-only was the *intended* design, but the view was never
+  actually built past the original Phase 3.6-era mock, unlike every other
+  "✅ real" module. Wiring `table-filter.js` against fabricated rows would
+  make the page *look* functional while filtering data that isn't real —
+  flagged here rather than done, per this task's own instruction not to
+  invent behavior. Building the real Inventory view (a real queryset from
+  `InventoryRecord`, matching every other module's pattern) is a
+  prerequisite and belongs in its own session, not folded into a
+  filter-wiring task.
+Verified live (Playwright, `verify_user`/`verify_super`, real Postgres
+data) on all 5 newly-wired pages: bogus search hides all rows, clearing
+restores them, each status/type select correctly narrows to the matching
+subset, and clearing returns to the full set — identical results for both
+roles (this app's list pages don't vary row *content* by role, only
+action-button visibility, already covered in Phase 8.6's sweep). No
+console errors on any of the 7 pages checked (5 wired + Categories +
+Inventory). `table-filter.js` itself was not modified — reused exactly
+as-is, same as every other consumer. 131/131 tests passing (frontend-only
+change; no Python touched).
+
+**Phase 8.9 — Inventory portion closed for real.** Built the real
+`InventoryListView` (`AnyStaffMixin`, matching `07_INVENTORY.md`'s own
+`@staff_required` — which in this project's RBAC means all 3 roles, not a
+stricter gate) over a genuine `InventoryRecord` queryset, replacing the
+one-line `render()`. `status` is read straight off the model (already
+kept correct by `InventoryService` on every real mutation), not
+recomputed. `inventory.html`'s rows, KPI/stat-strip numbers, and "last
+movement" column are all real now; filter controls got the same
+`data-search`/`data-status` + `table-filter.js` wiring as the 5 pages
+above, closing the gap this entry itself flagged as deliberately
+deferred. Confirmed strictly read-only: no `<form>` anywhere in the
+template, no mutation call anywhere in the view, and a live direct POST
+to `/inventory/` returns `405` — the only code paths that ever touch
+`InventoryRecord` remain `InventoryService.increase_stock()`/
+`decrease_stock()`/`initialize_for_product()`, called exclusively from
+Purchase/Sale/Adjustment's service-layer methods, unchanged by this work.
+5 new tests (`InventoryListViewTests`) — 136/136 passing (was 131).
+
+### BUG-38 — Timestamps rendered in UTC instead of Bangladesh time
+**Root cause:** `config/settings.py` had `TIME_ZONE = 'UTC'` (the Django
+project-template default) with `USE_TZ = True`. `USE_TZ=True` means every
+stored datetime is a correct, real UTC instant — the bug was never in
+storage, only in *display*: every `{{ value|date:... }}` template render
+and every `timezone.localtime()` call converts to whatever `TIME_ZONE`
+says, and nothing in this project activates a different per-request
+timezone. AuditLog — a compliance record — was the most consequential
+case, but every rendered timestamp across the app (Purchases, Sales,
+Notifications, admin) was equally affected.
+**Stored vs. displayed — explicitly confirmed separately, per this task's
+instruction:** all datetime storage in this project goes through
+`auto_now_add`/`auto_now` (`TimeStampedModel.created_at`/`updated_at`,
+`AuditLog.timestamp`) or explicit `timezone.now()` calls — all of which
+are UTC-aware under `USE_TZ=True` and stored correctly in Postgres as
+`timestamptz`. Confirmed against a real `AuditLog` row: stored value
+`2026-08-11 03:58:48+00:00`, `timezone.localtime()` of that same value
+correctly yields `2026-08-11 09:58:48+06:00`. **No stored timestamp was
+ever wrong — this was purely a display/interpretation bug, and no data
+correction is needed or was performed.**
+**Related finding, disclosed not fixed at the time (out of this task's
+scope) — RESOLVED Phase 8.99, see BUG-47:**
+`PurchaseOrder._generate_po_number()`/`SaleTransaction.
+_generate_invoice_number()` embed `timezone.now().strftime('%Y%m%d')` —
+the UTC calendar date, not the local one. Separately, `PurchaseOrder.
+order_date`/`SaleTransaction.transaction_date` (`DateField(auto_now_add=
+True)`) resolve via Django's own `datetime.date.today()`, which reads the
+host machine's OS clock directly and is **not** affected by
+`settings.TIME_ZONE` at all (a well-known Django `DateField.auto_now_add`
+gotcha — it only applies to `DateTimeField`). Near local midnight in
+Bangladesh, these three values can still disagree with each other and
+with the now-correctly-displayed Dhaka timestamps elsewhere on the same
+record. Not fixed here at the time: correcting it changes a generated
+business identifier's format (PO/invoice numbers), which was outside this
+task's named scope ("if a fix would require changing business logic, stop
+and flag it") — closed as its own pre-deploy blocker in Phase 8.99, once
+the identifier-format change was explicitly in scope (see BUG-47).
+**Source Documentation:** N/A — implementation bug (default left
+unchanged; no doc specifies a timezone).
+**Status:** ✅ Fixed (Phase 8.6) — `TIME_ZONE = 'Asia/Dhaka'` in
+`config/settings.py`, `USE_TZ` left `True`. Re-verified live: the Audit
+Log page's timestamp column now shows Dhaka local time, confirmed against
+a direct `timezone.localtime()` check of the same underlying row.
+
+### BUG-39 — Dashboard greeting never changed by time of day
+**Root cause:** `dashboard/dashboard.html`'s heading had the literal text
+"Good morning" hardcoded, a leftover from the original static mock — the
+view (`frontend/views.py`'s `dashboard()`) passed no context at all.
+**Source Documentation:** N/A — implementation bug (mock-era placeholder
+text never made dynamic when the view went live in earlier phases).
+**Status:** ✅ Fixed (Phase 8.6) — `dashboard()` now computes a
+`greeting` ("Good morning"/"Good afternoon"/"Good evening") server-side
+from `timezone.localtime().hour`, passed via context. Computed
+server-side rather than client-side JS specifically so it can never
+disagree with the Bangladesh-time timestamps BUG-38 just fixed elsewhere
+on the same page (both now read the same `TIME_ZONE`-driven clock).
+Verified live (Playwright) across all three roles at real server local
+time (10:2x, Dhaka) — all three showed "Good morning", correctly; unit
+tests added mocking `frontend.views.timezone.localtime()` to cover the
+morning/afternoon/evening boundaries directly (`DashboardGreetingTests`,
+`frontend/tests.py`).
+
+### BUG-40 — Dashboard greeting showed "Amara" for every logged-in user
+**Root cause:** `dashboard.html` read `{{ request.user.first_name|
+default:"Amara" }}` — but `frontend.User` (`AbstractBaseUser` +
+`PermissionsMixin`, not Django's `AbstractUser`) has no `first_name`
+field at all, only `full_name`. Django's template engine resolves an
+unknown attribute to an empty string rather than raising, so `|default`
+fired unconditionally — every real user, regardless of who was logged in,
+saw the mock name "Amara". `User.get_short_name()` (added Phase 4,
+returns the first token of `full_name`) already existed and was already
+the correct source for exactly this use — the template just never called
+it.
+**Swept the rest of the topbar/dashboard shell for the same placeholder,
+per this task's instruction — found 2 more, both already correct:**
+`includes/topbar_actions.html` and `includes/sidebar.html` both use
+`request.user.get_full_name|default:"Amara Tenzin"` — `get_full_name()`
+resolves correctly for any real authenticated user (verified live for all
+three roles below), so the "Amara Tenzin" fallback there only ever fires
+for a genuinely anonymous visitor, which is documented, intentional
+behavior for this project's handful of not-yet-login-gated pages
+(`project_memory.md` §4). Left as-is — not the bug, and changing it isn't
+needed.
+**Related finding, disclosed not fixed (out of this task's scope — RBAC
+wiring):** `frontend/views.py`'s `dashboard()` view has no
+`@login_required`/RBAC guard at all, unlike every other real module view
+in this project. An anonymous visitor can currently reach `/dashboard/`
+directly and would see the anonymous-fallback path described above. This
+predates this task, is not one of the four named bugs, and touching RBAC
+mixins was explicitly out of scope for this session.
+**Source Documentation:** `SCHEMA.md` §1 User (field list has no
+`first_name`/`last_name`) vs. `dashboard.html`'s hand-built mock markup,
+which assumed a `first_name` field that was never real.
+**Status:** ✅ Fixed (Phase 8.6) — `dashboard.html` now reads
+`{{ request.user.get_short_name|default:"there" }}` (neutral fallback,
+not a mock identity). Verified live (Playwright) as `verify_admin`/
+`verify_super`/`verify_user`: headings read "Good morning, Naomi" /
+"Good morning, Marcus" / "Good morning, Talia" respectively — no
+"Amara" anywhere. Unit test added (`test_greeting_shows_real_user_name_
+not_amara`, `frontend/tests.py`) asserting the response contains the
+real user's first name and does not contain "Amara".
+
+### BUG-41 — Dashboard page marked ✅ in `project_memory.md`, but it's almost entirely mock
+**Root cause:** Found during Phase 8.8's documentation-integrity audit
+(itself prompted by Phase 8.7 catching the same class of mistake on the
+Inventory page). `frontend/views.py`'s `dashboard()` view:
+```python
+def dashboard(request):
+    hour = timezone.localtime().hour
+    ...
+    return render(request, "dashboard/dashboard.html", {"greeting": greeting})
+```
+passes exactly one context key — `greeting`. Every other number and row on
+the page comes from `dashboard.html`'s own `|default:"..."` fallbacks
+(`{{ total_products|default:"1,284" }}`, `{{ total_categories|default:
+"36" }}`, `{{ inventory_value|default:"186,420" }}`, etc.) or from
+`dashboard.js`'s hardcoded Chart.js dataset arrays, or from static
+`<tr>`/`<div>` markup for the Stock Alerts, Pending Approvals (including
+Approve/Reject `<button>`s with no click handler or endpoint — visually
+identical to Purchases' real ones, but wired to nothing), Recent Activity,
+and AI Insights sections. None of these context variables are ever set by
+the view, so every `|default` fires unconditionally, the same shape as
+BUG-40 but across ~15 values instead of one. `project_memory.md`'s prior
+entry — "KPI cards, Chart.js sales/inventory charts, static preview
+panels" — was technically not false, but easy to misread: a reader could
+reasonably conclude only the "preview panels" were static and the KPI
+cards/charts were real, especially sitting under the same ✅ used for
+genuinely-real modules like Products.
+**Source Documentation:** N/A — documentation-accuracy bug in
+`project_memory.md` itself, not a code defect. The underlying page being
+mock is expected/correct for this project's current stage (Dashboard has
+no dedicated module doc — `09_DASHBOARD.md` is on the missing-docs list,
+BUG-17); the bug is specifically that this file's own record of that fact
+was misleading.
+**Status:** ✅ Fixed (Phase 8.96), closing the loop `09_DASHBOARD.md`
+(Phase 8.95, approved 8.95.1) opened. `dashboard()` now computes every
+KPI/stat/chart/widget from real, DB-aggregated queries (`Sum`/`Count`/
+`annotate`, never a whole table pulled into Python to count it) — no
+`|default:"..."` fabrication remains anywhere in `dashboard.html` except
+the one already-approved, non-fabrication fallback from BUG-40
+(`request.user.get_short_name|default:"there"`, for the pre-existing
+anonymous-visitor edge case, unchanged). `dashboard.js`'s hardcoded chart
+arrays are gone — both charts now read real data passed via
+`{{ chart_data|json_script:"dashboardChartData" }}`. The AI Insights
+section was deleted entirely, not replaced with an empty state, per
+Decision 8/§4d. Pending Approvals renders as a read-only summary with
+**no** Approve/Reject buttons anywhere on the page (Decision 4). Recent
+Activity renders only for `request.user.role in (admin, supervisor)` —
+confirmed absent from the *rendered HTML*, not just hidden, for a staff
+user (Decision 5). `DASHBOARD_PREVIEW_ROWS = 5` is defined once and reused
+for all 3 preview widgets (Decision 3). Verified live (Playwright, real
+Postgres, all 3 roles): every KPI/stat value matched a direct manual DB
+query exactly (products/categories/active suppliers/users = 3/3/3/4,
+inventory value = $858.00, stock units = 111, low/out-of-stock = 2/0);
+Stock Alerts and Pending Approvals showed real product/adjustment rows
+matching the DB; Recent Activity showed 5 real `AuditLog` rows (all
+non-`authentication` actions) for admin/supervisor and was genuinely
+absent for staff; switching the Daily/Weekly/Monthly toggle changed both
+the chart's data and its labels to real values (e.g. a real $89.10 sale
+appearing in both the daily and monthly buckets); no console errors. 8 new
+tests (`DashboardViewTests`) — 144/144 passing (was 136). This was the
+last mock-but-marked-done page from Phase 8.8's audit — that
+outstanding-work list is now empty.
+
+### BUG-42 — `dashboard()` had no auth requirement at all
+**Root cause:** Flagged as a live risk at the end of Phase 8.96 (§12
+technical debt) — `dashboard()` was a bare function view, never given
+`@login_required` or any RBAC mixin across Phases 8.6/8.8/8.9/8.96, each
+of which touched this file for other reasons and disclosed the gap rather
+than fixing it (out of each of those tasks' own scope). Harmless while
+the page showed fabricated numbers; a real risk the moment Phase 8.96
+made it compute genuine inventory value, stock levels, and headcounts —
+an unauthenticated request could reach real business data.
+**Source Documentation:** N/A — implementation gap, not sourced from any
+doc. `09_DASHBOARD.md`'s own "Any role, same content" decision (Decision
+8) already implied *some* authentication boundary (its endpoints are
+still scoped to logged-in roles in `API_CONTRACTS.md`, just not
+role-differentiated) — this was never actually enforced in code.
+**Status:** ✅ Fixed (Phase 8.97 Part A). `dashboard()` converted from a
+function view to `DashboardView(AnyStaffMixin, View)` — matching every
+other real view's convention exactly and `09_DASHBOARD.md`'s "any logged-
+in role, not gated to one" decision. The Recent Activity widget's
+`request.user.is_authenticated` check (Phase 8.96) is now
+belt-and-suspenders, not load-bearing — kept anyway, harmless. Verified
+live: `GET /dashboard/` unauthenticated → `302` to
+`/login/?next=/dashboard/`; all 3 roles still load the page correctly;
+Recent Activity still absent from the rendered HTML for staff. 1 test
+updated (anonymous now asserts a redirect, not "doesn't crash") + 1 new
+test added (all 3 roles load successfully) — 145/145 passing (was 144).
+
+### BUG-43 — Demand Forecasting/Slow-Moving pages also have no auth requirement
+**Root cause:** Found during Phase 8.97's full-app wiring audit (Part B),
+prompted by BUG-42. `demand_forecasting`/`slow_moving_dead_stock`
+(`frontend/views.py`) are bare function views with zero decorators —
+the same shape as BUG-42, `/ai/forecasting/` and `/ai/slow-moving/` are
+reachable by anyone, logged in or not. Lower severity than BUG-42: both
+pages are still 100% disclosed mock (confirmed in Phase 8.8's audit,
+correctly labeled "All static/mocked" in `project_memory.md`) — there is
+no real data to expose yet, only static example content the same as any
+anonymous visitor could see on the public landing page.
+**Source Documentation:** N/A — implementation gap.
+**Status:** ✅ Fixed (Phase 8.99j). Converted both from bare function
+views to CBVs (`DemandForecastingView`/`SlowMovingDeadStockView`),
+gated `SupervisorRequiredMixin` — a disclosed deviation from this entry's
+own original suggestion (`AnyStaffMixin`, mirroring BUG-42's fix):
+Phase 8.99j's actual, more specific requirement ("staff can't see the AI
+models") is narrower than "any logged-in role," so Admin+Supervisor only
+is the correct gate here, not the same one BUG-42 used. Sidebar's
+"Intelligence" nav group wrapped in the matching
+`{% if request.user.role == 'admin' or request.user.role == 'supervisor' %}`
+conditional (Phase 8.5's own established pattern, already used for the
+Reports link right below it) so the hidden-link UX layer and the actual
+server-side gate agree. Verified live, all 3 roles + anonymous: anonymous
+redirects to login; Staff gets a real `302` on a direct GET to either URL
+(not just a hidden link) and doesn't see either nav link; Supervisor/
+Admin both load (`200`) and both see the links. 8 new tests
+(`AIPageAccessTests`) — Phase 10/11 no longer need to carry this as a
+Step 0 prerequisite; both pages are still 100% mock pending those
+phases, only the access gate changed here.
+
+### BUG-44 — Decorative "Export"/"Export CSV" buttons on 3 pages
+**Root cause:** Found during Phase 8.97's audit while checking that every
+actionable control does something real. Audit Log's "Export CSV" button
+(`audit_log.html`) and Products'/Suppliers' "Export" buttons
+(`products.html`/`suppliers.html`) render with no click handler anywhere
+in their respective JS files and no backing endpoint — visually similar
+to Reports' genuinely-wired PDF/CSV export (`ReportExportView`,
+Phase 8), but inert. Pre-existing since each page's own build phase
+(Products/Suppliers Phase 5/6, Audit Log Phase 8) — general "decorative
+controls exist" language already covered this class of thing in
+`project_memory.md` §10, but no prior entry named these three buttons
+specifically.
+**Source Documentation:** N/A — implementation gap, no doc specifies
+export behavior for these three pages.
+**Status:** ✅ Fixed (Phase 8.98). All 3 buttons wired to real CSV, plus a
+4th (Movement History's new export, built in the same phase — see BUG-45).
+`ProductExportView`/`SupplierExportView`/`AuditLogExportView`
+(`frontend/views.py`) each build their own headers/rows from a real
+queryset and hand them to `frontend/reports.py`'s existing
+`generate_csv_response()` — the exact reuse this entry predicted, not a
+new export mechanism. Auth matches each source page exactly:
+`AnyStaffMixin` on Products/Suppliers (matching those pages' own gating),
+`AdminRequiredMixin` on Audit Log (matching `AuditLogListView`'s own gate
+and `13_AUDIT.md`'s "Admin only" rule — confirmed a staff request gets
+redirected, not a bypass). Products/Suppliers export the **full dataset**,
+not the current `table-filter.js` selection — that filter is client-side
+only with no server-side equivalent to read, stated explicitly rather than
+silently only exporting what happened to be on screen. Verified live: all
+3 downloads are real CSVs whose row counts match the database exactly
+(Products 3 rows, Suppliers 3 rows, Audit Log 233 rows — the full log, not
+the on-screen page's 500-row display cap). 5 new tests
+(`ExportViewTests`) — see BUG-45 for the shared test-suite total.
+
+### BUG-45 — "Movement history" button did nothing (Inventory page)
+**Root cause:** `inventory.html`'s page-level "Movement history" button
+and every row's per-product "view movement history" pill button
+(Phase 8.9) were both plain `<button type="button">` elements with no
+`href`, no `data-*` trigger, and no JS handler anywhere — pure leftover
+mock markup from before the Inventory page went real. `InventoryMovement`
+(the immutable ledger, Phase 3) had recorded every real stock change
+since Phase 3 — nothing about the *data* was missing, only a page to view
+it existed nowhere in `frontend/urls.py`.
+**Source Documentation:** N/A — implementation gap. `07_INVENTORY.md`'s
+own reference code does document an `inventory_detail_view` per product
+(`/inventory/<product_id>/`, showing that one product's movements) — this
+implementation instead builds one shared, filterable ledger page
+(`/inventory/movements/`, optionally narrowed by `?product=<id>`) rather
+than a per-product detail route, consistent with this project's existing
+`§13` architecture decision that no per-entity detail routes exist
+anywhere in the app yet (Products/Suppliers/etc. don't have them either) —
+a deliberate, disclosed choice, not an oversight.
+**Status:** ✅ Fixed (Phase 8.98). `MovementHistoryListView`
+(`AnyStaffMixin`, matching Inventory's own gating) + `/inventory/movements/`
++ `inventory/movement_history.html`. Server-side date-range filtering
+(`date_from`/`date_to`, real `Paginator`-backed pagination, page size 50)
+— a deliberate choice over client-side filtering: the ledger is
+append-only and grows forever, so `table-filter.js` alone would only ever
+see whichever one page happened to be loaded. Search (product/SKU) and
+movement-type filtering stay client-side (`table-filter.js`) on top of
+whatever page of date-filtered results is currently on screen — the same
+split every other real list page in this app already uses. An optional
+`?product=<id>` param (used by the per-row links) narrows to one
+product's history. Confirmed strictly read-only: no `<form>` posts
+anywhere except the GET-only date-filter form, no `InventoryMovement`
+mutation anywhere in the view, live `POST /inventory/movements/` → `405`.
+Export CSV (see BUG-44) reuses `frontend/reports.py`'s existing
+`build_movement_report()`/`generate_csv_response()` directly and
+genuinely respects the current date filter (unlike the Products/Suppliers/
+Audit Log exports), since `build_movement_report()` already reads
+`date_from`/`date_to` off the request. Verified live (Playwright, real
+Postgres): clicking "Movement history" on Inventory navigates to the real
+page; 7 real rows shown, matching the database exactly; a date range with
+no matches shows the honest "No movements recorded for this filter" empty
+state (not a fake zero); a wide range shows all 7 again; the per-row link
+correctly filters to one product; timestamps render in Asia/Dhaka (e.g.
+"Aug 11, 2026 16:00", matching a direct DB `timezone.localtime()` check);
+client-side search/type filters narrow correctly (type=sale → exactly the
+2 real sale movements); Export CSV downloads 8 lines (header + all 7
+movements). 6 new tests (`MovementHistoryViewTests`) — 156/156 passing
+across this whole phase (was 145).
+
+### BUG-46 — `_date_bounds()` built naive datetimes against a tz-aware field
+**Root cause:** `frontend/reports.py`'s `_date_bounds()` (Phase 8,
+existing before this phase) parsed `date_from`/`date_to` via plain
+`datetime.strptime()`, producing naive `datetime` objects, then compared
+them against `InventoryMovement.created_at` — a `DateTimeField` under
+`USE_TZ=True`. Django still produces a correct result (it coerces a naive
+datetime into the currently-active timezone, `Asia/Dhaka`, before
+comparing) but emits a `RuntimeWarning` every time. No test ever actually
+exercised this path with `date_from`/`date_to` set until Phase 8.98's own
+new `test_export_produces_real_csv_respecting_the_date_filter` — the
+first test in this project to pass real date-filter params through to
+`build_movement_report()`/`_date_bounds()`.
+**Source Documentation:** N/A — implementation gap, no doc specifies
+timezone handling for this helper.
+**Status:** ✅ Fixed (Phase 8.98) — `_date_bounds()` now wraps both bounds
+in `django.utils.timezone.make_aware()`, making the existing (already-
+correct) intent explicit instead of relying on Django's implicit,
+warning-emitting coercion. Behavior is unchanged — this was a latent
+correctness-adjacent cleanup surfaced by, and fixed alongside, this
+phase's own new export test, not a scope expansion.
+
+**Also fixed in passing, test-only:** `NotificationViewTests`'s fixture
+used bare `'T1'`/`'T2'`/`'T3'` as notification titles, then asserted
+`assertNotContains(response, 'T3')` against a full rendered page — which
+always includes a randomly-generated CSRF token. A 2-character substring
+check against a page containing random tokens has a real, if small,
+chance of a false-positive collision; this phase's own full-suite run hit
+it once (a token containing `vT3E` tripped the assertion). Not an
+application bug — renamed the fixture titles to long, collision-proof
+strings (`NotifOwnTitleOne`/`NotifOwnTitleTwo`/`NotifOtherUserTitleThree`)
+rather than leaving a rare, hard-to-reproduce flake in the suite once
+found. Re-ran the affected test class 3× standalone afterward with no
+recurrence.
+
+### BUG-47 — `PurchaseOrder`/`SaleTransaction` date generation ignored `TIME_ZONE`, reading the OS clock or raw UTC instead
+**Root cause:** two related, independently-buggy mechanisms, both flagged
+(not fixed) as a "related finding" inside BUG-38's own writeup back in
+Phase 8.6, closed for real here:
+1. `PurchaseOrder.order_date`/`SaleTransaction.transaction_date` were
+   `DateField(auto_now_add=True)`. Django's `DateField.pre_save()` (unlike
+   `DateTimeField.pre_save()`) resolves `auto_now_add` via plain
+   `datetime.date.today()` — the host OS clock's raw local date — and is
+   **not** affected by `settings.TIME_ZONE`/`USE_TZ` at all. This is a
+   well-known, documented Django gotcha specific to `DateField`/`TimeField`
+   (`DateTimeField` has no such gap; its `auto_now_add` correctly goes
+   through `timezone.now()`).
+2. `PurchaseOrder._generate_po_number()`/`SaleTransaction.
+   _generate_invoice_number()` built their `PO-YYYYMMDD-`/`INV-YYYYMMDD-`
+   prefix via `timezone.now().strftime('%Y%m%d')` — `timezone.now()` is
+   correctly UTC-aware, but `.strftime()` on an aware datetime formats it
+   in whatever tzinfo it already carries (UTC), not `TIME_ZONE`. This
+   silently embedded the UTC calendar date in the identifier, not the
+   Dhaka one.
+Both were invisible on this project's dev machine because its OS clock is
+itself set to Bangladesh time (`time.tzname` confirms `('Bangladesh
+Standard Time', 'Bangladesh Daylight Time')`) — `date.today()` and the
+Dhaka date coincide there by construction, not because the code was
+correct. On a UTC production server (Render's default), the two diverge
+for roughly 6 hours around each Dhaka midnight: an order raised at, say,
+2 AM Dhaka (20:00 UTC the previous day) would have been stamped and
+numbered with yesterday's date.
+**Existing dev records checked, not just assumed correct:** every
+`PurchaseOrder`/`SaleTransaction` row in the dev DB at the time of this
+fix has `order_date`/`transaction_date` and its PO/invoice number's date
+component agreeing with each other and with `created_at` — confirmed by
+direct query, not inferred. This is consistent with the root cause above
+(dev OS clock = Dhaka time) and does **not** indicate the bug was
+harmless; it means this dev environment's specific clock setup happened
+never to cross the divergence window during this project's development.
+No data correction was needed or performed.
+**Identifier-format impact — explicitly confirmed, not just a wrong date
+column:** because the PO/invoice number's `YYYYMMDD` segment is generated
+by the same buggy mechanism, this bug could have produced a wrong
+*identifier*, not merely a wrong date field alongside a correct one — a
+PO raised just after Dhaka midnight could have been numbered
+`PO-<yesterday>-XXXX` while its (also-buggy) `order_date` agreed with it,
+making the mismatch invisible without comparing against `created_at`.
+Fixed at the same time as the date fields, via the same
+`timezone.localdate()` call, so the identifier and the date column can no
+longer disagree with each other going forward.
+**Source Documentation:** N/A — implementation bug; no doc specifies this
+edge case, and the `auto_now_add`-for-`DateField` gap is a genuine Django
+framework limitation, not a project-specific mistake.
+**Status:** ✅ Fixed (Phase 8.99, pre-deploy blocker). `order_date`/
+`transaction_date` are now plain `DateField()`s (migration
+`0003_alter_purchaseorder_order_date_and_more`, `AlterField` only — no
+DB-level column change, since `auto_now_add`'s effect is Python-side
+`editable`/`blank` metadata, not a schema constraint), set explicitly in
+each model's `save()` via `timezone.localdate()` before `po_number`/
+`invoice_number` generation, which itself now also calls
+`timezone.localdate()` instead of `timezone.now().strftime(...)`. Added
+`TimezoneAwareDateGenerationTests` (`frontend/tests.py`) — mocks
+`django.utils.timezone.now()` to a UTC instant on a different Dhaka
+calendar day (`2026-01-01 20:00 UTC` = `2026-01-02 02:00 Dhaka`) and
+asserts both the stored date and the generated number's date segment
+land on the Dhaka day, not the OS clock's real (unmocked) date or the
+UTC day — a regression back to either buggy mechanism fails this test
+immediately. 190/190 tests passing (was 188).
+
+### BUG-48 — Password reset via email left no audit trail and told no Admin
+**Root cause:** `change_password_view` (Phase 8.98a) is the only place
+`audit.log_action(..., audit.PASSWORD_CHANGED, ...)` and
+`frontend.notifications.notify_admins(...)` were ever called for a
+password change. The "Forgot password?" flow uses Django's own
+`django.contrib.auth.views.PasswordResetConfirmView`, unmodified until
+this phase — its `form_valid()` calls `form.save()` (which does the
+actual `set_password()`) and redirects, with no knowledge of this
+project's `change_password_view` or its audit/notify calls at all. So a
+password changed via a reset email was a real, successful password
+change that left **zero trace** in the audit log and **notified no one**
+— while the byte-for-byte identical change made through the profile
+modal was fully recorded. Confirmed by reading Django's own
+`PasswordResetConfirmView.form_valid()` source directly before writing
+any fix, per this phase's own instruction not to assume.
+**Why this went undetected until now:** the reset flow itself was a
+disabled link (Phase 4.5) until this phase finished it — the gap existed
+in reachable Django code the whole time (anyone who knew/guessed a valid
+reset URL could already trigger it), but was never exercised through the
+UI, so it was never noticed as a live compliance gap until the link
+itself was turned back on.
+**Source Documentation:** N/A — implementation gap. `01_AUTH.md`'s own
+`PasswordResetView`/`PasswordResetConfirmView` reference code
+(`apps/authentication/urls.py`) wires up Django's stock views directly,
+with no audit/notify override either — the doc's own reference
+implementation has the identical gap, not just this project's translation
+of it.
+**Status:** ✅ Fixed (Phase 8.99a). Extracted the shared
+`notify_user()`/`notify_admins()`/`audit.log_action()` triplet out of
+`change_password_view` into a new `_record_password_change(user, request)`
+helper (`frontend/views.py`) — reused, not duplicated. New
+`StockwellPasswordResetConfirmView(PasswordResetConfirmView)` overrides
+only `form_valid()`: calls `super().form_valid(form)` (Django's own,
+unmodified password-setting logic) then `_record_password_change(
+form.user, self.request)` — `form.user` (set by `SetPasswordForm.
+__init__`, unrelated to `save()`) is the user whose password was just
+reset; the new password itself is never read or passed to either
+function. Verified live against the real seeded `verify_user` account,
+not just the test suite: real reset email sent (console backend) with a
+real working link, password actually changed, a real `AuditLog`
+`PASSWORD_CHANGED` row exists, `verify_admin` received a real
+notification naming Talia Nakamura with the new password absent from
+both its title and message, and login with the new password succeeded
+(`302` to `/dashboard/`) — same shape `ChangePasswordViewTests` already
+proved for the modal path. 10 new tests
+(`PasswordResetFlowTests`) — 200/200 passing (was 190).
+
+### BUG-49 — Movement History's export silently disagreed with the page's own filter
+**Root cause:** Phase 8.98 built two independent filtering code paths for
+the same data. `MovementHistoryListView` (the page) filtered dates with
+`created_at__date__gte`/`__lte`; `frontend/reports.py`'s
+`build_movement_report()` (the export) filtered dates with its own
+`_date_bounds()` — a different, timezone-aware range built via a separate
+comparison. The two happened to agree closely enough in practice that
+nothing caught it, but they were never the same code. Worse: the page's
+`product`/movement-type filtering had no equivalent in the export at all
+— type filtering was client-side only (`table-filter.js`), and the export
+function never read it off the request. A user could filter Movement
+History to `type=sale` on screen, click Export CSV, and receive every
+movement type in the file — the export silently ignoring a filter the
+user had just visibly applied, with nothing telling them so.
+**Why this went undetected until now:** BUG-45's own Phase 8.98 entry
+documented the client-side search/type split as a deliberate, disclosed
+choice — true for what it covered (search/type were never claimed to be
+exported), but it didn't anticipate that a *filtered page* implies a user
+expectation the *export* matches it, which no test or manual check ever
+exercised together.
+**Source Documentation:** N/A — implementation gap; no doc specifies
+Movement History's filter/export shape at all (it isn't in
+`07_INVENTORY.md`'s reference code — see BUG-45).
+**Status:** ✅ Fixed (Phase 8.99d). One shared `filter_movements()`
+function (`frontend/reports.py`) is now the single source of truth for
+date/product/movement-type/search filtering, called by both
+`MovementHistoryListView` and `build_movement_report()` — the two code
+paths were unified into one, not synchronized by convention. Search also
+moved server-side (dropping `table-filter.js` from this page entirely),
+so every filter a user can apply is now genuinely reflected in both CSV
+and PDF export (PDF is new this phase too). Verified live against the
+real dev DB: CSV/PDF row counts matched a direct DB query for 4 filter
+combinations, including one returning zero rows (an honest empty export,
+not an error). 8 new tests — 225/225 passing (was 217). See
+`docs/project_memory.md` §13/§15 item 50 for the full phase writeup,
+including why a related "filter by cancelled/rejected source document"
+idea was investigated and deliberately not shipped as a UI control.
+
+### BUG-50 — Sidebar notification badge was a hardcoded mock value
+**Root cause:** `includes/sidebar.html`'s Notifications nav item had a
+literal `<span class="nav-item-badge">6</span>` — Phase 3.6 mock-era
+markup, wired to nothing. Phase 8 built the real
+`NotificationUnreadCountView` and a genuinely live topbar bell badge
+(`#notifBadge`, polled every 30s by `notifications.js`) but never swept
+the sidebar's own badge up into that work — the two sit right next to
+each other conceptually (both claim to show "how many unread
+notifications do I have") but only one of them was ever real. Every user,
+regardless of their actual unread count (including zero), saw "6" in the
+sidebar on every page.
+**Why this went undetected until now:** the topbar bell badge was the
+one built and verified in Phase 8's own live-verification pass; the
+sidebar badge was pre-existing markup nobody was asked to touch at the
+time, so it was never swept for staleness the way BUG-37/39/40's mock
+leftovers eventually were.
+**Source Documentation:** N/A — implementation gap, no doc specifies the
+sidebar's own badge behavior.
+**Status:** ✅ Fixed (Phase 8.99f-2). `notifications.js`'s existing
+`pollUnreadCount()` now updates both the topbar dot and the sidebar
+badge from the same `fetch('/notifications/unread-count/')` response —
+one poll, not two — so they can't disagree. The sidebar badge starts
+`hidden` in the server-rendered markup (same as the topbar dot always
+did) and shows the real count once the first poll resolves, hiding again
+at zero. Verified live: a real user with 16 pre-existing unread
+notifications plus 3 deliberately created showed `unread_count: 19` at
+the shared endpoint; marking one read dropped it to 18 immediately. See
+`docs/project_memory.md` §13/§15 item 53 for the full phase writeup
+(also covers Part 1's admin-email re-confirmation and Part 2's new,
+guarded `UserDeleteView`).
+
+### BUG-51 — Leaked multi-line `{# #}` comment in the Add User modal
+**Root cause:** the exact BUG-03/BUG-36 shape, a third time. Django's
+`{# comment #}` tag is single-line only (its tokenizer regex isn't
+`DOTALL`) — a comment whose closing `#}` isn't on the same line as its
+opening `{#` fails to match as a comment token at all and renders as
+literal page text instead. `users.html` had one directly above the Add
+User modal's "temporary password" info banner:
+```
+{# Phase 8.98e: no password field — a strong password is generated
+   server-side and emailed to the new user. You (the Admin) never
+   see it. #}
+```
+spanning 3 lines — confirmed by rendering the page and finding the
+literal text (delimiters and all) inside the live HTML, not just by
+reading the template source. This is precisely what "extra/stray lines
+in the popup" looks like to a user: a chunk of developer-facing prose
+sitting inside an otherwise clean form.
+**Why this went undetected until now:** the comment was added in Phase
+8.98e and never exercised by any test that renders and inspects the
+modal's actual HTML output — every existing user-creation test asserted
+on the POST response/DB state, never on the GET-rendered form.
+**Source Documentation:** N/A — implementation bug, general Django
+templating behavior, not something any project doc specifies (same as
+BUG-03/BUG-36).
+**Status:** ✅ Fixed (Phase 8.99f-4) — converted to
+`{% comment %}{% endcomment %}`, the same fix BUG-03/BUG-36 used. The
+other 3 `{# #}` comments in `users.html` were checked individually and
+all close on their own line — confirmed not broken, not just assumed.
+New test (`test_add_user_modal_has_no_leaked_comment_text`) renders the
+page and asserts the leaked text is gone and the real info banner still
+renders — the missing test class BUG-03/BUG-36 didn't leave behind
+either, now covering this specific file.
+
+### BUG-52 — Add User's real success had no user-visible confirmation
+**Root cause:** `UserListCreateView.post()` returned a bare
+`{"success": True}` on a genuine success, and `user-form.js`'s
+`onSubmit()` did nothing with it beyond `window.location.reload()` — no
+Add-modal in this app has ever shown a positive confirmation on success
+(Products/Purchases/etc. all just reload silently too, confirmed by
+reading their own `onSubmit`s), which is a reasonable default when the
+new row is its own confirmation. User creation is the one case where
+that default fails: the meaningful outcome — whether the credentials
+email actually reached the new user — is completely invisible in the
+table, so an Admin genuinely could not tell, from the browser, whether
+"the user was created" also meant "they can actually log in."
+**Why this went undetected until now:** every automated test (including
+this same phase's own DB/`response.json()`-level checks) verified the
+row existed and the response's `success` flag, never a rendered,
+user-visible message — because there wasn't one to check. "Worked when
+tested, not when actually used" is exactly what that gap looks like:
+a scripted/terminal check reads the JSON directly, where a real admin
+in a browser sees nothing.
+**Source Documentation:** N/A — implementation gap, not sourced from any
+doc.
+**Status:** ✅ Fixed (Phase 8.99f-4), alongside Phase 8.99f-3's identical
+gap on the failure path (BUG-52's warning-side sibling, not separately
+numbered — found and fixed one phase earlier). Every real success now
+carries a `message` naming the emailed address
+(`"User created — credentials emailed to jane@example.com."`);
+`user-form.js` reads `message` or `warning` (mutually exclusive) and
+`alert()`s whichever is present before reloading — the same mechanism
+already used for the warning case, not a new toast component. Verified
+live via a real POST through the actual endpoint (the identical request
+shape the browser's fetch() sends): the returned payload is exactly what
+the browser would alert(); a duplicate resubmit correctly stays a clean
+`400` with an inline field error, not a crash. 2 existing tests updated
+to assert on the message content rather than an exact-empty-dict
+snapshot (the old assertion was itself part of why this shipped
+unnoticed — it never looked at what a person would actually see).
+
+### BUG-53 — Success message overclaimed on the console email backend
+**Root cause:** Django's console email backend (`config/settings.py`'s
+own default, and this project's resting dev state) never raises —
+`send_mail()` "succeeds" by printing the message to whichever terminal
+happens to be running the Django process, not by delivering it anywhere.
+`send_new_user_credentials_email()`'s `email_sent` return value was
+therefore `True` in exactly the same way for a genuine SMTP delivery and
+a purely local print, and BUG-52's own fix (`message` on `email_sent`)
+inherited that ambiguity: the response said "credentials emailed to X"
+regardless of which actually happened.
+**Why this went undetected until now:** this session's own verification
+practice (every prior SMTP-proving phase — 8.99f, 8.99f-3) always
+temporarily flipped `EMAIL_BACKEND` to real SMTP before testing, then
+reverted it to console afterward as the resting state. That made every
+scripted check in this session pass against a real send, while a real
+admin's own click — always against whatever the resting environment
+actually is — never got one. Reported as "works when the tool does it,
+not when I do it," which is a precise description of two processes
+observing the same code against two different `EMAIL_BACKEND` values.
+**Source Documentation:** N/A — implementation gap; a distinction (`the
+mail API didn't raise` vs. `an email actually left the machine`) no doc
+in this project models, since `EMAIL_BACKEND` swapping is a deployment/
+environment concern, not a business rule.
+**Status:** ✅ Fixed (Phase 8.99f-5). Diagnosed via the task's own 4-cause
+checklist before any code change: printed the effective runtime email
+config (confirmed `EMAIL_BACKEND` was console; every other Gmail
+setting — `EMAIL_HOST`/`PORT=587`/`USE_TLS=True`/`USE_SSL` unset —
+already correct); ran a bare `send_mail()` isolated from all
+user-creation code (returned `1`, no exception, config genuinely fine);
+reproduced the exact symptom live with a real POST on the console
+backend, getting the same honest-*looking* `message` a real send would
+produce. `UserListCreateView.post()` now checks
+`settings.EMAIL_BACKEND` and gives the console case its own distinct
+message stating plainly that no real email was sent and where the
+credentials actually went (the server's own terminal) — never the same
+text as a real SMTP success. `send_new_user_credentials_email()` itself
+was not touched — the bare-shell test proved that path was never the
+problem. Resting-backend question put to the owner directly rather than
+decided unilaterally: console stays the default (safer — no routine dev
+click emails a real address by accident), with the new message making
+that state legible instead of silently misleading. Live-verified over
+real SMTP end to end, including one genuine unplanned send failure
+(`WinError 10054`, a connection reset) correctly surfaced as a `warning`
+rather than a false success, and a real login with a real emailed
+password (`302` to `/dashboard/`, `check_password()` confirmed). 1 new
+test (`@override_settings`, asserting the console message's actual
+wording, not just that a message exists) — 249/249 passing.

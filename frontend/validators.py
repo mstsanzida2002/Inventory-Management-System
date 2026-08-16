@@ -8,6 +8,8 @@ the 8-char minimum).
 """
 import os
 import re
+import secrets
+import string
 
 from django.core.exceptions import ValidationError
 
@@ -28,6 +30,27 @@ class StrongPasswordValidator:
 
     def get_help_text(self):
         return 'Password must be 8+ chars with uppercase, lowercase, digit, and special character.'
+
+
+def generate_strong_password(length=14):
+    """Phase 8.98e — admin-driven user creation no longer lets the Admin
+    choose (or ever see) a new user's password; this generates one that's
+    guaranteed to pass every validator in AUTH_PASSWORD_VALIDATORS
+    (config/settings.py): StrongPasswordValidator's own upper/lower/digit/
+    special-char requirement is enforced by construction below (one of
+    each is always included), and Django's built-in
+    MinimumLengthValidator/CommonPasswordValidator/NumericPasswordValidator/
+    UserAttributeSimilarityValidator are satisfied by construction too — a
+    `secrets`-random string of this length is neither a common password,
+    nor all-digits, nor plausibly similar to any real user's own
+    attributes. Uses `secrets`, not `random`, since this is a real
+    credential, not test data."""
+    upper, lower, digits, special = string.ascii_uppercase, string.ascii_lowercase, string.digits, '!@#$%^&*'
+    required = [secrets.choice(upper), secrets.choice(lower), secrets.choice(digits), secrets.choice(special)]
+    pool = upper + lower + digits + special
+    password_chars = required + [secrets.choice(pool) for _ in range(max(length - len(required), 0))]
+    secrets.SystemRandom().shuffle(password_chars)
+    return ''.join(password_chars)
 
 
 # docs/SECURITY.md's `apps/products/validators.py`, translated the same way

@@ -61,18 +61,47 @@ USER_UPDATED = 'USER_UPDATED'
 USER_DEACTIVATED = 'USER_DEACTIVATED'
 USER_REACTIVATED = 'USER_REACTIVATED'
 USER_ROLE_CHANGED = 'USER_ROLE_CHANGED'
+# Phase 8.99f-2 — not in 13_AUDIT.md's own table (that doc has no hard-
+# delete concept for users at all). Disclosed addition, load-bearing: a
+# true delete (UserDeleteView, guarded to zero-history accounts only)
+# with no audit trail at all would be worse than the gap it closes — see
+# docs/project_memory.md §13.
+USER_DELETED = 'USER_DELETED'
+# Phase 8.99f-7 — same disclosure as USER_DELETED above: not in
+# 13_AUDIT.md, added because a resend with no audit trail at all would be
+# a worse gap than the one it closes (a real SMTP failure is now routine
+# enough, per Phase 8.99f-5's own live one, that "resend" is a real
+# operational action worth recording who triggered it and when).
+USER_CREDENTIALS_RESENT = 'USER_CREDENTIALS_RESENT'
 
 # Products
 PRODUCT_CREATED = 'PRODUCT_CREATED'
 PRODUCT_UPDATED = 'PRODUCT_UPDATED'
 PRODUCT_DEACTIVATED = 'PRODUCT_DEACTIVATED'
+# Phase 8.99i — Reactivate/Delete have no 13_AUDIT.md entry (that doc only
+# lists CREATED/UPDATED/DEACTIVATED for all three of Products/Categories/
+# Suppliers). Same disclosed-addition treatment as USER_DELETED/USER_
+# CREDENTIALS_RESENT (§13): an action with no audit trail is a worse gap
+# than an undocumented constant.
+PRODUCT_REACTIVATED = 'PRODUCT_REACTIVATED'
+PRODUCT_DELETED = 'PRODUCT_DELETED'
 CATEGORY_CREATED = 'CATEGORY_CREATED'
 CATEGORY_UPDATED = 'CATEGORY_UPDATED'
+# Phase 8.99i — CATEGORY_DEACTIVATED isn't in 13_AUDIT.md either (only
+# CATEGORY_CREATED/UPDATED are) even though Categories always had a
+# deactivate concept (is_active on the model, a "status" field on the Add
+# form) — the view to actually flip it just never existed before this
+# phase. Disclosed the same way as PRODUCT_REACTIVATED/DELETED above.
+CATEGORY_DEACTIVATED = 'CATEGORY_DEACTIVATED'
+CATEGORY_REACTIVATED = 'CATEGORY_REACTIVATED'
+CATEGORY_DELETED = 'CATEGORY_DELETED'
 
 # Suppliers
 SUPPLIER_CREATED = 'SUPPLIER_CREATED'
 SUPPLIER_UPDATED = 'SUPPLIER_UPDATED'
 SUPPLIER_DEACTIVATED = 'SUPPLIER_DEACTIVATED'
+SUPPLIER_REACTIVATED = 'SUPPLIER_REACTIVATED'
+SUPPLIER_DELETED = 'SUPPLIER_DELETED'
 
 # Purchases
 PO_CREATED = 'PO_CREATED'
@@ -84,6 +113,12 @@ PO_CANCELLED = 'PO_CANCELLED'
 
 # Sales
 SALE_CREATED = 'SALE_CREATED'
+# Phase 8.99b — new, following 13_AUDIT.md's own PO_SUBMITTED/PO_APPROVED/
+# PO_REJECTED naming exactly, for the same 3 new transitions on the
+# now-mirrored Sale approval workflow.
+SALE_SUBMITTED = 'SALE_SUBMITTED'
+SALE_APPROVED = 'SALE_APPROVED'
+SALE_REJECTED = 'SALE_REJECTED'
 SALE_CANCELLED = 'SALE_CANCELLED'
 SALE_INVOICE_PRINTED = 'SALE_INVOICE_PRINTED'
 

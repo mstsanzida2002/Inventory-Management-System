@@ -19,12 +19,11 @@
     "user-username": "Username",
     "user-employee-id": "Employee ID",
     "user-email": "Email",
-    "user-password": "Password",
     "user-role": "Role"
   };
 
   var REQUIRED_FIELD_IDS = [
-    "user-full-name", "user-username", "user-employee-id", "user-email", "user-password", "user-role"
+    "user-full-name", "user-username", "user-employee-id", "user-email", "user-role"
   ];
 
   var SERVER_FIELD_MAP = {
@@ -32,7 +31,6 @@
     username: "user-username",
     employee_id: "user-employee-id",
     email: "user-email",
-    password: "user-password",
     role: "user-role"
   };
 
@@ -72,6 +70,18 @@
     }).then(function (response) {
       return response.json().catch(function () { return null; }).then(function (payload) {
         if (response.ok) {
+          // Phase 8.99f-3/8.99f-4: every successful create now carries
+          // either `message` (credentials really were emailed) or
+          // `warning` (created, but the email failed to send) — never
+          // both. Before this, a real success and a real failed-send
+          // looked identical (a silent reload, nothing shown), which is
+          // exactly the "no confirmation appears" report. alert() is the
+          // same mechanism this file already used for the warning case,
+          // not a new toast component.
+          var feedback = payload && (payload.message || payload.warning);
+          if (feedback) {
+            alert(feedback);
+          }
           window.location.reload();
           return true;
         }
@@ -102,6 +112,23 @@
       RowActions.postAction(base + userId + "/deactivate/").then(RowActions.reportResult);
     } else if (event.target.closest(".user-reactivate-btn")) {
       RowActions.postAction(base + userId + "/reactivate/").then(RowActions.reportResult);
+    } else if (event.target.closest(".user-delete-btn")) {
+      if (!confirm("Permanently delete this user? This cannot be undone.")) return;
+      RowActions.postAction(base + userId + "/delete/").then(RowActions.reportResult);
+    } else if (event.target.closest(".user-resend-btn")) {
+      if (!confirm("Resend credentials to this user? A new temporary password will be generated and emailed, replacing the old one.")) return;
+      RowActions.postAction(base + userId + "/resend-credentials/").then(function (result) {
+        // Phase 8.99f-7: reuses postAction()/reportResult() unchanged
+        // (no new fetch helper) — only supplies reportResult()'s existing
+        // onSuccess hook so the message/warning from
+        // _credentials_email_feedback() is actually shown, the same way
+        // the Add User form's own onSubmit() already does.
+        RowActions.reportResult(result, function () {
+          var feedback = result.payload && (result.payload.message || result.payload.warning);
+          if (feedback) alert(feedback);
+          window.location.reload();
+        });
+      });
     }
   }
 

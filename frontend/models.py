@@ -5,11 +5,12 @@ single `frontend` app per current project structure. Cross-model references
 that SCHEMA.md writes as app-label strings (e.g. 'suppliers.Supplier') are
 written as direct class references instead, since there is only one app.
 """
-from decimal import Decimal
-
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
+from django.utils import timezone
+
+from frontend.pricing import calculate_line_total
 
 
 class TimeStampedModel(models.Model):
@@ -166,6 +167,14 @@ class Product(TimeStampedModel):
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='products')
     purchase_price = models.DecimalField(max_digits=12, decimal_places=2)
     selling_price = models.DecimalField(max_digits=12, decimal_places=2)
+    # Phase 8.98c — undocumented in SCHEMA.md (which instead documents `tax`
+    # as a per-line field on PurchaseOrderItem/SaleItem, still true — see
+    # those models below). Disclosed architecture decision, matching this
+    # project's SKU-format precedent (project_memory.md §13): tax is a
+    # property of the product, not something entered per-transaction.
+    # Default 0% — no jurisdiction/tax-regime assumption is baked in; every
+    # existing product needs this set explicitly to charge real tax.
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     reorder_level = models.PositiveIntegerField(default=10)
     current_stock = models.PositiveIntegerField(default=0)  # updated by inventory service
     unit = models.CharField(max_length=10, choices=UnitOfMeasurement.choices, default=UnitOfMeasurement.PIECE)
@@ -205,27 +214,66 @@ class PurchaseOrder(TimeStampedModel):
     status = models.CharField(max_length=20, choices=POStatus.choices, default=POStatus.DRAFT)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='purchase_orders_created')
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='purchase_orders_approved', null=True, blank=True)
-    order_date = models.DateField(auto_now_add=True)
+    # Phase 8.99 — was `auto_now_add=True`. Django's DateField (unlike
+    # DateTimeField) ignores TIME_ZONE/USE_TZ entirely for auto_now/
+    # auto_now_add: DateField.pre_save() calls plain `datetime.date.
+    # today()`, the OS clock's local calendar date, not
+    # `timezone.localdate()`. Invisible on this dev machine (OS clock is
+    # already set to Bangladesh time) but wrong on any UTC production
+    # server: an order raised at, say, 2 AM Dhaka is 20:00 UTC the
+    # previous day, so `date.today()` there returns yesterday. Set
+    # explicitly in save() below via `timezone.localdate()` instead, the
+    # same Asia/Dhaka-aware helper used everywhere else since Phase 8.6.
+    order_date = models.DateField()
     expected_delivery = models.DateField(null=True, blank=True)
     total_cost = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     rejected_reason = models.TextField(blank=True)
+    # Phase 8.99c — SCHEMA.md §5 has no cancellation-equivalent field (only
+    # rejected_reason); a new field rather than overloading rejected_reason,
+    # matching that field's own shape (TextField, blank=True, no null=True).
+    # cancelled_by/cancelled_at mirror approved_by/approved_at — a reason
+    # with no attributable author/time isn't an audit record.
+    cancelled_reason = models.TextField(blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='purchase_orders_cancelled', null=True, blank=True,
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'purchase_orders'
         indexes = [models.Index(fields=['po_number']), models.Index(fields=['status'])]
 
     def save(self, *args, **kwargs):
+        if self.order_date is None:
+            self.order_date = timezone.localdate()
         if not self.po_number:
             self.po_number = self._generate_po_number()
         super().save(*args, **kwargs)
 
     @staticmethod
     def _generate_po_number():
-        from django.utils import timezone
         import random
-        return f"PO-{timezone.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+        # Phase 8.99: was `timezone.now().strftime(...)` — timezone.now()
+        # is UTC-aware, and .strftime() on an aware datetime formats it in
+        # whatever tzinfo it already carries (UTC), not TIME_ZONE. The
+        # embedded date in this identifier was silently UTC-dated, not
+        # Dhaka-dated. timezone.localdate() already returns the correct
+        # local calendar date, so no further conversion is needed here.
+        return f"PO-{timezone.localdate().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+
+    @property
+    def display_reason(self):
+        """Phase 8.99c — one place both the list tables, per-record PDF,
+        and Purchase Report read from, so a rejected or cancelled PO's
+        reason is visible wherever the record is reported (Objective #3)."""
+        if self.status == POStatus.CANCELLED:
+            return self.cancelled_reason
+        if self.status == POStatus.REJECTED:
+            return self.rejected_reason
+        return ""
 
 
 class PurchaseOrderItem(TimeStampedModel):
@@ -235,6 +283,12 @@ class PurchaseOrderItem(TimeStampedModel):
     received_qty = models.PositiveIntegerField(default=0)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     discount = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    # Phase 8.98c: no longer a form input — set once, at creation, from
+    # frontend.forms.parse_line_items() reading the product's own
+    # tax_rate (never trusted from the client). Kept as a real column
+    # (not derived at read-time) so this line's tax is a historical
+    # snapshot: if the product's tax_rate changes later, this row still
+    # reflects what was actually charged when the PO was created.
     tax = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
@@ -242,20 +296,33 @@ class PurchaseOrderItem(TimeStampedModel):
         db_table = 'purchase_order_items'
 
     def save(self, *args, **kwargs):
-        # discount/tax default to plain int 0 (not Decimal) until first
-        # loaded from the DB, and int 0 / 100 is a float — Decimal * float
-        # raises TypeError. Coerce explicitly so the default (no-discount)
-        # case doesn't crash; SCHEMA.md's reference code has this same bug.
-        discount = Decimal(str(self.discount))
-        tax = Decimal(str(self.tax))
-        self.line_total = (self.unit_price * self.ordered_qty) * (1 - discount / 100) * (1 + tax / 100)
+        # frontend.pricing.calculate_line_total() — the one shared formula
+        # SaleService.create_sale() also uses (Phase 8.98c), instead of
+        # each duplicating it.
+        self.line_total = calculate_line_total(self.unit_price, self.ordered_qty, self.discount, self.tax)
         super().save(*args, **kwargs)
 
 
 # ---------------------------------------------------------------- 6. Sales
 
 class SaleStatus(models.TextChoices):
+    # Phase 8.99b — extends SCHEMA.md §6's original two-status
+    # (`completed`/`cancelled`) shape to mirror PurchaseOrder's approval
+    # workflow; disclosed as its own architecture decision (§13), same
+    # treatment as `Product.tax_rate`. Deliberately no separate
+    # `APPROVED` status: for a Purchase, approval and receipt are
+    # genuinely different moments (approval commits to the order; stock
+    # only moves later, on receive — and can move partially, over
+    # multiple receipts). For a Sale, approval *is* the moment stock
+    # moves — there is no second, later event a distinct `APPROVED`
+    # status would ever describe. Inventing one would create a status
+    # with no real-world meaning of its own; `COMPLETED` (the pre-existing
+    # value, reused rather than renamed) already means exactly "approved
+    # and stock has moved," so it does double duty as both.
+    DRAFT = 'draft', 'Draft'
+    PENDING = 'pending', 'Pending Approval'
     COMPLETED = 'completed', 'Completed'
+    REJECTED = 'rejected', 'Rejected'
     CANCELLED = 'cancelled', 'Cancelled'
 
 
@@ -263,25 +330,65 @@ class SaleTransaction(TimeStampedModel):
     invoice_number = models.CharField(max_length=30, unique=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     customer_name = models.CharField(max_length=150, blank=True)
-    transaction_date = models.DateField(auto_now_add=True)
-    status = models.CharField(max_length=20, choices=SaleStatus.choices, default=SaleStatus.COMPLETED)
+    # Phase 8.99 — same fix as PurchaseOrder.order_date above (was
+    # `auto_now_add=True`, silently OS-clock-dated rather than
+    # Asia/Dhaka-dated on a UTC production server). Set explicitly in
+    # save() via `timezone.localdate()`.
+    transaction_date = models.DateField()
+    # Phase 8.99b — was `default=SaleStatus.COMPLETED` (a sale used to
+    # complete immediately on creation). Now defaults to DRAFT, mirroring
+    # PurchaseOrder.status's own default — a sale is created, then
+    # explicitly submitted for approval, same shape as a PO.
+    status = models.CharField(max_length=20, choices=SaleStatus.choices, default=SaleStatus.DRAFT)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
+    # Phase 8.99b — mirrors PurchaseOrder.approved_by/approved_at exactly
+    # (same FK shape, same null=True/blank=True — not every sale reaches
+    # this state).
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='sales_approved', null=True, blank=True,
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    # Phase 8.99b — mirrors PurchaseOrder.rejected_reason; SaleTransaction
+    # never had a rejection concept before this phase.
+    rejected_reason = models.TextField(blank=True)
+    # Phase 8.99c — mirrors PurchaseOrder.cancelled_reason/cancelled_by/
+    # cancelled_at exactly; see that field's own comment for the reasoning.
+    cancelled_reason = models.TextField(blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='sales_cancelled', null=True, blank=True,
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'sale_transactions'
         indexes = [models.Index(fields=['invoice_number']), models.Index(fields=['transaction_date'])]
 
     def save(self, *args, **kwargs):
+        if self.transaction_date is None:
+            self.transaction_date = timezone.localdate()
         if not self.invoice_number:
             self.invoice_number = self._generate_invoice_number()
         super().save(*args, **kwargs)
 
+    @property
+    def display_reason(self):
+        """Phase 8.99c — mirrors PurchaseOrder.display_reason exactly."""
+        if self.status == SaleStatus.CANCELLED:
+            return self.cancelled_reason
+        if self.status == SaleStatus.REJECTED:
+            return self.rejected_reason
+        return ""
+
     @staticmethod
     def _generate_invoice_number():
-        from django.utils import timezone
         import random
-        return f"INV-{timezone.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+        # Phase 8.99 — same fix as PurchaseOrder._generate_po_number()
+        # above: timezone.localdate() instead of timezone.now().strftime(),
+        # which silently formatted the UTC date, not the Dhaka date.
+        return f"INV-{timezone.localdate().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
 
 
 class SaleItem(TimeStampedModel):
@@ -290,6 +397,10 @@ class SaleItem(TimeStampedModel):
     quantity = models.PositiveIntegerField()
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     discount = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    # Phase 8.98c: same treatment as PurchaseOrderItem.tax above — sourced
+    # from the product's tax_rate at creation (frontend.forms.
+    # parse_line_items()), never a form field; a historical snapshot, not
+    # recomputed if the product's tax_rate changes later.
     tax = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
@@ -447,6 +558,15 @@ class NotificationType(models.TextChoices):
     AI_DEAD_STOCK = 'ai_dead', 'AI Dead Stock Alert'
     PASSWORD_CHANGED = 'password_changed', 'Password Changed'
     SALE_COMPLETED = 'sale_completed', 'Sale Completed'
+    # Phase 8.99b — the 13th type, added deliberately against this
+    # project's own Phase 8.98e precedent of skipping a notification
+    # rather than inventing an undocumented type. That precedent covered
+    # a merely-informational case (an admin being told a password
+    # changed); this one is load-bearing — without a real notification,
+    # a Supervisor/Admin has no way to learn a sale is even awaiting
+    # them, and the entire approval gate this phase builds has no
+    # trigger. See §13 for the full reasoning.
+    SALE_PENDING = 'sale_pending', 'Sale Pending Approval'
 
 
 class Notification(TimeStampedModel):

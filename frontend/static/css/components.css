@@ -348,6 +348,11 @@ body.modal-open { overflow: hidden; }
 .line-item-row { padding-block: var(--sp-2); }
 .line-item-row + .line-item-row { border-top: 1px solid var(--c-slate-100); }
 .line-item-row .input { padding: 0.6rem 0.85rem; }
+.line-item-tax-display {
+  font-size: var(--fs-sm);
+  color: var(--c-slate);
+  white-space: nowrap;
+}
 .line-item-total {
   font-size: var(--fs-sm);
   font-weight: 600;

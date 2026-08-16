@@ -6,20 +6,30 @@
 
 {% block content %}
 
+  {% comment %}
+    Phase 8.96 — real at last, built directly against docs/09_DASHBOARD.md
+    (approved Phase 8.95/8.95.1). Every number here traces to that spec's
+    decision table; nothing is a |default:"..." fabrication (BUG-41). The
+    AI Insights section from the old mock is gone entirely, not replaced
+    with an empty state — Decision 8/§4d, it returns once Phase 10/11
+    populate DemandForecast/InventoryClassification for real.
+  {% endcomment %}
+
+  {% comment %}
+    Phase 8.99j: removed "Refresh data" and "New purchase order" — both
+    were plain <button type="button">s with no class, no id, no data-*
+    hook, and confirmed (grepped dashboard.js) to have zero JS wiring
+    behind either. "New purchase order" specifically is exactly the
+    action-button class 09_DASHBOARD.md's own Decision 4 keeps off this
+    page on purpose (the dashboard is a read-only summary; actions live
+    in their real modules — Pending Approvals stays read-only too, same
+    reasoning) — removing it aligns the page with its own approved spec,
+    not just decluttering.
+  {% endcomment %}
   <div class="page-heading-row">
     <div>
-      <h2 style="margin-bottom:0.2rem;">Good morning, {{ request.user.first_name|default:"Amara" }}</h2>
-      <p class="text-slate">Here is what is happening across your inventory today, {{ today|default:"Saturday, 25 July" }}.</p>
-    </div>
-    <div class="flex gap-3 page-heading-actions">
-      <button class="btn btn-secondary" type="button">
-        <svg class="icon icon-sm"><use href="#icon-refresh"></use></svg>
-        Refresh data
-      </button>
-      <button class="btn btn-primary" type="button">
-        <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
-        New purchase order
-      </button>
+      <h2 style="margin-bottom:0.2rem;">{{ greeting }}, {{ request.user.get_short_name|default:"there" }}</h2>
+      <p class="text-slate">Here is what is happening across your inventory today, {{ today|date:"l, j F" }}.</p>
     </div>
   </div>
 
@@ -29,36 +39,36 @@
     <div class="kpi-card">
       <div class="kpi-top">
         <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-box"></use></svg></span>
-        <span class="kpi-trend up"><svg class="icon"><use href="#icon-trending-up"></use></svg>4.2%</span>
+        <span class="kpi-trend up" title="New in the last 30 days"><svg class="icon"><use href="#icon-trending-up"></use></svg>+{{ kpis.new_products_30d }} new · 30d</span>
       </div>
-      <div class="kpi-value">{{ total_products|default:"1,284" }}</div>
+      <div class="kpi-value">{{ kpis.total_products }}</div>
       <div class="kpi-label">Total products</div>
     </div>
 
     <div class="kpi-card">
       <div class="kpi-top">
         <span class="kpi-icon tint-amber"><svg class="icon"><use href="#icon-tag"></use></svg></span>
-        <span class="kpi-trend up"><svg class="icon"><use href="#icon-trending-up"></use></svg>1.1%</span>
+        <span class="kpi-trend up" title="New in the last 30 days"><svg class="icon"><use href="#icon-trending-up"></use></svg>+{{ kpis.new_categories_30d }} new · 30d</span>
       </div>
-      <div class="kpi-value">{{ total_categories|default:"36" }}</div>
+      <div class="kpi-value">{{ kpis.total_categories }}</div>
       <div class="kpi-label">Categories</div>
     </div>
 
     <div class="kpi-card">
       <div class="kpi-top">
         <span class="kpi-icon tint-success"><svg class="icon"><use href="#icon-truck"></use></svg></span>
-        <span class="kpi-trend up"><svg class="icon"><use href="#icon-trending-up"></use></svg>2 new</span>
+        <span class="kpi-trend up" title="New in the last 30 days"><svg class="icon"><use href="#icon-trending-up"></use></svg>+{{ kpis.new_active_suppliers_30d }} new · 30d</span>
       </div>
-      <div class="kpi-value">{{ total_suppliers|default:"42" }}</div>
+      <div class="kpi-value">{{ kpis.active_suppliers }}</div>
       <div class="kpi-label">Active suppliers</div>
     </div>
 
     <div class="kpi-card">
       <div class="kpi-top">
         <span class="kpi-icon tint-indigo"><svg class="icon"><use href="#icon-users"></use></svg></span>
-        <span class="kpi-trend up"><svg class="icon"><use href="#icon-trending-up"></use></svg>3 new</span>
+        <span class="kpi-trend up" title="New in the last 30 days"><svg class="icon"><use href="#icon-trending-up"></use></svg>+{{ kpis.new_users_30d }} new · 30d</span>
       </div>
-      <div class="kpi-value">{{ total_users|default:"18" }}</div>
+      <div class="kpi-value">{{ kpis.total_users }}</div>
       <div class="kpi-label">System users</div>
     </div>
 
@@ -69,28 +79,28 @@
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
       <div>
-        <div class="stat-strip-value">${{ inventory_value|default:"186,420" }}</div>
+        <div class="stat-strip-value">${{ stats.inventory_value|floatformat:2 }}</div>
         <div class="stat-strip-label">Inventory value</div>
       </div>
     </div>
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-layers"></use></svg>
       <div>
-        <div class="stat-strip-value">{{ total_stock_units|default:"48,960" }}</div>
+        <div class="stat-strip-value">{{ stats.stock_units }}</div>
         <div class="stat-strip-label">Stock units on hand</div>
       </div>
     </div>
     <div class="stat-strip-item is-warning">
       <svg class="icon icon-lg"><use href="#icon-alert-triangle"></use></svg>
       <div>
-        <div class="stat-strip-value">{{ low_stock_count|default:"23" }}</div>
+        <div class="stat-strip-value">{{ stats.low_stock_count }}</div>
         <div class="stat-strip-label">Low stock items</div>
       </div>
     </div>
     <div class="stat-strip-item is-danger">
       <svg class="icon icon-lg"><use href="#icon-alert-circle"></use></svg>
       <div>
-        <div class="stat-strip-value">{{ out_of_stock_count|default:"7" }}</div>
+        <div class="stat-strip-value">{{ stats.out_of_stock_count }}</div>
         <div class="stat-strip-label">Out of stock</div>
       </div>
     </div>
@@ -147,318 +157,114 @@
       <div class="panel">
         <div class="panel-header">
           <h3>Stock alerts</h3>
-          <a href="/inventory/?status=low" class="panel-link">
+          <a href="/inventory/" class="panel-link">
             View all
             <svg class="icon"><use href="#icon-chevron-right"></use></svg>
           </a>
         </div>
         <div class="panel-body no-top-pad">
           <div class="widget-list">
-
+            {% for record in stock_alerts %}
             <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
-                <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
-              </span>
+              {% if record.status == 'out_of_stock' %}
+                <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+                  <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
+                </span>
+              {% else %}
+                <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
+                  <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
+                </span>
+              {% endif %}
               <div class="widget-main">
-                <div class="widget-title">Nitrile Gloves, Box of 100</div>
-                <div class="widget-meta">SKU-20194 &middot; 0 units left</div>
+                <div class="widget-title">{{ record.product.name }}</div>
+                <div class="widget-meta">{{ record.product.sku }} &middot; {{ record.current_stock }} units left</div>
               </div>
-              <span class="badge badge-danger">Out of stock</span>
+              <span class="badge {{ record.status_badge }}">{{ record.get_status_display }}</span>
             </div>
-
+            {% empty %}
             <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
-                <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
-              </span>
               <div class="widget-main">
-                <div class="widget-title">Cordless Drill, 18V</div>
-                <div class="widget-meta">SKU-11832 &middot; 4 units left</div>
+                <div class="widget-title text-slate">No stock alerts — every product is comfortably stocked.</div>
               </div>
-              <span class="badge badge-warning">Low stock</span>
             </div>
-
-            <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
-                <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
-              </span>
-              <div class="widget-main">
-                <div class="widget-title">A4 Copy Paper, Ream</div>
-                <div class="widget-meta">SKU-30456 &middot; 9 units left</div>
-              </div>
-              <span class="badge badge-warning">Low stock</span>
-            </div>
-
-            <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
-                <svg class="icon icon-sm"><use href="#icon-alert-circle"></use></svg>
-              </span>
-              <div class="widget-main">
-                <div class="widget-title">Safety Helmet, Class E</div>
-                <div class="widget-meta">SKU-40217 &middot; 0 units left</div>
-              </div>
-              <span class="badge badge-danger">Out of stock</span>
-            </div>
-
+            {% endfor %}
           </div>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-header">
-          <h3>Pending approvals</h3>
-          <a href="/purchases/?status=pending" class="panel-link">
+          <div>
+            <h3>Pending approvals</h3>
+            <p class="panel-sub">{{ pending_po_count }} PO{{ pending_po_count|pluralize }} &middot; {{ pending_adjustment_count }} adjustment{{ pending_adjustment_count|pluralize }}</p>
+          </div>
+          <a href="/purchases/" class="panel-link">
             View all
             <svg class="icon"><use href="#icon-chevron-right"></use></svg>
           </a>
         </div>
         <div class="panel-body no-top-pad">
           <div class="widget-list">
-
+            {% for item in pending_items %}
             <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-indigo-tint); color:var(--c-indigo);">
-                <svg class="icon icon-sm"><use href="#icon-cart"></use></svg>
-              </span>
+              {% if item.kind == 'purchase' %}
+                <span class="widget-icon" style="background:var(--c-indigo-tint); color:var(--c-indigo);">
+                  <svg class="icon icon-sm"><use href="#icon-cart"></use></svg>
+                </span>
+              {% else %}
+                <span class="widget-icon" style="background:var(--c-indigo-tint); color:var(--c-indigo);">
+                  <svg class="icon icon-sm"><use href="#icon-sliders"></use></svg>
+                </span>
+              {% endif %}
               <div class="widget-main">
-                <div class="widget-title">PO-2026-0148</div>
-                <div class="widget-meta">Northgate Distributors &middot; $4,280.00</div>
-              </div>
-              <div class="widget-actions">
-                <button class="pill-btn approve" type="button" aria-label="Approve"><svg class="icon"><use href="#icon-check-circle"></use></svg></button>
-                <button class="pill-btn reject" type="button" aria-label="Reject"><svg class="icon"><use href="#icon-x"></use></svg></button>
+                <div class="widget-title">{{ item.title }}</div>
+                <div class="widget-meta">{{ item.meta }}</div>
               </div>
             </div>
-
+            {% empty %}
             <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-indigo-tint); color:var(--c-indigo);">
-                <svg class="icon icon-sm"><use href="#icon-sliders"></use></svg>
-              </span>
               <div class="widget-main">
-                <div class="widget-title">Adjustment #AJ-0512</div>
-                <div class="widget-meta">Stock recount &middot; −18 units</div>
-              </div>
-              <div class="widget-actions">
-                <button class="pill-btn approve" type="button" aria-label="Approve"><svg class="icon"><use href="#icon-check-circle"></use></svg></button>
-                <button class="pill-btn reject" type="button" aria-label="Reject"><svg class="icon"><use href="#icon-x"></use></svg></button>
+                <div class="widget-title text-slate">Nothing pending approval right now.</div>
               </div>
             </div>
-
-            <div class="widget-row">
-              <span class="widget-icon" style="background:var(--c-indigo-tint); color:var(--c-indigo);">
-                <svg class="icon icon-sm"><use href="#icon-cart"></use></svg>
-              </span>
-              <div class="widget-main">
-                <div class="widget-title">PO-2026-0149</div>
-                <div class="widget-meta">Redline Hardware Co. &middot; $1,975.50</div>
-              </div>
-              <div class="widget-actions">
-                <button class="pill-btn approve" type="button" aria-label="Approve"><svg class="icon"><use href="#icon-check-circle"></use></svg></button>
-                <button class="pill-btn reject" type="button" aria-label="Reject"><svg class="icon"><use href="#icon-x"></use></svg></button>
-              </div>
-            </div>
-
+            {% endfor %}
           </div>
         </div>
       </div>
 
+      {% if recent_activity is not None %}
       <div class="panel">
         <div class="panel-header">
           <h3>Recent activity</h3>
         </div>
-        <div class="panel-body">
-          <div class="timeline">
-
-            <div class="timeline-item">
-              <div class="timeline-rail">
-                <span class="timeline-dot" style="background:var(--c-success-tint); color:var(--c-success);"><svg class="icon icon-sm"><use href="#icon-package-check"></use></svg></span>
-                <span class="timeline-line"></span>
-              </div>
-              <div>
-                <div class="timeline-text"><strong>Kito Fernandes</strong> received 120 units against PO-2026-0142</div>
-                <div class="timeline-time">14 minutes ago</div>
-              </div>
-            </div>
-
-            <div class="timeline-item">
-              <div class="timeline-rail">
-                <span class="timeline-dot" style="background:var(--c-indigo-tint); color:var(--c-indigo);"><svg class="icon icon-sm"><use href="#icon-receipt"></use></svg></span>
-                <span class="timeline-line"></span>
-              </div>
-              <div>
-                <div class="timeline-text">Sale <strong>INV-88213</strong> completed for $342.00</div>
-                <div class="timeline-time">52 minutes ago</div>
+        <div class="panel-body no-top-pad">
+          <div class="widget-list">
+            {% for log in recent_activity %}
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-slate-100); color:var(--c-slate);">
+                <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">{{ log.user_label }}</div>
+                <div class="widget-meta mono">{{ log.action }} &middot; {{ log.module }} &middot; {{ log.timestamp|timesince }} ago</div>
               </div>
             </div>
-
-            <div class="timeline-item">
-              <div class="timeline-rail">
-                <span class="timeline-dot" style="background:var(--c-warning-tint); color:#9C6B12;"><svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg></span>
-                <span class="timeline-line"></span>
-              </div>
-              <div>
-                <div class="timeline-text"><strong>Safety Helmet, Class E</strong> fell below reorder level</div>
-                <div class="timeline-time">1 hour ago</div>
+            {% empty %}
+            <div class="widget-row">
+              <div class="widget-main">
+                <div class="widget-title text-slate">No recent activity yet.</div>
               </div>
             </div>
-
-            <div class="timeline-item">
-              <div class="timeline-rail">
-                <span class="timeline-dot" style="background:var(--c-slate-100); color:var(--c-slate);"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></span>
-              </div>
-              <div>
-                <div class="timeline-text"><strong>Priya Nair</strong> approved adjustment AJ-0509</div>
-                <div class="timeline-time">3 hours ago</div>
-              </div>
-            </div>
-
+            {% endfor %}
           </div>
         </div>
       </div>
+      {% endif %}
 
     </div>
 
   </div>
 
-  {# ------------------------------------------------------------- AI section #}
-  <div class="ai-section-head">
-    <span class="ai-badge">
-      <svg class="icon"><use href="#icon-cpu"></use></svg>
-      AI Insights
-    </span>
-    <p class="text-slate text-sm" style="margin:0;">Generated from historical sales and inventory movement data</p>
-  </div>
-
-  <div class="ai-grid">
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h3>Demand forecasting</h3>
-          <p class="panel-sub">Recommended reorder quantities for the next 30 days</p>
-        </div>
-        <a href="/ai/forecasting/" class="panel-link">
-          Full report
-          <svg class="icon"><use href="#icon-chevron-right"></use></svg>
-        </a>
-      </div>
-      <div class="panel-body">
-        <div class="table-scroll">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Forecast (30d)</th>
-              <th>Reorder qty</th>
-              <th>Confidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                Nitrile Gloves, Box of 100
-                <div class="cell-sub">Medical Supplies</div>
-              </td>
-              <td class="mono">340 units</td>
-              <td class="mono">400</td>
-              <td><span class="confidence-bar"><span style="width:88%;"></span></span>88%</td>
-            </tr>
-            <tr>
-              <td>
-                Stainless Water Bottle, 750ml
-                <div class="cell-sub">Housewares</div>
-              </td>
-              <td class="mono">210 units</td>
-              <td class="mono">250</td>
-              <td><span class="confidence-bar"><span style="width:76%;"></span></span>76%</td>
-            </tr>
-            <tr>
-              <td>
-                A4 Copy Paper, Ream
-                <div class="cell-sub">Office Supplies</div>
-              </td>
-              <td class="mono">560 units</td>
-              <td class="mono">600</td>
-              <td><span class="confidence-bar"><span style="width:91%;"></span></span>91%</td>
-            </tr>
-            <tr>
-              <td>
-                LED Desk Lamp
-                <div class="cell-sub">Electronics</div>
-              </td>
-              <td class="mono">95 units</td>
-              <td class="mono">120</td>
-              <td><span class="confidence-bar"><span style="width:64%;"></span></span>64%</td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h3>Slow-moving &amp; dead stock</h3>
-          <p class="panel-sub">Classified by turnover rate and last sale date</p>
-        </div>
-        <a href="/ai/slow-moving/" class="panel-link">
-          Full report
-          <svg class="icon"><use href="#icon-chevron-right"></use></svg>
-        </a>
-      </div>
-      <div class="panel-body">
-        <div class="table-scroll">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Last sale</th>
-              <th>Turnover</th>
-              <th>Classification</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                Industrial Shelving Unit
-                <div class="cell-sub">Warehouse Equipment</div>
-              </td>
-              <td class="mono">142 days ago</td>
-              <td class="mono">0.4x</td>
-              <td><span class="badge badge-danger">Dead stock</span></td>
-            </tr>
-            <tr>
-              <td>
-                Wireless Barcode Scanner
-                <div class="cell-sub">Electronics</div>
-              </td>
-              <td class="mono">67 days ago</td>
-              <td class="mono">1.1x</td>
-              <td><span class="badge badge-warning">Slow-moving</span></td>
-            </tr>
-            <tr>
-              <td>
-                Laminated Whiteboard, 4x3ft
-                <div class="cell-sub">Office Supplies</div>
-              </td>
-              <td class="mono">98 days ago</td>
-              <td class="mono">0.7x</td>
-              <td><span class="badge badge-danger">Dead stock</span></td>
-            </tr>
-            <tr>
-              <td>
-                Cordless Drill, 18V
-                <div class="cell-sub">Tools</div>
-              </td>
-              <td class="mono">4 days ago</td>
-              <td class="mono">3.8x</td>
-              <td><span class="badge badge-success">Fast-moving</span></td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-  </div>
+  {{ chart_data|json_script:"dashboardChartData" }}
 
 {% endblock %}

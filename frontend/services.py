@@ -40,6 +40,7 @@ from frontend.models import (
     SaleTransaction,
 )
 from frontend.notifications import notify_supervisors, notify_user
+from frontend.pricing import calculate_line_total
 
 
 class InsufficientStockError(Exception):
@@ -74,6 +75,31 @@ class InventoryService:
         )
         record.update_status()
         record.save()
+        return record
+
+    @classmethod
+    @transaction.atomic
+    def sync_reorder_level(cls, product):
+        """Phase 8.99e — ProductUpdateView editing a product's
+        reorder_level must keep InventoryRecord.reorder_level (an
+        undocumented duplicate of Product.reorder_level, see
+        docs/project_memory.md §6) in sync, without writing a ledger row:
+        a reorder-threshold change isn't a stock movement, the same
+        reasoning initialize_for_product() above already applies to
+        product creation. Also recomputes status via update_status() —
+        moving the threshold can flip LOW_STOCK/AVAILABLE on its own, even
+        with current_stock unchanged. Kept here, not in the view, since
+        this class's own docstring already claims sole ownership of
+        writing InventoryRecord fields; a no-op if no InventoryRecord
+        exists yet (shouldn't happen in practice — every product gets one
+        at creation — but this method has no reason to assume it does)."""
+        try:
+            record = InventoryRecord.objects.select_for_update().get(product=product)
+        except InventoryRecord.DoesNotExist:
+            return None
+        record.reorder_level = product.reorder_level
+        record.update_status()
+        record.save(update_fields=['reorder_level', 'status', 'updated_at'])
         return record
 
     @classmethod
@@ -173,15 +199,22 @@ class InventoryService:
 class PurchaseService:
     """docs/05_PURCHASES.md. submit -> approve/reject -> receive (partial
     delivery supported). Stock increases ONLY on receive, never on approval.
-    cancel() (Phase 3.4 / BUG-25) is available from any non-terminal state.
+
+    Phase 8.99c narrowed cancel() to draft/pending only — see
+    docs/project_memory.md §13 for the full disclosure of why this
+    overrides 05_PURCHASES.md's own "any state -> CANCELLED" state
+    machine (originally implemented as such in Phase 3.4 / BUG-25).
 
     PO *creation* (and its documented inactive-supplier/inactive-product
     checks) still isn't part of this service per the docs or the original
     Phase 3 scope — creation happens elsewhere, not implemented here."""
 
-    # RECEIVED/CANCELLED/REJECTED are terminal — 05_PURCHASES.md's state
-    # machine only draws a cancel arrow out of the in-progress states.
-    _CANCELLABLE_STATUSES = (POStatus.DRAFT, POStatus.PENDING, POStatus.APPROVED, POStatus.PARTIAL)
+    # Phase 8.99c — narrowed from (DRAFT, PENDING, APPROVED, PARTIAL) to
+    # just the two pre-approval states. An approved PO is a commitment
+    # already made to the supplier; APPROVED/PARTIAL/RECEIVED/CANCELLED
+    # are now all terminal to cancel() (see §13). RECEIVED/CANCELLED/
+    # REJECTED were already terminal.
+    _CANCELLABLE_STATUSES = (POStatus.DRAFT, POStatus.PENDING)
 
     @classmethod
     @transaction.atomic
@@ -277,31 +310,53 @@ class PurchaseService:
 
     @classmethod
     @transaction.atomic
-    def cancel(cls, po, cancelled_by):
-        """05_PURCHASES.md: "Any state -> CANCELLED" / "Cancelled PO does
-        NOT affect inventory." Never calls InventoryService — if the PO was
-        PARTIAL, whatever was already received via receive_items() stays
-        received (those movements already happened and are correctly
-        recorded); cancel() only marks the remainder as not coming. Pure
-        status change, no stock side effect from any prior state.
+    def cancel(cls, po, cancelled_by, reason):
+        """Phase 8.99c: cancellable only from DRAFT/PENDING (see §13 — this
+        overrides 05_PURCHASES.md's original "any state -> CANCELLED").
+        Never calls InventoryService — a draft/pending PO has never had
+        anything received against it (receive_items() only runs from
+        APPROVED/PARTIAL, both now cancel-ineligible), so there is no stock
+        to leave untouched or restore; "Cancelled PO does NOT affect
+        inventory" still holds, just more simply than before. `reason` is
+        now required (ReasonForm, same as reject()) and stored alongside
+        who/when, mirroring rejected_reason's own shape.
 
         13_AUDIT.md defines a PO_CANCELLED constant (used below), but
-        11_NOTIFICATIONS.md has no 'po_cancelled' notification type and no
-        cancel() method exists in 05_PURCHASES.md's own reference code to
-        begin with (see BUG-25) — so this logs but does not notify,
-        matching what's actually documented rather than inventing a type."""
+        11_NOTIFICATIONS.md has no 'po_cancelled' notification type — so
+        this logs but does not notify, matching what's actually documented
+        rather than inventing a type (unchanged from Phase 3.4 / BUG-25)."""
         if po.status not in cls._CANCELLABLE_STATUSES:
             raise ValueError(f"Cannot cancel a PO with status '{po.status}'.")
         po.status = POStatus.CANCELLED
-        po.save(update_fields=['status', 'updated_at'])
+        po.cancelled_reason = reason
+        po.cancelled_by = cancelled_by
+        po.cancelled_at = timezone.now()
+        po.save(update_fields=['status', 'cancelled_reason', 'cancelled_by', 'cancelled_at', 'updated_at'])
         audit.log_action(cancelled_by, audit.PO_CANCELLED, 'purchases', affected_id=po.pk, status='success')
         return po
 
 
 class SaleService:
-    """docs/06_SALES.md. All stock availability is pre-validated (and
-    nothing persisted) before any row is created, so a failed sale never
-    partially deducts stock. Cancellation restores stock for every item."""
+    """docs/06_SALES.md, extended by Phase 8.99b to mirror
+    PurchaseService's approval workflow — see docs/project_memory.md §13
+    for the full disclosure of why this diverges from 06_SALES.md's
+    original one-step create-and-deduct model. create_sale() now creates
+    a DRAFT with no stock effect at all; submit_for_approval() moves it to
+    PENDING; approve_sale() is the ONLY place a sale's stock actually
+    moves (mirrors PurchaseService.receive_items() being the only place a
+    PO's stock moves — never on approval, there). reject_sale() and
+    cancel_sale() are both pre-approval-only; a COMPLETED sale can never
+    be cancelled or rejected by this service — Phase 8.99c confirmed and
+    locked this rule in (see §13)."""
+
+    # Phase 8.99b — mirrors PurchaseService._CANCELLABLE_STATUSES, but
+    # deliberately narrower: a PO can still be cancelled from APPROVED
+    # (stock hasn't moved yet either, at that point) — a Sale has no
+    # analogous post-approval-but-pre-stock-movement state at all, since
+    # approval and stock movement are the same instant here (see
+    # SaleStatus's own docstring). So the only cancellable states are the
+    # two that exist before that instant.
+    _CANCELLABLE_STATUSES = (SaleStatus.DRAFT, SaleStatus.PENDING)
 
     @classmethod
     @transaction.atomic
@@ -309,40 +364,34 @@ class SaleService:
         """
         sale_data: {customer_name, notes}
         items_data: [{product_id, quantity, unit_price, discount, tax}, ...]
-        """
-        # 1. Pre-validate ALL stock before creating anything.
-        for item in items_data:
-            product = Product.objects.get(pk=item['product_id'])
-            if not product.is_active:
-                raise ValueError(f"Product '{product.name}' is inactive and cannot be sold.")
-            try:
-                record = InventoryRecord.objects.get(product=product)
-            except InventoryRecord.DoesNotExist:
-                raise InsufficientStockError(f"No inventory record for '{product.name}'.")
-            if record.current_stock < item['quantity']:
-                raise InsufficientStockError(
-                    f"Insufficient stock for '{product.name}'. "
-                    f"Available: {record.current_stock}, Requested: {item['quantity']}"
-                )
 
-        # 2. Create transaction header.
+        Phase 8.99b: creates a DRAFT only — no stock check, no
+        InventoryService call, no InventoryMovement row. The
+        inactive-product check stays here (a create-time concern: a
+        product shouldn't be addable to a new sale at all once inactive)
+        — availability, by contrast, moves to approve_sale(), since only
+        approval actually commits stock (see Step 3's own
+        `docs/project_memory.md` §13/§15 finding on why draft sales can't
+        meaningfully reserve stock).
+        """
+        total = 0
         sale = SaleTransaction.objects.create(
             created_by=created_by,
             customer_name=sale_data.get('customer_name', ''),
             notes=sale_data.get('notes', ''),
         )
-
-        # 3. Create line items + deduct stock.
-        total = 0
         for item in items_data:
             product = Product.objects.get(pk=item['product_id'])
-            # 06_SALES.md's reference code divides a plain int default (0)
-            # by 100, producing a float — Decimal * float raises TypeError.
-            # Coerce to Decimal first so this works whether discount/tax are
-            # omitted, passed as int/float, or passed as Decimal already.
+            if not product.is_active:
+                raise ValueError(f"Product '{product.name}' is inactive and cannot be sold.")
+            # Phase 8.98c: tax is never trusted from items_data even if a
+            # caller happens to pass one — always the product's own
+            # tax_rate, the single real source. discount stays a genuine
+            # per-line/per-transaction value (unlike tax, this one really
+            # is a per-sale negotiation, not a product property).
             discount = Decimal(str(item.get('discount', 0)))
-            tax = Decimal(str(item.get('tax', 0)))
-            line_total = (item['unit_price'] * item['quantity']) * (1 - discount / 100) * (1 + tax / 100)
+            tax = product.tax_rate
+            line_total = calculate_line_total(item['unit_price'], item['quantity'], discount, tax)
             total += line_total
 
             SaleItem.objects.create(
@@ -354,44 +403,133 @@ class SaleService:
                 tax=tax,
                 line_total=line_total,
             )
-            InventoryService.decrease_stock(
-                product=product,
-                quantity=item['quantity'],
-                movement_type=MovementType.SALE,
-                reference_type='SaleTransaction',
-                reference_id=sale.pk,
-                performed_by=created_by,
-                notes=f'Sale {sale.invoice_number}',
-            )
 
         sale.total_amount = total
         sale.save(update_fields=['total_amount'])
-        # 06_SALES.md's create_sale only calls log_action, no notify — matched
-        # literally. (11_NOTIFICATIONS.md lists a 'sale_completed' type but no
-        # reference code anywhere actually fires it, and no recipient is
-        # documented for it — not invented here.)
         audit.log_action(created_by, audit.SALE_CREATED, 'sales', affected_id=sale.pk, status='success')
         return sale
 
     @classmethod
     @transaction.atomic
-    def cancel_sale(cls, sale, cancelled_by):
-        if sale.status == SaleStatus.CANCELLED:
-            raise ValueError("Sale is already cancelled.")
+    def submit_for_approval(cls, sale, submitted_by):
+        """Phase 8.99b — mirrors PurchaseService.submit_for_approval()
+        exactly, including firing the notification a Supervisor/Admin
+        needs to ever learn this sale exists (NotificationType.
+        SALE_PENDING, added this phase specifically because without it
+        the approval gate has no trigger — see §13)."""
+        if sale.status != SaleStatus.DRAFT:
+            raise ValueError("Only draft sales can be submitted.")
+        sale.status = SaleStatus.PENDING
+        sale.save(update_fields=['status', 'updated_at'])
+        notify_supervisors(
+            NotificationType.SALE_PENDING, f'Sale {sale.invoice_number} Awaiting Approval',
+            f'{submitted_by.full_name} submitted {sale.invoice_number} for approval.',
+            link=f'/sales/',
+        )
+        audit.log_action(submitted_by, audit.SALE_SUBMITTED, 'sales', affected_id=sale.pk, status='success')
+        return sale
 
-        for item in sale.items.all():
-            InventoryService.increase_stock(
+    @classmethod
+    @transaction.atomic
+    def approve_sale(cls, sale, approved_by):
+        """Phase 8.99b — the ONLY place a sale's stock actually moves.
+        Re-validates availability here rather than trusting whatever was
+        true at draft/submit time — two drafts against the same limited
+        stock can each look satisfiable at creation and only one can
+        actually succeed here; this is the documented, deliberate
+        consequence, not a bug (see docs/project_memory.md §13/§15's
+        "stock-at-approval" finding). Pre-validates ALL items first
+        (same pattern the old one-step create_sale() used, moved here
+        wholesale) so a failure never partially deducts stock — this
+        whole method is wrapped in one transaction, but the pre-check
+        also gives a clean, single, specific error instead of an
+        arbitrary mid-loop one."""
+        if sale.status != SaleStatus.PENDING:
+            raise ValueError("Only pending sales can be approved.")
+
+        items = list(sale.items.select_related('product').all())
+        for item in items:
+            try:
+                record = InventoryRecord.objects.get(product=item.product)
+            except InventoryRecord.DoesNotExist:
+                raise InsufficientStockError(f"No inventory record for '{item.product.name}'.")
+            if record.current_stock < item.quantity:
+                raise InsufficientStockError(
+                    f"Insufficient stock for '{item.product.name}'. "
+                    f"Available: {record.current_stock}, Requested: {item.quantity}"
+                )
+
+        for item in items:
+            InventoryService.decrease_stock(
                 product=item.product,
                 quantity=item.quantity,
-                movement_type=MovementType.RETURN,
+                movement_type=MovementType.SALE,
                 reference_type='SaleTransaction',
                 reference_id=sale.pk,
-                performed_by=cancelled_by,
-                notes=f'Cancellation of {sale.invoice_number}',
+                performed_by=approved_by,
+                notes=f'Sale {sale.invoice_number}',
             )
 
+        sale.status = SaleStatus.COMPLETED
+        sale.approved_by = approved_by
+        sale.approved_at = timezone.now()
+        sale.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
+        # SALE_COMPLETED (11_NOTIFICATIONS.md, pre-existing) previously had
+        # no reference code anywhere that actually fired it and no
+        # documented recipient — this approval step is the first genuine
+        # use of it, with the obvious recipient: the person who created
+        # the sale, mirroring PO_APPROVED's notify_user(po.created_by, ...).
+        notify_user(
+            sale.created_by, NotificationType.SALE_COMPLETED, f'Sale {sale.invoice_number} Approved',
+            f'Your sale {sale.invoice_number} has been approved and completed.',
+            link=f'/sales/',
+        )
+        audit.log_action(approved_by, audit.SALE_APPROVED, 'sales', affected_id=sale.pk, status='success')
+        return sale
+
+    @classmethod
+    @transaction.atomic
+    def reject_sale(cls, sale, rejected_by, reason):
+        """Phase 8.99b — mirrors PurchaseService.reject(). No
+        notification type exists for "sale rejected" (11_NOTIFICATIONS.md
+        lists sale_completed but nothing for rejection) — logs but does
+        not notify, matching this project's own established precedent for
+        exactly this shape of gap (AdjustmentService.reject()'s identical
+        reasoning) rather than inventing a second undocumented type this
+        same phase, on top of the one (SALE_PENDING) already disclosed as
+        load-bearing. SALE_PENDING was the load-bearing exception; this
+        one is purely informational, same as the precedent it follows."""
+        if sale.status != SaleStatus.PENDING:
+            raise ValueError("Only pending sales can be rejected.")
+        sale.status = SaleStatus.REJECTED
+        sale.rejected_reason = reason
+        sale.save(update_fields=['status', 'rejected_reason', 'updated_at'])
+        audit.log_action(rejected_by, audit.SALE_REJECTED, 'sales', affected_id=sale.pk, status='success')
+        return sale
+
+    @classmethod
+    @transaction.atomic
+    def cancel_sale(cls, sale, cancelled_by, reason):
+        """Phase 8.99b restricted this to pre-approval states only (DRAFT/
+        PENDING); Phase 8.99c locks that rule in for good (see this
+        class's own docstring and §13) — a COMPLETED sale can never be
+        cancelled by this method. 06_SALES.md's original "cancellation
+        restores stock via increase_stock()" no longer applies to what
+        this method actually does: a draft/pending sale has deducted no
+        stock at all (that only happens in approve_sale() now), so there
+        is nothing to restore. Post-completion corrections (returns,
+        mis-keyed quantities, damaged goods) go through an Inventory
+        Adjustment instead — see §13, "post-completion correction path."
+
+        `reason` is now required (ReasonForm, same as reject_sale()) and
+        stored alongside who/when, mirroring rejected_reason's own shape."""
+        if sale.status not in cls._CANCELLABLE_STATUSES:
+            raise ValueError(f"Cannot cancel a sale with status '{sale.status}'.")
         sale.status = SaleStatus.CANCELLED
-        sale.save(update_fields=['status', 'updated_at'])
+        sale.cancelled_reason = reason
+        sale.cancelled_by = cancelled_by
+        sale.cancelled_at = timezone.now()
+        sale.save(update_fields=['status', 'cancelled_reason', 'cancelled_by', 'cancelled_at', 'updated_at'])
         audit.log_action(cancelled_by, audit.SALE_CANCELLED, 'sales', affected_id=sale.pk, status='success')
         return sale
 

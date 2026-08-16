@@ -20,14 +20,32 @@
     </div>
   </div>
 
-  <div class="grid grid-4" id="categoriesGrid">
+  {% comment %}
+    Phase 8.99i: Edit/Deactivate/Reactivate/Delete were dead buttons (no
+    class, no handler, no view) — this is the first phase to build any of
+    them for Categories. Mirrors Products'/Suppliers' pattern exactly:
+    AnyStaffMixin edit, SupervisorRequiredMixin deactivate/reactivate/
+    delete, icon-x for deactivate (not icon-trash — that's reserved for
+    genuine delete), delete only shown when the category has zero
+    products (category.deletable, CategoryListCreateView.get()).
+  {% endcomment %}
+  <div class="grid grid-4" id="categoriesGrid" data-base-url="{% url 'frontend:categories' %}">
     {% for category in categories %}
-    <div class="card-flat">
+    <div class="card-flat" data-category-id="{{ category.pk }}" data-category="{{ category.edit_json }}">
       <div class="flex items-center justify-between gap-3" style="margin-bottom: var(--sp-4);">
         <span class="kpi-icon {% if category.is_active %}tint-indigo{% else %}tint-danger{% endif %}"><svg class="icon"><use href="#icon-tag"></use></svg></span>
         <div class="flex gap-2">
-          <button class="pill-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-          <button class="pill-btn" type="button" aria-label="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+          <button class="pill-btn category-edit-btn" type="button" aria-label="Edit category"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+          {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+            {% if category.is_active %}
+              <button class="pill-btn reject category-deactivate-btn" type="button" aria-label="Deactivate category"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+            {% else %}
+              <button class="pill-btn category-reactivate-btn" type="button" aria-label="Reactivate category"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+            {% endif %}
+            {% if category.deletable %}
+              <button class="pill-btn reject category-delete-btn" type="button" aria-label="Delete category" title="Delete category"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+            {% endif %}
+          {% endif %}
         </div>
       </div>
       <h4 style="margin-bottom:0.3rem;">{{ category.name }}</h4>
@@ -94,6 +112,57 @@
         <button type="submit" form="addCategoryForm" class="btn btn-primary">
           <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
           Save category
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  {% comment %}
+    Edit category modal (Phase 8.99i). No "status" field here, unlike the
+    Add modal above — is_active only ever changes through Deactivate/
+    Reactivate (CategoryDeactivateView/CategoryReactivateView), matching
+    Products'/Suppliers' own "one way to change active status" pattern
+    rather than giving Categories a second path to the same flag.
+  {% endcomment %}
+  <div class="modal-overlay" id="editCategoryModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editCategoryModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="editCategoryModalTitle">Edit category</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="editCategoryForm" method="post" action="" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="editCategoryFormError" hidden></div>
+        <div class="form-grid">
+
+          <div class="field field-full">
+            <label class="form-label" for="edit-category-name">Category name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="edit-category-name" name="name">
+            <div class="field-error" id="edit-category-name-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="edit-category-description">Description <span class="optional-tag">(optional)</span></label>
+            <textarea class="textarea" id="edit-category-description" name="description" rows="3"></textarea>
+            <div class="field-error" id="edit-category-description-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="editCategoryForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save changes
         </button>
       </div>
 

@@ -19,6 +19,12 @@ media/
 staticfiles/
 /staticfiles
 
+# AI models (Phase 11 — ENVIRONMENT.md; doesn't exist yet, added proactively)
+ai_models/
+
+# Test runner artifacts (Playwright etc.)
+test-results/
+
 # Claude Code local settings (may contain machine-specific/local config)
 .claude/settings.local.json
 

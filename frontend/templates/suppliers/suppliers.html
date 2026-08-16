@@ -13,10 +13,10 @@
       <p class="text-slate">{{ counts.total }} supplier{{ counts.total|pluralize }} feeding your catalog and purchase orders.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
-      <button class="btn btn-secondary" type="button">
+      <a href="{% url 'frontend:supplier_export' %}" class="btn btn-secondary">
         <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
         Export
-      </button>
+      </a>
       <button class="btn btn-primary" type="button" data-modal-open="addSupplierModal">
         <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
         Add supplier
@@ -54,12 +54,12 @@
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
         <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" placeholder="Search suppliers by name or contact...">
+        <input type="search" class="input" id="supplierSearch" placeholder="Search suppliers by name or contact...">
       </div>
-      <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-        <option>All statuses</option>
-        <option>Active</option>
-        <option>Inactive</option>
+      <select class="input" id="supplierStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+        <option value="">All statuses</option>
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
       </select>
     </div>
 
@@ -77,9 +77,9 @@
               <th></th>
             </tr>
           </thead>
-          <tbody id="suppliersTableBody">
+          <tbody id="suppliersTableBody" data-base-url="{% url 'frontend:suppliers' %}">
             {% for supplier in suppliers %}
-            <tr>
+            <tr data-supplier-id="{{ supplier.pk }}" data-supplier="{{ supplier.edit_json }}" data-search="{{ supplier.company_name|lower }} {{ supplier.supplier_name|lower }} {{ supplier.contact_person|lower }}" data-status="{% if supplier.is_active %}active{% else %}inactive{% endif %}">
               <td>
                 {{ supplier.company_name }}
                 <div class="cell-sub">{{ supplier.supplier_name }}</div>
@@ -96,9 +96,19 @@
                 {% endif %}
               </td>
               <td>
+                {# Phase 8.99i: was dead markup (no class, no handler, no view) — first phase to wire any of this for Suppliers. Mirrors Products/Categories exactly. #}
                 <div class="widget-actions">
-                  <button class="pill-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
-                  <button class="pill-btn" type="button" aria-label="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+                  <button class="pill-btn supplier-edit-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                  {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
+                    {% if supplier.is_active %}
+                      <button class="pill-btn reject supplier-deactivate-btn" type="button" aria-label="Deactivate supplier"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                    {% else %}
+                      <button class="pill-btn supplier-reactivate-btn" type="button" aria-label="Reactivate supplier"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                    {% endif %}
+                    {% if supplier.deletable %}
+                      <button class="pill-btn reject supplier-delete-btn" type="button" aria-label="Delete supplier" title="Delete supplier"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
+                    {% endif %}
+                  {% endif %}
                 </div>
               </td>
             </tr>
@@ -206,6 +216,80 @@
     </div>
   </div>
 
+  {% comment %}
+    Edit supplier modal (Phase 8.99i). No "status" field, unlike the Add
+    modal above — is_active only changes through Deactivate/Reactivate
+    (SupplierDeactivateView/SupplierReactivateView), matching Products'/
+    Categories' own "one way to change active status" pattern.
+  {% endcomment %}
+  <div class="modal-overlay" id="editSupplierModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editSupplierModalTitle">
+
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="editSupplierModalTitle">Edit supplier</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close">
+          <svg class="icon icon-sm"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+
+      <form class="modal-body" id="editSupplierForm" method="post" action="" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="editSupplierFormError" hidden></div>
+        <div class="form-grid">
+
+          <div class="field">
+            <label class="form-label" for="edit-supplier-name">Supplier name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="edit-supplier-name" name="supplier_name">
+            <div class="field-error" id="edit-supplier-name-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-supplier-company-name">Company name<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="edit-supplier-company-name" name="company_name">
+            <div class="field-error" id="edit-supplier-company-name-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-supplier-contact-person">Contact person<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="text" id="edit-supplier-contact-person" name="contact_person">
+            <div class="field-error" id="edit-supplier-contact-person-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-supplier-email">Email<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="email" id="edit-supplier-email" name="email">
+            <div class="field-error" id="edit-supplier-email-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="edit-supplier-phone">Phone<span class="required-mark">*</span></label>
+            <input class="input input-plain" type="tel" id="edit-supplier-phone" name="phone">
+            <div class="field-error" id="edit-supplier-phone-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            <label class="form-label" for="edit-supplier-address">Address<span class="required-mark">*</span></label>
+            <textarea class="textarea" id="edit-supplier-address" name="address" rows="2"></textarea>
+            <div class="field-error" id="edit-supplier-address-error" role="alert"></div>
+          </div>
+
+        </div>
+      </form>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="editSupplierForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save changes
+        </button>
+      </div>
+
+    </div>
+  </div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -213,5 +297,6 @@
   <script src="{% static 'js/form-validation.js' %}"></script>
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/supplier-form.js' %}"></script>
 {% endblock %}

@@ -21,7 +21,7 @@ docs/project_memory.md §12 bug #1: an earlier bug fix moved *away* from
 django.contrib.auth's built-in `accounts:` namespace).
 """
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.conf import settings as django_settings
 from django.contrib import messages
@@ -34,8 +34,12 @@ from django.contrib.auth import (
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.views import PasswordResetConfirmView
 from django.core.exceptions import ValidationError
+from django.core.paginator import Paginator
 from django.db import transaction
+from django.db.models import Sum
+from django.db.models.functions import TruncMonth, TruncWeek
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -61,12 +65,17 @@ from frontend.models import (
     AuditLog,
     Category,
     InventoryAdjustment,
+    InventoryMovement,
+    InventoryRecord,
+    InventoryStatus,
+    MovementType,
     Notification,
     NotificationType,
     POStatus,
     Product,
     PurchaseOrder,
     PurchaseOrderItem,
+    SaleItem,
     SaleStatus,
     SaleTransaction,
     Supplier,
@@ -75,7 +84,13 @@ from frontend.models import (
     User,
     UserRole,
 )
-from frontend.notifications import notify_supervisors, notify_user
+from frontend.notifications import (
+    notify_admins,
+    notify_supervisors,
+    notify_user,
+    send_new_user_credentials_email,
+)
+from frontend.validators import generate_strong_password, validate_product_image
 from frontend.services import (
     AdjustmentService,
     InsufficientStockError,
@@ -179,30 +194,22 @@ def profile_view(request):
         user.full_name = request.POST.get("full_name", user.full_name).strip() or user.full_name
         user.contact_number = request.POST.get("contact_number", user.contact_number).strip()
         if "profile_image" in request.FILES:
-            user.profile_image = request.FILES["profile_image"]
-        user.save()
-
-        # Password change handled separately, matching 01_AUTH.md — but
-        # with validate_password() actually enforced first, unlike the
-        # doc's own reference code (which calls set_password() directly,
-        # skipping AUTH_PASSWORD_VALIDATORS entirely for this path — a
-        # real gap given SECURITY.md's own password-policy requirement).
-        new_password = request.POST.get("new_password", "").strip()
-        if new_password:
+            image = request.FILES["profile_image"]
+            # Phase 8.98e: profile_image (SCHEMA.md's own field, already on
+            # the model since Phase 1) had no validation at all before this
+            # — any file of any type/size would silently become the user's
+            # avatar. Reuses validate_product_image() unchanged: its check
+            # (extension + size) is generic image validation with nothing
+            # product-specific in it, already reused as-is for
+            # SystemSettings.company_logo (frontend/forms.py) — same
+            # precedent, not a new mechanism.
             try:
-                validate_password(new_password, user)
+                validate_product_image(image)
             except ValidationError as exc:
-                for msg in exc.messages:
-                    messages.error(request, msg)
-                return render(request, "accounts/profile.html")
-            user.set_password(new_password)
-            user.save()
-            update_session_auth_hash(request, user)  # keep session alive post-change
-            notify_user(
-                user, NotificationType.PASSWORD_CHANGED, "Password Changed",
-                "Your password was successfully updated.",
-            )
-            audit.log_action(user, audit.PASSWORD_CHANGED, "authentication", status="success", request=request)
+                messages.error(request, " ".join(exc.messages))
+                return redirect("frontend:profile")
+            user.profile_image = image
+        user.save()
 
         messages.success(request, "Profile updated successfully.")
         audit.log_action(user, audit.PROFILE_UPDATED, "authentication", status="success", request=request)
@@ -211,8 +218,339 @@ def profile_view(request):
     return render(request, "accounts/profile.html")
 
 
-def dashboard(request):
-    return render(request, "dashboard/dashboard.html")
+def _record_password_change(user, request):
+    """Phase 8.99a — extracted out of change_password_view so
+    StockwellPasswordResetConfirmView (below) can fire the exact same
+    audit/notify sequence, not a second hand-copied one. Every path that
+    ends in a successful set_password() — the profile modal, and now the
+    emailed reset link — must be equally visible to the audit log and
+    every Admin; before this, only the modal's path was. Never receives
+    the new password itself: nothing here takes one as an argument, so
+    there's nothing to leak into `notify_user`/`notify_admins`' stored
+    Notification rows or `audit.log_action`'s `details`."""
+    notify_user(
+        user, NotificationType.PASSWORD_CHANGED, "Password Changed",
+        "Your password was successfully updated.",
+    )
+    # Every admin is told a password changed — reusing the same documented
+    # PASSWORD_CHANGED type for a second recipient set
+    # (frontend.notifications.notify_admins()), never the new password.
+    notify_admins(
+        NotificationType.PASSWORD_CHANGED, f"Password Changed: {user.full_name}",
+        f"{user.full_name} ({user.username}) changed their account password.",
+    )
+    audit.log_action(user, audit.PASSWORD_CHANGED, "authentication", status="success", request=request)
+
+
+@login_required
+def change_password_view(request):
+    """Phase 8.98a — split out of profile_view's old inline "new password"
+    field (which had no current-password check and no confirm field, both
+    real gaps for a self-service password change). This is the only
+    server-side path that ever calls set_password() for the logged-in
+    user's own account now — validate_password() (the same
+    AUTH_PASSWORD_VALIDATORS chain, StrongPasswordValidator included) is
+    still the actual enforcement point, same as before. Returns JSON,
+    matching modal-form.js's fetch()-based onSubmit contract — a real
+    page redirect (like profile_view's own POST) isn't right for a modal."""
+
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Method not allowed."}, status=405)
+
+    user = request.user
+    current_password = request.POST.get("current_password", "")
+    new_password = request.POST.get("new_password", "")
+    confirm_password = request.POST.get("confirm_password", "")
+
+    errors = {}
+    if not user.check_password(current_password):
+        errors["current_password"] = [{"message": "Current password is incorrect.", "code": "invalid"}]
+    if new_password != confirm_password:
+        errors["confirm_password"] = [{"message": "Passwords do not match.", "code": "invalid"}]
+    try:
+        validate_password(new_password, user)
+    except ValidationError as exc:
+        errors["new_password"] = [{"message": msg, "code": "invalid"} for msg in exc.messages]
+
+    if errors:
+        return JsonResponse({"success": False, "errors": errors}, status=400)
+
+    user.set_password(new_password)
+    user.save()
+    update_session_auth_hash(request, user)  # keep this session alive post-change
+    _record_password_change(user, request)
+    messages.success(request, "Password changed successfully.")
+    return JsonResponse({"success": True})
+
+
+class StockwellPasswordResetConfirmView(PasswordResetConfirmView):
+    """Phase 8.99a — Django's own PasswordResetConfirmView.form_valid()
+    calls form.save() (SetPasswordForm, which itself already runs
+    validate_password()/StrongPasswordValidator via
+    UserModel.clean_new_password2() — no re-validation needed here) and
+    redirects; it never goes through change_password_view, so without
+    this override a password reset via the emailed link would be
+    invisible to both the audit log and every Admin, while the identical
+    change made through the profile modal is fully recorded — a genuine
+    compliance-record inconsistency, confirmed by reading Django's own
+    form_valid() source before writing this, not assumed.
+
+    Only adds the missing audit/notify call — form.save()'s actual
+    password-setting logic is untouched, reused via super().form_valid(),
+    not reimplemented. form.user (set by SetPasswordForm.__init__, not by
+    save()) is the target user the password was just changed for; the new
+    password itself is never read here, so there is nothing for
+    _record_password_change() to leak."""
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        _record_password_change(form.user, self.request)
+        return response
+
+
+# -------------------------------------------------------------- Dashboard
+# Phase 8.96 — docs/09_DASHBOARD.md (originated + approved Phase 8.95/
+# 8.95.1). Every number below traces to a row in that spec's decision
+# table; nothing here is a number invented to fill a gap — where the spec
+# says an element can't be real yet (AI Insights) it's simply absent, not
+# faked or shown as an empty state.
+
+DASHBOARD_PREVIEW_ROWS = 5  # 09_DASHBOARD.md Decision 3 — the one place this is defined.
+
+_PURCHASE_ACTIVITY_STATUSES = (POStatus.APPROVED, POStatus.PARTIAL, POStatus.RECEIVED)  # Decision 2b
+
+
+def _dashboard_date_buckets(unit, count):
+    """(bucket_start, label) tuples, oldest first, ending at the current
+    bucket. 'day'/'week'/'month' per 09_DASHBOARD.md's chart windows —
+    Decision 2a. Week buckets start Monday (matches Django's TruncWeek);
+    month buckets start on the 1st (matches TruncMonth)."""
+    today = timezone.localdate()
+    buckets = []
+    if unit == "day":
+        for i in range(count - 1, -1, -1):
+            d = today - timedelta(days=i)
+            buckets.append((d, d.strftime("%a")))
+    elif unit == "week":
+        week_start = today - timedelta(days=today.weekday())
+        for i in range(count - 1, -1, -1):
+            d = week_start - timedelta(weeks=i)
+            buckets.append((d, d.strftime("%b %d")))
+    else:  # month
+        y, m = today.year, today.month
+        for i in range(count - 1, -1, -1):
+            total_month = (y * 12 + (m - 1)) - i
+            by, bm = divmod(total_month, 12)
+            buckets.append((date(by, bm + 1, 1), date(by, bm + 1, 1).strftime("%b")))
+    return buckets
+
+
+def _sales_purchases_series(unit, count):
+    """09_DASHBOARD.md §3a — Sales = completed SaleTransactions by
+    transaction_date; Purchases = APPROVED/PARTIAL/RECEIVED PurchaseOrders
+    by order_date (Decision 2b). Both DB-aggregated (Sum + annotate), zero-
+    filled per bucket in Python rather than pulling raw rows."""
+    buckets = _dashboard_date_buckets(unit, count)
+    start = buckets[0][0]
+    trunc = {"day": None, "week": TruncWeek, "month": TruncMonth}[unit]
+
+    sales_qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED, transaction_date__gte=start)
+    purchase_qs = PurchaseOrder.objects.filter(status__in=_PURCHASE_ACTIVITY_STATUSES, order_date__gte=start)
+
+    if unit == "day":
+        sales_rows = sales_qs.values("transaction_date").annotate(total=Sum("total_amount"))
+        sales_totals = {r["transaction_date"]: r["total"] or 0 for r in sales_rows}
+        purchase_rows = purchase_qs.values("order_date").annotate(total=Sum("total_cost"))
+        purchase_totals = {r["order_date"]: r["total"] or 0 for r in purchase_rows}
+    else:
+        sales_rows = sales_qs.annotate(bucket=trunc("transaction_date")).values("bucket").annotate(total=Sum("total_amount"))
+        sales_totals = {r["bucket"]: r["total"] or 0 for r in sales_rows}
+        purchase_rows = purchase_qs.annotate(bucket=trunc("order_date")).values("bucket").annotate(total=Sum("total_cost"))
+        purchase_totals = {r["bucket"]: r["total"] or 0 for r in purchase_rows}
+
+    return {
+        "labels": [label for _, label in buckets],
+        "sales": [float(sales_totals.get(bstart, 0)) for bstart, _ in buckets],
+        "purchases": [float(purchase_totals.get(bstart, 0)) for bstart, _ in buckets],
+    }
+
+
+def _inventory_movement_series():
+    """09_DASHBOARD.md §3b — Received/Dispatched by InventoryMovement's
+    own quantity_change sign, last 6 months (the mock's own given window,
+    not a decision). created_at is a DateTimeField, so TruncMonth returns
+    an aware datetime — .date() normalizes it to match the bucket keys."""
+    buckets = _dashboard_date_buckets("month", 6)
+    start = buckets[0][0]
+    qs = InventoryMovement.objects.filter(created_at__date__gte=start)
+
+    received_rows = (
+        qs.filter(quantity_change__gt=0).annotate(bucket=TruncMonth("created_at"))
+        .values("bucket").annotate(total=Sum("quantity_change"))
+    )
+    received_totals = {r["bucket"].date(): r["total"] or 0 for r in received_rows}
+
+    dispatched_rows = (
+        qs.filter(quantity_change__lt=0).annotate(bucket=TruncMonth("created_at"))
+        .values("bucket").annotate(total=Sum("quantity_change"))
+    )
+    dispatched_totals = {r["bucket"].date(): abs(r["total"] or 0) for r in dispatched_rows}
+
+    return {
+        "labels": [label for _, label in buckets],
+        "received": [float(received_totals.get(bstart, 0)) for bstart, _ in buckets],
+        "dispatched": [float(dispatched_totals.get(bstart, 0)) for bstart, _ in buckets],
+    }
+
+
+class DashboardView(AnyStaffMixin, View):
+    """Phase 8.97 (Part A) — previously a bare function view with no auth
+    check at all, a real risk once Phase 8.96 made this page compute
+    genuine business aggregates (inventory value, stock levels, real
+    headcounts) instead of fabricated numbers. `AnyStaffMixin` matches
+    every other real view's convention and `09_DASHBOARD.md`'s own
+    "Any role, same content" decision — not gated to a single role, just
+    to "logged in at all" (all 3 roles satisfy `AnyStaffMixin`)."""
+
+    def get(self, request):
+        # BUG-37 fix (Phase 8.6): greeting tracks time of day in Bangladesh
+        # time, the same clock every other timestamp in the app renders in
+        # (TIME_ZONE = 'Asia/Dhaka', see config/settings.py).
+        now_local = timezone.localtime()
+        hour = now_local.hour
+        if hour < 12:
+            greeting = "Good morning"
+        elif hour < 17:
+            greeting = "Good afternoon"
+        else:
+            greeting = "Good evening"
+
+        thirty_days_ago = timezone.now() - timedelta(days=30)
+
+        # ---- KPI cards (Decision 1: "+N new in the last 30 days", all 4) ----
+        kpis = {
+            "total_products": Product.objects.count(),
+            "new_products_30d": Product.objects.filter(created_at__gte=thirty_days_ago).count(),
+            "total_categories": Category.objects.count(),
+            "new_categories_30d": Category.objects.filter(created_at__gte=thirty_days_ago).count(),
+            # "Active suppliers", not raw total — Decision 7.
+            "active_suppliers": Supplier.objects.filter(is_active=True).count(),
+            "new_active_suppliers_30d": Supplier.objects.filter(
+                is_active=True, created_at__gte=thirty_days_ago
+            ).count(),
+            # Not in API_CONTRACTS.md's documented stats payload — Decision 6.
+            "total_users": User.objects.count(),
+            "new_users_30d": User.objects.filter(created_at__gte=thirty_days_ago).count(),
+        }
+
+        # ---- Compact stat strip ----
+        inv_agg = InventoryRecord.objects.aggregate(value=Sum("total_value"), units=Sum("current_stock"))
+        stats = {
+            "inventory_value": inv_agg["value"] or 0,
+            "stock_units": inv_agg["units"] or 0,  # Decision 6.
+            "low_stock_count": InventoryRecord.objects.filter(status=InventoryStatus.LOW_STOCK).count(),
+            "out_of_stock_count": InventoryRecord.objects.filter(status=InventoryStatus.OUT_OF_STOCK).count(),
+        }
+
+        # ---- Stock Alerts widget (§4a) ----
+        stock_alerts = list(
+            InventoryRecord.objects.filter(status__in=[InventoryStatus.LOW_STOCK, InventoryStatus.OUT_OF_STOCK])
+            .select_related("product").order_by("current_stock")[:DASHBOARD_PREVIEW_ROWS]
+        )
+        for record in stock_alerts:
+            # Reused from InventoryListView (Phase 8.9) — same badge convention,
+            # not redefined. Looked up lazily (method body, not module level)
+            # since _INVENTORY_STATUS_BADGE is defined later in this file.
+            record.status_badge = _INVENTORY_STATUS_BADGE.get(record.status, "badge-indigo")
+
+        # ---- Pending Approvals widget (§4b) — read-only, no action buttons ----
+        pending_po_count = PurchaseOrder.objects.filter(status=POStatus.PENDING).count()
+        pending_adjustment_count = InventoryAdjustment.objects.filter(status=AdjustmentStatus.PENDING).count()
+
+        pending_items = []
+        for po in (
+            PurchaseOrder.objects.filter(status=POStatus.PENDING)
+            .select_related("supplier").order_by("-created_at")[:DASHBOARD_PREVIEW_ROWS]
+        ):
+            pending_items.append({
+                "kind": "purchase", "title": po.po_number,
+                "meta": f"{po.supplier.company_name} · ${po.total_cost:.2f}",
+                "created_at": po.created_at,
+            })
+        for adjustment in (
+            InventoryAdjustment.objects.filter(status=AdjustmentStatus.PENDING)
+            .select_related("product").order_by("-created_at")[:DASHBOARD_PREVIEW_ROWS]
+        ):
+            sign = "+" if adjustment.adjustment_type == "increase" else "−"
+            pending_items.append({
+                "kind": "adjustment", "title": f"Adjustment #AJ-{adjustment.pk:04d}",
+                "meta": f"{adjustment.product.name} · {sign}{adjustment.quantity} units",
+                "created_at": adjustment.created_at,
+            })
+        pending_items.sort(key=lambda item: item["created_at"], reverse=True)
+        pending_items = pending_items[:DASHBOARD_PREVIEW_ROWS]
+
+        # ---- Recent Activity widget (§4c) — Decision 5: admin/supervisor only ----
+        # `AnyStaffMixin` now guarantees an authenticated user with a role
+        # reaches this point at all, so `is_authenticated` here is
+        # belt-and-suspenders, not load-bearing — kept anyway since it's
+        # harmless and keeps this check correct in isolation if the mixin
+        # is ever changed.
+        recent_activity = None
+        if request.user.is_authenticated and request.user.role in (UserRole.ADMIN, UserRole.SUPERVISOR):
+            recent_activity = list(
+                AuditLog.objects.exclude(module="authentication")
+                .select_related("user").order_by("-timestamp")[:DASHBOARD_PREVIEW_ROWS]
+            )
+            for log in recent_activity:
+                log.user_label = log.user.full_name if log.user else "System"
+
+        # ---- Charts (§3) ----
+        chart_data = {
+            "sales_purchases": {
+                "daily": _sales_purchases_series("day", 7),
+                "weekly": _sales_purchases_series("week", 8),
+                "monthly": _sales_purchases_series("month", 6),
+            },
+            "inventory_movement": _inventory_movement_series(),
+        }
+
+        context = {
+            "active_nav": "dashboard",
+            "greeting": greeting,
+            "today": now_local.date(),
+            "kpis": kpis,
+            "stats": stats,
+            "stock_alerts": stock_alerts,
+            "pending_items": pending_items,
+            "pending_po_count": pending_po_count,
+            "pending_adjustment_count": pending_adjustment_count,
+            "recent_activity": recent_activity,
+            "chart_data": chart_data,
+        }
+        return render(request, "dashboard/dashboard.html", context)
+
+
+def _product_ids_with_history():
+    """Phase 8.99i — mirrors `_user_ids_with_history()`'s own reasoning
+    (Phase 8.99f-2) for Products: `Product` is referenced by `PROTECT` FKs
+    from `PurchaseOrderItem`/`SaleItem`/`InventoryMovement`/
+    `InventoryAdjustment` — a genuine hard-delete must refuse all of
+    those. `InventoryRecord.product` (a `OneToOneField`, also `PROTECT`)
+    is deliberately NOT included here: every product gets exactly one at
+    creation (`InventoryService.initialize_for_product()`) regardless of
+    whether it's ever actually used, so it's current-state bookkeeping,
+    not history — `ProductDeleteView` deletes it explicitly as part of a
+    genuinely safe delete, the one place this project ever removes an
+    `InventoryRecord`. `DemandForecast`/`InventoryClassification` are
+    `CASCADE` (disposable, AI-generated) and need no check at all."""
+    ids = set()
+    ids |= set(PurchaseOrderItem.objects.values_list("product_id", flat=True))
+    ids |= set(SaleItem.objects.values_list("product_id", flat=True))
+    ids |= set(InventoryMovement.objects.values_list("product_id", flat=True))
+    ids |= set(InventoryAdjustment.objects.values_list("product_id", flat=True))
+    return ids
+
 
 class ProductListCreateView(AnyStaffMixin, View):
     """docs/03_PRODUCTS.md's product_list_view/product_create_view,
@@ -233,7 +571,12 @@ class ProductListCreateView(AnyStaffMixin, View):
             Product.objects.select_related("category", "supplier").order_by("-created_at")
         )
         counts = {"total": 0, "in_stock": 0, "low_stock": 0, "out_of_stock": 0}
+        history_ids = _product_ids_with_history()
         for product in products:
+            # Phase 8.99i — same "compute once, reuse for both the row's
+            # own display and the delete endpoint's own enforcement" split
+            # as _user_ids_with_history() (Phase 8.99f-2).
+            product.deletable = product.pk not in history_ids
             # Mirrors product-form.js's old client-side deriveStatus() and
             # InventoryRecord.update_status()'s thresholds — read from
             # Product.current_stock/reorder_level (kept in sync by
@@ -251,6 +594,20 @@ class ProductListCreateView(AnyStaffMixin, View):
                 product.stock_label, product.stock_badge = "In stock", "badge-success"
                 counts["in_stock"] += 1
             counts["total"] += 1
+            # Phase 8.99e — same "compute once server-side, read via a
+            # data-* attribute" pattern PurchaseOrder.receive_items_json
+            # already uses for the Receive modal: lets the Edit modal be
+            # pre-filled with zero extra network round-trips, reusing the
+            # existing embed-JSON-on-the-row mechanism rather than adding
+            # a new fetch helper.
+            product.edit_json = json.dumps({
+                "name": product.name, "sku": product.sku, "barcode": product.barcode or "",
+                "category": product.category_id, "supplier": product.supplier_id,
+                "brand": product.brand, "unit": product.unit,
+                "purchase_price": str(product.purchase_price), "selling_price": str(product.selling_price),
+                "tax_rate": str(product.tax_rate), "reorder_level": product.reorder_level,
+                "description": product.description, "image_url": product.image.url if product.image else "",
+            })
 
         context = {
             "active_nav": "products",
@@ -283,6 +640,183 @@ class ProductListCreateView(AnyStaffMixin, View):
 
         return JsonResponse({"success": True})
 
+
+class ProductUpdateView(AnyStaffMixin, View):
+    """Phase 8.99e — this project's first per-entity update route (see
+    docs/project_memory.md §13: no per-entity detail/update route existed
+    anywhere before this phase, by deliberate decision — every module had
+    list+create only). 02_RBAC.md: "Create/edit products" is ✅ for all 3
+    roles, same as create — `AnyStaffMixin`, not `SupervisorRequiredMixin`
+    (that gate is reserved for `ProductDeactivateView` below; 02_RBAC.md's
+    "Deactivate products" row is Admin/Supervisor only — a real asymmetry
+    between these two buttons in the same table row, not a copy-paste of
+    the same gate twice).
+
+    Reuses `ProductForm` completely unchanged via `instance=` — the exact
+    same server-side validation (unique SKU/barcode, non-negative prices,
+    active-only Category/Supplier, tax_rate, image type/size) applies to
+    an edit exactly as it does to a create, per this phase's own explicit
+    instruction not to fork the form. 03_PRODUCTS.md documents no
+    `product_update_view` reference code at all (only list/create/
+    deactivate) — this view's shape (reuse the create form via `instance=`,
+    log `PRODUCT_UPDATED`) follows `PurchaseOrderForm`/`SaleTransactionForm`
+    not needing a separate edit form either, and the doc's own Audit
+    Actions table, which does list `PRODUCT_UPDATED`.
+
+    SKU is read-only on edit (disclosed decision — no doc gives a reason
+    it should be changeable after creation, and it's an identifier a
+    product is referenced by across the app: POs, sales, reports, already-
+    issued PDFs). Enforced server-side, not just by disabling the input
+    client-side: the posted `sku` is always overwritten with the
+    instance's current value before `ProductForm` ever sees it. This also
+    sidesteps a real gotcha — `ProductForm.clean_sku()`'s "blank ->
+    auto-generate a new one" branch exists for *create*; if a disabled
+    client-side SKU input simply omitted the field (which browsers do),
+    an edit would silently issue the product a brand-new SKU on every
+    save without this override.
+
+    Does not touch `InventoryService`/the ledger beyond
+    `sync_reorder_level()` — editing a catalogue entry never moves stock
+    (the §13 rule BUG-34 established for create applies identically to
+    edit); reorder_level is a config value, not a stock quantity, so
+    syncing it to InventoryRecord writes no InventoryMovement row."""
+
+    def post(self, request, pk):
+        product = get_object_or_404(Product, pk=pk)
+        data = request.POST.copy()
+        data["sku"] = product.sku
+        form = ProductForm(data, request.FILES, instance=product)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        with transaction.atomic():
+            product = form.save()
+            InventoryService.sync_reorder_level(product)
+            audit.log_action(
+                request.user, audit.PRODUCT_UPDATED, "products",
+                affected_id=product.pk, status="success", request=request,
+            )
+
+        return JsonResponse({"success": True})
+
+
+class ProductDeactivateView(SupervisorRequiredMixin, View):
+    """02_RBAC.md: "Deactivate products" is Admin/Supervisor only — Staff
+    can edit a product (ProductUpdateView, AnyStaffMixin above) but not
+    deactivate one; two different gates on two buttons in the same row.
+    03_PRODUCTS.md: "Never hard-delete a product — use is_active = False"
+    — this is that soft-delete, matching its own `product_deactivate_view`
+    reference shape (pure status flip, no InventoryService/ledger
+    involvement — deactivating a catalogue entry doesn't move stock,
+    same reasoning as create/edit above). Idempotent, matching
+    `UserDeactivateView`'s own precedent: no special-cased error for
+    deactivating an already-inactive product, just re-confirms the flag
+    and logs it."""
+
+    def post(self, request, pk):
+        product = get_object_or_404(Product, pk=pk)
+        product.is_active = False
+        product.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.PRODUCT_DEACTIVATED, "products",
+            affected_id=product.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class ProductReactivateView(SupervisorRequiredMixin, View):
+    """Phase 8.99i — same gate as ProductDeactivateView (its own natural
+    counterpart); Products had no reactivate path at all before this
+    phase (Phase 8.99e scoped it out as optional). Idempotent, same
+    precedent as UserReactivateView/ProductDeactivateView above."""
+
+    def post(self, request, pk):
+        product = get_object_or_404(Product, pk=pk)
+        product.is_active = True
+        product.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.PRODUCT_REACTIVATED, "products",
+            affected_id=product.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class ProductDeleteView(SupervisorRequiredMixin, View):
+    """Phase 8.99i — true delete, mirroring UserDeleteView's own shape
+    (Phase 8.99f-2) exactly: only ever succeeds for a product referenced
+    by none of the 4 PROTECT FKs in _product_ids_with_history(). Every
+    other product — meaning any product actually used anywhere — can only
+    be deactivated (ProductDeactivateView); hard-deleting it would raise
+    ProtectedError. Same SupervisorRequiredMixin gate as Deactivate (its
+    own sibling action in the same row), not AnyStaffMixin.
+
+    Explicitly deletes the product's own InventoryRecord first — the one
+    PROTECT relation _product_ids_with_history() deliberately excludes,
+    since every product has exactly one regardless of use (current-state
+    bookkeeping, not history) and it would otherwise block this delete
+    even for a genuinely unused product. InventoryClassification/
+    DemandForecast are CASCADE and need no explicit handling."""
+
+    def post(self, request, pk):
+        product = get_object_or_404(Product, pk=pk)
+        if product.pk in _product_ids_with_history():
+            return JsonResponse({
+                "success": False,
+                "error": "This product has purchase, sale, or adjustment history and can't be deleted; deactivate instead.",
+            }, status=400)
+        name = product.name
+        with transaction.atomic():
+            InventoryRecord.objects.filter(product=product).delete()
+            product.delete()
+        audit.log_action(
+            request.user, audit.PRODUCT_DELETED, "products",
+            affected_id=pk, status="success", request=request,
+            details={"deleted_product_name": name},
+        )
+        return JsonResponse({"success": True})
+
+
+class ProductExportView(AnyStaffMixin, View):
+    """Phase 8.98 (BUG-44) — Products' "Export" button was decorative.
+    Real CSV now, via `frontend/reports.py`'s shared `generate_csv_response()`
+    (the same CSV-writing utility every export in this app uses) rather
+    than a new export mechanism. Exports the full product list, not the
+    current `table-filter.js` selection — that filter is client-side only
+    (Phase 8.7), with no server-side equivalent to read yet; stated here
+    rather than silently only exporting whatever happened to be visible."""
+
+    def get(self, request):
+        products = Product.objects.select_related("category", "supplier").order_by("name")
+        headers = [
+            "SKU", "Name", "Category", "Supplier", "Brand",
+            "Current Stock", "Reorder Level", "Unit", "Purchase Price", "Selling Price", "Active",
+        ]
+        rows = [
+            [
+                p.sku, p.name, p.category.name, p.supplier.company_name, p.brand,
+                p.current_stock, p.reorder_level, p.get_unit_display(),
+                f"{p.purchase_price:.2f}", f"{p.selling_price:.2f}", "Yes" if p.is_active else "No",
+            ]
+            for p in products
+        ]
+        return report_lib.generate_csv_response(headers, rows, "products.csv")
+
+def _category_ids_with_products():
+    """Phase 8.99i — Category's only PROTECT reference is Product.category
+    (related_name='products'); a category is safe to hard-delete only if
+    it has zero products, ever."""
+    return set(Product.objects.values_list("category_id", flat=True))
+
+
+def _supplier_ids_with_history():
+    """Phase 8.99i — Supplier is referenced by two PROTECT FKs:
+    Product.supplier and PurchaseOrder.supplier — safe to hard-delete
+    only if zero of both."""
+    ids = set(Product.objects.values_list("supplier_id", flat=True))
+    ids |= set(PurchaseOrder.objects.values_list("supplier_id", flat=True))
+    return ids
+
+
 class CategoryListCreateView(AnyStaffMixin, View):
     """Phase 6 — same shape as Phase 5's ProductListCreateView. GET
     renders the real Category queryset (with each category's real product
@@ -294,8 +828,16 @@ class CategoryListCreateView(AnyStaffMixin, View):
 
     def get(self, request):
         categories = list(Category.objects.order_by("name"))
+        history_ids = _category_ids_with_products()
         for category in categories:
             category.product_count = category.products.count()
+            category.deletable = category.pk not in history_ids
+            # Phase 8.99i — same embed-JSON-on-the-row pattern
+            # ProductListCreateView.get() already uses for its own Edit
+            # modal pre-fill (Phase 8.99e) — no new mechanism.
+            category.edit_json = json.dumps({
+                "name": category.name, "description": category.description,
+            })
         context = {"active_nav": "categories", "categories": categories}
         return render(request, "categories/categories.html", context)
 
@@ -314,14 +856,107 @@ class CategoryListCreateView(AnyStaffMixin, View):
         return JsonResponse({"success": True})
 
 
+class CategoryUpdateView(AnyStaffMixin, View):
+    """Phase 8.99i — mirrors ProductUpdateView's own shape: reuses
+    CategoryForm unchanged via instance=, same AnyStaffMixin gate as
+    create (02_RBAC.md draws no edit/deactivate distinction for
+    Categories, unlike Products — there's no documented rule requiring
+    one, so this stays a single gate for both, matching the doc rather
+    than inventing an asymmetry it doesn't call for).
+
+    Deliberately does NOT process CategoryForm's own `status` field on
+    edit, even though CategoryForm.Meta doesn't include is_active anyway
+    (status is a synthetic, non-model ChoiceField the create view
+    interprets manually) — is_active only ever changes through
+    CategoryDeactivateView/CategoryReactivateView below, the same "one
+    way to change active status" rule Products already established, kept
+    consistent here rather than giving Categories a second path to the
+    same flag."""
+
+    def post(self, request, pk):
+        category = get_object_or_404(Category, pk=pk)
+        form = CategoryForm(request.POST, instance=category)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        category = form.save(commit=False)
+        category.save(update_fields=["name", "description", "updated_at"])
+        audit.log_action(
+            request.user, audit.CATEGORY_UPDATED, "products",
+            affected_id=category.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class CategoryDeactivateView(SupervisorRequiredMixin, View):
+    """Phase 8.99i — same SupervisorRequiredMixin gate as
+    ProductDeactivateView/SupplierDeactivateView, for consistency across
+    all three modules (02_RBAC.md's "Deactivate products"/"Deactivate
+    suppliers" rows are both Admin/Supervisor only; Categories has no
+    documented rule of its own, so it follows its two siblings rather
+    than inventing a third gating rule)."""
+
+    def post(self, request, pk):
+        category = get_object_or_404(Category, pk=pk)
+        category.is_active = False
+        category.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.CATEGORY_DEACTIVATED, "products",
+            affected_id=category.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class CategoryReactivateView(SupervisorRequiredMixin, View):
+
+    def post(self, request, pk):
+        category = get_object_or_404(Category, pk=pk)
+        category.is_active = True
+        category.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.CATEGORY_REACTIVATED, "products",
+            affected_id=category.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class CategoryDeleteView(SupervisorRequiredMixin, View):
+    """Phase 8.99i — true delete, only for a category with zero products
+    ever assigned to it (_category_ids_with_products()). Everyone else
+    refuses cleanly, matching ProductDeleteView/UserDeleteView's shape."""
+
+    def post(self, request, pk):
+        category = get_object_or_404(Category, pk=pk)
+        if category.pk in _category_ids_with_products():
+            return JsonResponse({
+                "success": False,
+                "error": "This category has products assigned to it and can't be deleted; deactivate instead.",
+            }, status=400)
+        name = category.name
+        category.delete()
+        audit.log_action(
+            request.user, audit.CATEGORY_DELETED, "products",
+            affected_id=pk, status="success", request=request,
+            details={"deleted_category_name": name},
+        )
+        return JsonResponse({"success": True})
+
+
 class SupplierListCreateView(AnyStaffMixin, View):
     """Phase 6 — same shape as Phase 5's ProductListCreateView."""
 
     def get(self, request):
         suppliers = list(Supplier.objects.order_by("company_name"))
         counts = {"total": 0, "active": 0, "inactive": 0}
+        history_ids = _supplier_ids_with_history()
         for supplier in suppliers:
             supplier.product_count = supplier.products.count()
+            supplier.deletable = supplier.pk not in history_ids
+            supplier.edit_json = json.dumps({
+                "supplier_name": supplier.supplier_name, "company_name": supplier.company_name,
+                "contact_person": supplier.contact_person, "email": supplier.email,
+                "phone": supplier.phone, "address": supplier.address,
+            })
             counts["total"] += 1
             counts["active" if supplier.is_active else "inactive"] += 1
         context = {"active_nav": "suppliers", "suppliers": suppliers, "counts": counts}
@@ -340,6 +975,94 @@ class SupplierListCreateView(AnyStaffMixin, View):
             affected_id=supplier.pk, status="success", request=request,
         )
         return JsonResponse({"success": True})
+
+
+class SupplierUpdateView(AnyStaffMixin, View):
+    """Phase 8.99i — mirrors CategoryUpdateView exactly: reuses
+    SupplierForm via instance=, same AnyStaffMixin gate as create, and
+    deliberately doesn't touch is_active on edit (SupplierDeactivateView/
+    SupplierReactivateView own that, consistent with the other two
+    modules)."""
+
+    def post(self, request, pk):
+        supplier = get_object_or_404(Supplier, pk=pk)
+        form = SupplierForm(request.POST, instance=supplier)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+
+        supplier = form.save(commit=False)
+        supplier.save(update_fields=[
+            "supplier_name", "company_name", "contact_person", "email", "phone", "address", "updated_at",
+        ])
+        audit.log_action(
+            request.user, audit.SUPPLIER_UPDATED, "suppliers",
+            affected_id=supplier.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class SupplierDeactivateView(SupervisorRequiredMixin, View):
+    """02_RBAC.md: "Deactivate suppliers" is Admin/Supervisor only —
+    same asymmetry as Products (Staff can edit, not deactivate)."""
+
+    def post(self, request, pk):
+        supplier = get_object_or_404(Supplier, pk=pk)
+        supplier.is_active = False
+        supplier.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.SUPPLIER_DEACTIVATED, "suppliers",
+            affected_id=supplier.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class SupplierReactivateView(SupervisorRequiredMixin, View):
+
+    def post(self, request, pk):
+        supplier = get_object_or_404(Supplier, pk=pk)
+        supplier.is_active = True
+        supplier.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.SUPPLIER_REACTIVATED, "suppliers",
+            affected_id=supplier.pk, status="success", request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class SupplierDeleteView(SupervisorRequiredMixin, View):
+    """Phase 8.99i — true delete, only for a supplier with zero products
+    AND zero purchase orders ever (_supplier_ids_with_history())."""
+
+    def post(self, request, pk):
+        supplier = get_object_or_404(Supplier, pk=pk)
+        if supplier.pk in _supplier_ids_with_history():
+            return JsonResponse({
+                "success": False,
+                "error": "This supplier has products or purchase orders and can't be deleted; deactivate instead.",
+            }, status=400)
+        name = supplier.company_name
+        supplier.delete()
+        audit.log_action(
+            request.user, audit.SUPPLIER_DELETED, "suppliers",
+            affected_id=pk, status="success", request=request,
+            details={"deleted_supplier_name": name},
+        )
+        return JsonResponse({"success": True})
+
+
+class SupplierExportView(AnyStaffMixin, View):
+    """Phase 8.98 (BUG-44) — same treatment as ProductExportView: real CSV
+    via the shared `generate_csv_response()`, full dataset (client-side
+    filter has no server-side equivalent yet)."""
+
+    def get(self, request):
+        suppliers = Supplier.objects.order_by("company_name")
+        headers = ["Company Name", "Supplier Name", "Contact Person", "Email", "Phone", "Address", "Active"]
+        rows = [
+            [s.company_name, s.supplier_name, s.contact_person, s.email, s.phone, s.address, "Yes" if s.is_active else "No"]
+            for s in suppliers
+        ]
+        return report_lib.generate_csv_response(headers, rows, "suppliers.csv")
 
 # ------------------------------------------------------------- Purchases
 # Phase 7 — docs/05_PURCHASES.md. PurchaseService (frontend/services.py,
@@ -372,7 +1095,11 @@ class PurchaseListCreateView(AnyStaffMixin, View):
         for po in orders:
             po.item_count = po.items.count()
             po.status_badge = self._STATUS_BADGE.get(po.status, "badge-indigo")
-            po.cancellable = po.status in (POStatus.DRAFT, POStatus.PENDING, POStatus.APPROVED, POStatus.PARTIAL)
+            # Phase 8.99c — mirrors PurchaseService._CANCELLABLE_STATUSES
+            # exactly (narrowed from also including APPROVED/PARTIAL);
+            # hiding the button here is UX only, cancel() itself is the
+            # real enforcement (Phase 8.5 pattern).
+            po.cancellable = po.status in (POStatus.DRAFT, POStatus.PENDING)
             po.receive_items_json = json.dumps([
                 {
                     "item_id": item.pk, "product_name": item.product.name,
@@ -396,6 +1123,10 @@ class PurchaseListCreateView(AnyStaffMixin, View):
             "counts": counts,
             "suppliers": Supplier.objects.filter(is_active=True).order_by("company_name"),
             "products": Product.objects.filter(is_active=True).order_by("name"),
+            # Phase 8.98b — Asia/Dhaka "today" (not the OS clock), server-
+            # computed so the Expected Delivery date input's real min=
+            # attribute agrees with PurchaseOrderForm's own validation.
+            "today": timezone.localdate(),
         }
         return render(request, "purchases/purchases.html", context)
 
@@ -514,19 +1245,36 @@ class PurchaseReceiveView(AnyStaffMixin, View):
 
 
 class PurchaseCancelView(SupervisorRequiredMixin, View):
-    """05_PURCHASES.md state machine: "Any state -> CANCELLED (cancel by
-    admin/supervisor)". The mock's approve/reject buttons already existed
-    without a working backend (project_memory.md §10); Cancel gets the
-    same real-endpoint treatment now that PurchaseService.cancel() exists
-    (Phase 3.4, BUG-25)."""
+    """Phase 8.99c: cancel is now draft/pending-only (see §13, overriding
+    05_PURCHASES.md's original "any state -> CANCELLED") and requires a
+    reason — same ReasonForm PurchaseRejectView already uses."""
 
     def post(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
+        form = ReasonForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
         try:
-            PurchaseService.cancel(po, request.user)
+            PurchaseService.cancel(po, request.user, form.cleaned_data["reason"])
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
         return JsonResponse({"success": True})
+
+
+class PurchaseOrderPDFView(AnyStaffMixin, View):
+    """Phase 8.98d — a single PO's own PDF, not one of Reports' 9 whole-
+    report exports (frontend/reports.py's REPORT_BUILDERS/ReportExportView,
+    untouched by this phase). Same `AnyStaffMixin` gate as
+    PurchaseListCreateView.get() above, since this is just another way of
+    viewing a PO already on that page — no stricter/looser access than
+    seeing the record itself. Reuses reports.py's
+    generate_purchase_order_pdf(), which itself reuses generate_pdf_response()'s
+    own Table/TableStyle via the shared _styled_data_table() helper — no new
+    PDF mechanism."""
+
+    def get(self, request, pk):
+        po = get_object_or_404(PurchaseOrder, pk=pk)
+        return report_lib.generate_purchase_order_pdf(po)
 
 
 # ----------------------------------------------------------------- Sales
@@ -534,26 +1282,44 @@ class PurchaseCancelView(SupervisorRequiredMixin, View):
 # allowed to touch stock here.
 
 class SaleListCreateView(AnyStaffMixin, View):
+    """Phase 8.99b: GET lists the real SaleTransaction queryset; POST
+    creates a new sale as DRAFT (mirrors PurchaseListCreateView's own
+    "Saved as a draft" behavior exactly — see SaleService.create_sale())."""
+
+    _STATUS_BADGE = {
+        SaleStatus.DRAFT: "badge-indigo", SaleStatus.PENDING: "badge-warning",
+        SaleStatus.COMPLETED: "badge-success", SaleStatus.REJECTED: "badge-danger",
+        SaleStatus.CANCELLED: "badge-danger",
+    }
 
     def get(self, request):
         sales = list(
             SaleTransaction.objects.select_related("created_by")
             .prefetch_related("items").order_by("-created_at")
         )
-        counts = {"revenue_today": 0, "transactions_today": 0, "cancelled_30d": 0, "avg_order_30d": 0}
+        counts = {"pending": 0, "revenue_today": 0, "transactions_today": 0, "cancelled_30d": 0, "avg_order_30d": 0}
         today = timezone.now().date()
         cutoff = today - timedelta(days=30)
         completed_30d_total, completed_30d_count = 0, 0
         for sale in sales:
             sale.item_count = sale.items.count()
             sale.is_cancelled = sale.status == SaleStatus.CANCELLED
+            sale.status_badge = self._STATUS_BADGE.get(sale.status, "badge-indigo")
+            sale.cancellable = sale.status in (SaleStatus.DRAFT, SaleStatus.PENDING)
+            if sale.status == SaleStatus.PENDING:
+                counts["pending"] += 1
             if sale.transaction_date == today:
                 counts["transactions_today"] += 1
-                if not sale.is_cancelled:
+                # Phase 8.99b: "revenue" now means realized revenue —
+                # only a COMPLETED sale has actually moved stock/money.
+                # Counting draft/pending/rejected sales here would
+                # overstate today's revenue with sales that may never
+                # actually go through.
+                if sale.status == SaleStatus.COMPLETED:
                     counts["revenue_today"] += sale.total_amount
             if sale.is_cancelled and sale.transaction_date >= cutoff:
                 counts["cancelled_30d"] += 1
-            if not sale.is_cancelled and sale.transaction_date >= cutoff:
+            if sale.status == SaleStatus.COMPLETED and sale.transaction_date >= cutoff:
                 completed_30d_total += sale.total_amount
                 completed_30d_count += 1
         if completed_30d_count:
@@ -568,10 +1334,10 @@ class SaleListCreateView(AnyStaffMixin, View):
 
     def post(self, request):
         form = SaleTransactionForm(request.POST)
-        # 06_SALES.md: "Stock check | Verify availability BEFORE
-        # confirming" — SaleService.create_sale() does this pre-validation
-        # itself (and the InsufficientStockError below is how it surfaces),
-        # not duplicated here.
+        # Phase 8.99b: no stock check happens here anymore — creating a
+        # sale no longer touches InventoryService at all (draft, per
+        # SaleService.create_sale()'s own docstring). Availability is
+        # re-checked for real at approve_sale() time instead.
         items, item_errors = parse_line_items(request.POST.get("items_json"), min_quantity=1)
 
         if not form.is_valid() or item_errors:
@@ -594,11 +1360,6 @@ class SaleListCreateView(AnyStaffMixin, View):
 
         try:
             SaleService.create_sale(sale_data, items_data, request.user)
-        except InsufficientStockError as e:
-            return JsonResponse(
-                {"success": False, "errors": {"items": [{"message": str(e), "code": "insufficient_stock"}]}},
-                status=400,
-            )
         except ValueError as e:
             return JsonResponse(
                 {"success": False, "errors": {"items": [{"message": str(e), "code": "invalid"}]}}, status=400,
@@ -607,20 +1368,237 @@ class SaleListCreateView(AnyStaffMixin, View):
         return JsonResponse({"success": True})
 
 
-class SaleCancelView(SupervisorRequiredMixin, View):
-    """06_SALES.md's own sale_cancel_view uses @supervisor_required."""
+class SaleSubmitView(AnyStaffMixin, View):
+    """Phase 8.99b — mirrors PurchaseSubmitView exactly: same role as
+    create (any staff), moves DRAFT -> PENDING."""
 
     def post(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
         try:
-            SaleService.cancel_sale(sale, request.user)
+            SaleService.submit_for_approval(sale, request.user)
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
         return JsonResponse({"success": True})
 
 
-def inventory(request):
-    return render(request, "inventory/inventory.html", {"active_nav": "inventory"})
+class SaleApproveView(SupervisorRequiredMixin, View):
+    """Phase 8.99b — mirrors PurchaseApproveView: Supervisor or Admin
+    only (the same confirmed hierarchy, Phase 7). No creator≠approver
+    restriction, deliberately matching how Purchases already works —
+    disclosed, not silent, see docs/project_memory.md §13."""
+
+    def post(self, request, pk):
+        sale = get_object_or_404(SaleTransaction, pk=pk)
+        try:
+            SaleService.approve_sale(sale, request.user)
+        except InsufficientStockError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ValueError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+        return JsonResponse({"success": True})
+
+
+class SaleRejectView(SupervisorRequiredMixin, View):
+    """Phase 8.99b — mirrors PurchaseRejectView, same ReasonForm."""
+
+    def post(self, request, pk):
+        sale = get_object_or_404(SaleTransaction, pk=pk)
+        form = ReasonForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+        try:
+            SaleService.reject_sale(sale, request.user, form.cleaned_data["reason"])
+        except ValueError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+        return JsonResponse({"success": True})
+
+
+class SaleCancelView(SupervisorRequiredMixin, View):
+    """06_SALES.md's own sale_cancel_view uses @supervisor_required.
+    Phase 8.99b: SaleService.cancel_sale() refuses anything past DRAFT/
+    PENDING — a completed sale can no longer reach this at all, server-
+    side, regardless of what the UI shows. Phase 8.99c: now requires a
+    reason — same ReasonForm SaleRejectView already uses."""
+
+    def post(self, request, pk):
+        sale = get_object_or_404(SaleTransaction, pk=pk)
+        form = ReasonForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+        try:
+            SaleService.cancel_sale(sale, request.user, form.cleaned_data["reason"])
+        except ValueError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+        return JsonResponse({"success": True})
+
+
+class SaleTransactionPDFView(AnyStaffMixin, View):
+    """Phase 8.98d — same treatment as PurchaseOrderPDFView above: a
+    single sale's own PDF, same `AnyStaffMixin` gate as
+    SaleListCreateView.get(), reuses reports.py's
+    generate_sale_transaction_pdf()."""
+
+    def get(self, request, pk):
+        sale = get_object_or_404(SaleTransaction, pk=pk)
+        return report_lib.generate_sale_transaction_pdf(sale)
+
+
+# ------------------------------------------------------------- Inventory
+# Phase 8.9 — docs/07_INVENTORY.md's inventory_list_view. GET-only, no
+# create/edit form anywhere: InventoryRecord rows only ever come into
+# existence via InventoryService.initialize_for_product() (Phase 5.5) and
+# only ever mutate via InventoryService.increase_stock()/decrease_stock()
+# (Phase 3), both called exclusively from Purchase/Sale/Adjustment's
+# service-layer methods — never from this view or any form. `status` is
+# read straight off InventoryRecord, not recomputed here: InventoryService
+# already calls record.update_status() and saves before any view ever
+# reads it, so re-deriving it in the view would just be a second,
+# potentially-drifting copy of the same logic. 07_INVENTORY.md's own
+# reference view uses `@staff_required`, which in this project's RBAC
+# (frontend/decorators.py) means "any authenticated role" (admin,
+# supervisor, and staff are all listed) — the same as AnyStaffMixin,
+# used here for consistency with every other real list view.
+
+_INVENTORY_STATUS_BADGE = {
+    InventoryStatus.AVAILABLE: "badge-success",
+    InventoryStatus.LOW_STOCK: "badge-warning",
+    InventoryStatus.OUT_OF_STOCK: "badge-danger",
+}
+
+
+class InventoryListView(AnyStaffMixin, View):
+
+    def get(self, request):
+        records = list(
+            InventoryRecord.objects.select_related("product", "product__category", "product__supplier")
+            .order_by("product__name")
+        )
+        counts = {"total_value": 0, "total_skus": 0, "low_stock": 0, "out_of_stock": 0}
+        for record in records:
+            record.status_badge = _INVENTORY_STATUS_BADGE.get(record.status, "badge-indigo")
+            latest_movement = record.product.movements.order_by("-created_at").first()
+            record.last_movement_at = latest_movement.created_at if latest_movement else None
+
+            counts["total_skus"] += 1
+            counts["total_value"] += record.total_value
+            if record.status == InventoryStatus.LOW_STOCK:
+                counts["low_stock"] += 1
+            elif record.status == InventoryStatus.OUT_OF_STOCK:
+                counts["out_of_stock"] += 1
+
+        context = {"active_nav": "inventory", "records": records, "counts": counts}
+        return render(request, "inventory/inventory.html", context)
+
+
+class MovementHistoryListView(AnyStaffMixin, View):
+    """Phase 8.98 — the "Movement history" button on Inventory used to do
+    nothing; this is the real page it now opens. `InventoryMovement` is
+    the immutable stock ledger (Phase 3, `save()`/`delete()` raise on any
+    mutation attempt per BUG-20) — nothing new is created here, this only
+    ever reads what already exists.
+
+    Phase 8.99d — every filter (date_from/date_to, product, movement_type,
+    and search) is now server-side, all applied via
+    `frontend/reports.py`'s `filter_movements()` — the exact same function
+    `MovementHistoryExportView` calls, so the CSV/PDF export can never
+    silently disagree with what's on screen again. Previously only date
+    range was server-side (via a *different* date comparison than the
+    export used — `created_at__date__gte` here vs. `build_movement_report()`'s
+    own `_date_bounds()`-based range — a latent mismatch this phase closed
+    by sharing one function) and search/type were client-side
+    (`table-filter.js`), which meant an export honored the date range but
+    silently ignored type, and could never reflect what was typed into
+    search at all. Real `Paginator`-backed pagination (page size 50) on
+    top, since the ledger is append-only and grows forever — narrowing
+    happens in the query, not by hiding rows client-side.
+
+    The `?product=<id>` deep-link from Inventory's per-row links now
+    lands in the same filter form as every other field (a real `<select>`,
+    pre-selected) rather than being a separate hidden-input-only
+    mechanism.
+    """
+
+    PAGE_SIZE = 50
+
+    def get(self, request):
+        movements = InventoryMovement.objects.select_related("product", "performed_by").order_by("-created_at")
+        movements = report_lib.filter_movements(request, base_qs=movements)
+
+        date_from = request.GET.get("date_from", "")
+        date_to = request.GET.get("date_to", "")
+        product_id = request.GET.get("product", "")
+        movement_type = request.GET.get("movement_type", "")
+        search = request.GET.get("q", "")
+
+        paginator = Paginator(movements, self.PAGE_SIZE)
+        page = paginator.get_page(request.GET.get("page"))
+
+        for movement in page.object_list:
+            movement.reference_label = f"{movement.reference_type} #{movement.reference_id}"
+
+        # Preserves every filter param across pagination links and feeds
+        # both export buttons, so exporting honors exactly what's on screen.
+        querystring = request.GET.copy()
+        querystring.pop("page", None)
+
+        context = {
+            "active_nav": "inventory",
+            "page": page,
+            "total_count": paginator.count,
+            "date_from": date_from,
+            "date_to": date_to,
+            "product_id": product_id,
+            "movement_type": movement_type,
+            "search": search,
+            "filtered_product": Product.objects.filter(pk=product_id).first() if product_id else None,
+            "products": Product.objects.order_by("name"),
+            # RETURN dropped (Phase 8.99d) — confirmed via grep that no
+            # code path anywhere ever creates a MovementType.RETURN
+            # movement; a filter value that can never match is left on
+            # the model (SCHEMA.md's) but no longer offered as a choice.
+            "movement_types": [c for c in MovementType.choices if c[0] != MovementType.RETURN],
+            "export_querystring": querystring.urlencode(),
+        }
+        return render(request, "inventory/movement_history.html", context)
+
+
+class MovementHistoryExportView(AnyStaffMixin, View):
+    """CSV/PDF export for Movement History — reuses `frontend/reports.py`'s
+    `build_movement_report()` (which itself now calls the shared
+    `filter_movements()`) and `generate_csv_response()`/
+    `generate_pdf_response()` verbatim, just gated with `AnyStaffMixin`
+    here instead of Reports' `SupervisorRequiredMixin`, matching this
+    page's own access level — not a new export mechanism, and no second
+    PDF library (Phase 8.99d, mirrors Phase 8.98d's per-record PDFs).
+    `?format=csv` (default, unchanged link) or `?format=pdf`; both take
+    the exact same querystring as the page, so what's exported is
+    precisely what was filtered."""
+
+    def get(self, request):
+        title, headers, rows = report_lib.build_movement_report(request)
+
+        if request.GET.get("format") == "pdf":
+            filters_summary = []
+            date_from, date_to = request.GET.get("date_from"), request.GET.get("date_to")
+            if date_from or date_to:
+                filters_summary.append(f"Date: {date_from or 'any'} to {date_to or 'any'}")
+            product_id = request.GET.get("product")
+            if product_id:
+                product = Product.objects.filter(pk=product_id).first()
+                filters_summary.append(f"Product: {product.name if product else product_id}")
+            movement_type = request.GET.get("movement_type")
+            if movement_type in MovementType.values:
+                filters_summary.append(f"Type: {MovementType(movement_type).label}")
+            search = request.GET.get("q", "").strip()
+            if search:
+                filters_summary.append(f"Search: \"{search}\"")
+            if not filters_summary:
+                filters_summary.append("None — full ledger")
+            return report_lib.generate_pdf_response(
+                title, headers, rows, "movement_history.pdf", filters_summary=filters_summary,
+            )
+
+        return report_lib.generate_csv_response(headers, rows, "movement_history.csv")
 
 
 # --------------------------------------------------------- Adjustments
@@ -711,11 +1689,27 @@ class AdjustmentRejectView(SupervisorRequiredMixin, View):
             return JsonResponse({"success": False, "error": str(e)}, status=400)
         return JsonResponse({"success": True})
 
-def demand_forecasting(request):
-    return render(request, "intelligence/forecasting.html", {"active_nav": "forecasting"})
+# Phase 8.99j — closes BUG-43: both views had zero auth requirement at
+# all (reachable by anyone, logged in or not), found in Phase 8.97's
+# audit and deliberately left unfixed for its own scoped phase. BUG-43's
+# own text suggested AnyStaffMixin (matching BUG-42's fix on the
+# Dashboard) — this phase's actual, more specific requirement ("staff
+# can't see the AI models") is narrower, so SupervisorRequiredMixin is
+# used instead, a disclosed deviation from BUG-43's own suggestion, not
+# an oversight. Converted from bare function views to CBVs to match this
+# app's dominant convention (every other real, RBAC-gated view in this
+# file is a class with a mixin, not a decorated function).
 
-def slow_moving_dead_stock(request):
-    return render(request, "intelligence/slow_moving.html", {"active_nav": "slow-moving"})
+class DemandForecastingView(SupervisorRequiredMixin, View):
+
+    def get(self, request):
+        return render(request, "intelligence/forecasting.html", {"active_nav": "forecasting"})
+
+
+class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
+
+    def get(self, request):
+        return render(request, "intelligence/slow_moving.html", {"active_nav": "slow-moving"})
 
 # ------------------------------------------------------------------ Reports
 # Phase 8 — docs/10_REPORTS.md: "All report access is Supervisor+ only and
@@ -866,31 +1860,165 @@ class NotificationUnreadCountView(LoginRequiredMixin, View):
 _ROLE_BADGE = {UserRole.ADMIN: "badge-indigo", UserRole.SUPERVISOR: "badge-warning", UserRole.STAFF: "badge-success"}
 
 
+def _user_ids_with_history():
+    """Phase 8.99f-2 — every User FK in this project is either PROTECT
+    (PurchaseOrder.created_by/approved_by/cancelled_by, SaleTransaction.
+    created_by/approved_by/cancelled_by, InventoryMovement.performed_by,
+    InventoryAdjustment.requested_by/approved_by) or SET_NULL
+    (AuditLog.user) — never CASCADE except Notification.recipient (a
+    user's own in-app notifications, harmless to lose). Hard-deleting a
+    user referenced by any PROTECT FK raises ProtectedError (a 500, not a
+    clean refusal); hard-deleting one referenced only via AuditLog.user
+    would silently null out who performed real, audited actions. Neither
+    is acceptable, so UserDeleteView only ever allows deleting a user
+    who appears in none of these — one shared computation (10 queries,
+    each a cheap `.values_list(...flat=True)`), used both to decide which
+    rows get a real "Delete" pill (UserListCreateView.get()) and to
+    enforce the same rule server-side (UserDeleteView) — one source of
+    truth, not two, matching this phase's own "server check is the real
+    gate, hiding is UX" convention (Phase 8.5)."""
+    ids = set()
+    ids |= set(PurchaseOrder.objects.values_list("created_by_id", flat=True))
+    ids |= set(PurchaseOrder.objects.exclude(approved_by=None).values_list("approved_by_id", flat=True))
+    ids |= set(PurchaseOrder.objects.exclude(cancelled_by=None).values_list("cancelled_by_id", flat=True))
+    ids |= set(SaleTransaction.objects.values_list("created_by_id", flat=True))
+    ids |= set(SaleTransaction.objects.exclude(approved_by=None).values_list("approved_by_id", flat=True))
+    ids |= set(SaleTransaction.objects.exclude(cancelled_by=None).values_list("cancelled_by_id", flat=True))
+    ids |= set(InventoryMovement.objects.values_list("performed_by_id", flat=True))
+    ids |= set(InventoryAdjustment.objects.values_list("requested_by_id", flat=True))
+    ids |= set(InventoryAdjustment.objects.exclude(approved_by=None).values_list("approved_by_id", flat=True))
+    ids |= set(AuditLog.objects.exclude(user=None).values_list("user_id", flat=True))
+    return ids
+
+
+def _credentials_email_feedback(user, password, is_resend=False):
+    """The 3-way outcome `UserListCreateView.post()` built up across
+    Phase 8.99f-3/f-4/f-5 — factored out (Phase 8.99f-7) so
+    `UserResendCredentialsView` doesn't duplicate it (§18: consolidate
+    duplicate logic before adding new code). Why 3 outcomes, not 2:
+    `send_new_user_credentials_email()` fails open (catches its own
+    exception, returns False) rather than raising, so a genuine failure
+    (f-3) is surfaced as `warning`, never a silent identical success. But
+    `email_sent=True` alone still isn't "a real email reached this
+    address" (f-5) — Django's console backend never raises either, it
+    "sends" by printing to whichever terminal runs the process, so a
+    console-backend send and a real SMTP send used to produce the exact
+    "credentials emailed to X" text either way. `message` is now split:
+    a real send says so plainly, a console send says so plainly too,
+    distinct from both. Returns a dict with exactly one of
+    `message`/`warning`, meant to be merged into the caller's own
+    {"success": True} response."""
+    email_sent = send_new_user_credentials_email(user, password)
+    console_dev_mode = email_sent and django_settings.EMAIL_BACKEND.endswith("console.EmailBackend")
+
+    if console_dev_mode:
+        action = "Credentials resent" if is_resend else "User created"
+        return {"message": (
+            f"{action}. The server is using the local console email backend (dev "
+            f"mode) — no real email was sent to {user.email}; the credentials printed "
+            f"to the server's own terminal instead. Configure real SMTP "
+            f"(EMAIL_BACKEND in .env) to actually deliver this email."
+        )}
+    if email_sent:
+        action = "Credentials resent" if is_resend else "User created"
+        return {"message": f"{action} — credentials emailed to {user.email}."}
+
+    if is_resend:
+        return {"warning": (
+            f"Resending credentials to {user.full_name} failed — the email could not "
+            f"be sent to {user.email}. Check the server's email configuration, then "
+            f"try Resend again."
+        )}
+    return {"warning": (
+        f"{user.full_name}'s account was created, but the credentials email "
+        f"could not be sent to {user.email}. They won't be able to log in until "
+        f"someone gets them access another way — check the server's email "
+        f"configuration, then resend or set a password manually."
+    )}
+
+
 class UserListCreateView(AdminRequiredMixin, View):
 
     def get(self, request):
         users = list(User.objects.order_by("full_name"))
+        history_ids = _user_ids_with_history()
         counts = {"total": 0, "admin": 0, "supervisor": 0, "staff": 0}
         for user in users:
             user.role_badge = _ROLE_BADGE.get(user.role, "badge-indigo")
+            user.deletable = user.pk not in history_ids and user.pk != request.user.pk
+            # Phase 8.99f-7 — "Resend credentials" is offered for anyone
+            # who has never successfully logged in yet (a real signal,
+            # last_login is Django's own field, not a new one): if the
+            # original credentials email genuinely reached them, they'd
+            # have used it by now. Disappears naturally on their first
+            # real login, no separate "did the email fail" flag needed.
+            user.resendable = user.is_active and user.last_login is None
             counts["total"] += 1
             counts[user.role] += 1
         context = {"active_nav": "users", "users": users, "counts": counts}
         return render(request, "users/users.html", context)
 
     def post(self, request):
+        """Phase 8.98e: the Admin no longer supplies a password at all —
+        UserForm has none (see its own docstring). A strong random one is
+        generated here, set directly via set_password(), and never placed
+        anywhere this view's own response, the audit log, or a
+        Notification row could surface it back to the Admin — `details=`
+        below deliberately carries no password field, matching every
+        other audit.log_action() call in this view.
+
+        The account is still created even if the credentials email fails
+        to send (Phase 8.99f-3) — deliberately, not an oversight: rolling
+        it back would throw away real, valid admin work (username/
+        employee_id/role already chosen and validated) over what's
+        usually a transient delivery problem, and there's now a real
+        recovery path (`UserResendCredentialsView`, Phase 8.99f-7) for
+        exactly this case. What the response says about the send itself —
+        real delivery / console dev-mode / genuine failure — is
+        `_credentials_email_feedback()`'s own job (above); see that
+        function's docstring for the full Phase 8.99f-3/f-4/f-5 history
+        of why those 3 distinct outcomes exist."""
         form = UserForm(request.POST)
         if not form.is_valid():
             return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
 
+        password = generate_strong_password()
         user = form.save(commit=False)
-        user.set_password(form.cleaned_data["password"])
+        user.set_password(password)
         user.save()
         audit.log_action(
             request.user, audit.USER_CREATED, "users",
             affected_id=user.pk, status="success", request=request,
         )
-        return JsonResponse({"success": True})
+        response = {"success": True}
+        response.update(_credentials_email_feedback(user, password))
+        return JsonResponse(response)
+
+
+class UserResendCredentialsView(AdminRequiredMixin, View):
+    """Phase 8.99f-7 — the missing piece that makes real SMTP delivery
+    operationally safe: without this, one transient send failure (or a
+    user who genuinely never saw the original email) means an account
+    that can never be accessed, since the Admin never sees the password
+    either. Generates a fresh strong password via the exact same
+    generate_strong_password() UserListCreateView.post() uses (the Admin
+    still never sees it), sets it, and re-sends through the exact same
+    send_new_user_credentials_email() — no new password-generation or
+    email-sending mechanism. Logs `USER_CREDENTIALS_RESENT` with no
+    password in `details=`, same discipline as USER_CREATED."""
+
+    def post(self, request, pk):
+        target = get_object_or_404(User, pk=pk)
+        password = generate_strong_password()
+        target.set_password(password)
+        target.save(update_fields=["password"])
+        audit.log_action(
+            request.user, audit.USER_CREDENTIALS_RESENT, "users",
+            affected_id=target.pk, status="success", request=request,
+        )
+        response = {"success": True}
+        response.update(_credentials_email_feedback(target, password, is_resend=True))
+        return JsonResponse(response)
 
 
 class UserDeactivateView(AdminRequiredMixin, View):
@@ -923,6 +2051,38 @@ class UserReactivateView(AdminRequiredMixin, View):
         )
         return JsonResponse({"success": True})
 
+
+class UserDeleteView(AdminRequiredMixin, View):
+    """Phase 8.99f-2 — true delete, deliberately narrow: only a user with
+    zero referential history anywhere (_user_ids_with_history(), above)
+    can ever be hard-deleted. Every other user — meaning anyone who has
+    actually done anything in the system — can only be deactivated
+    (UserDeactivateView): hard-deleting them would either raise
+    ProtectedError (a 500) or silently null their identity off real
+    audit rows. Same self-action guard as deactivate."""
+
+    def post(self, request, pk):
+        target = get_object_or_404(User, pk=pk)
+        if target.pk == request.user.pk:
+            return JsonResponse({"success": False, "error": "You cannot delete your own account."}, status=400)
+        if target.pk in _user_ids_with_history():
+            return JsonResponse({
+                "success": False,
+                "error": "This user has activity history and can't be deleted; deactivate instead.",
+            }, status=400)
+        username = target.username
+        target.delete()
+        # affected_id below points at an id that no longer exists (this
+        # is the one User action where that's unavoidable — every other
+        # audited user action leaves the row in place) — details= carries
+        # the username so the log entry still means something on its own.
+        audit.log_action(
+            request.user, audit.USER_DELETED, "users",
+            affected_id=pk, status="success", request=request,
+            details={"deleted_username": username},
+        )
+        return JsonResponse({"success": True})
+
 # ------------------------------------------------------------- Audit Log
 # Phase 8 — docs/13_AUDIT.md: "Only System Administrator can view the full
 # audit log" and "read-only — no update, no delete (enforced in model)".
@@ -944,6 +2104,26 @@ class AuditLogListView(AdminRequiredMixin, View):
             "modules": sorted(AuditLog.objects.values_list("module", flat=True).distinct()),
         }
         return render(request, "audit/audit_log.html", context)
+
+
+class AuditLogExportView(AdminRequiredMixin, View):
+    """Phase 8.98 (BUG-44) — same `AdminRequiredMixin` as AuditLogListView
+    itself, per 13_AUDIT.md's "Admin only" rule — the export must never be
+    a way around that gate. Reuses the shared `generate_csv_response()`.
+    Exports the full log, not just the on-screen page's 500-row cap."""
+
+    def get(self, request):
+        logs = AuditLog.objects.select_related("user").order_by("-timestamp")
+        headers = ["Timestamp", "User", "Action", "Module", "Affected ID", "Status", "IP Address"]
+        rows = [
+            [
+                timezone.localtime(log.timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+                log.user.full_name if log.user else "System",
+                log.action, log.module, log.affected_id or "", log.status, log.ip_address or "",
+            ]
+            for log in logs
+        ]
+        return report_lib.generate_csv_response(headers, rows, "audit_log.csv")
 
 # --------------------------------------------------------------- Settings
 # Phase 8 — SystemSettings (SCHEMA.md §13) is a documented singleton,

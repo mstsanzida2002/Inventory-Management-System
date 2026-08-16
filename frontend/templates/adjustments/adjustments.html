@@ -57,19 +57,19 @@
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
         <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" placeholder="Search by product or reference...">
+        <input type="search" class="input" id="adjustmentSearch" placeholder="Search by product or reference...">
       </div>
       <div class="flex gap-3" style="flex-wrap:wrap;">
-        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-          <option>All types</option>
-          <option>Increase</option>
-          <option>Decrease</option>
+        <select class="input" id="adjustmentTypeFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+          <option value="">All types</option>
+          <option value="increase">Increase</option>
+          <option value="decrease">Decrease</option>
         </select>
-        <select class="input" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-          <option>All statuses</option>
-          <option>Pending approval</option>
-          <option>Approved</option>
-          <option>Rejected</option>
+        <select class="input" id="adjustmentStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+          <option value="">All statuses</option>
+          <option value="pending">Pending approval</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
         </select>
       </div>
     </div>
@@ -91,7 +91,7 @@
           </thead>
           <tbody id="adjustmentsTableBody" data-base-url="{% url 'frontend:adjustments' %}">
             {% for adjustment in adjustments %}
-            <tr data-adjustment-id="{{ adjustment.pk }}">
+            <tr data-adjustment-id="{{ adjustment.pk }}" data-search="{{ adjustment.product.name|lower }} {{ adjustment.product.sku|lower }} aj-{{ adjustment.pk|stringformat:'04d' }}" data-type="{{ adjustment.adjustment_type }}" data-status="{{ adjustment.status }}">
               <td class="mono">AJ-{{ adjustment.pk|stringformat:"04d" }}</td>
               <td>
                 {{ adjustment.product.name }}
@@ -232,5 +232,6 @@
   <script src="{% static 'js/form-validation.js' %}"></script>
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/adjustment-form.js' %}"></script>
 {% endblock %}

@@ -26,7 +26,8 @@ from decimal import Decimal
 from io import BytesIO
 
 from django.http import HttpResponse
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
+from django.utils import timezone
 
 from frontend.models import (
     DemandForecast,
@@ -35,6 +36,7 @@ from frontend.models import (
     InventoryMovement,
     InventoryRecord,
     InventoryStatus,
+    MovementType,
     PurchaseOrder,
     SaleStatus,
     SaleTransaction,
@@ -44,11 +46,21 @@ from frontend.models import (
 def _date_bounds(request):
     """Common `date_from`/`date_to` GET params (10_REPORTS.md) as
     (start, end) datetimes, or (None, None) if not given. end is set to
-    23:59:59 on date_to so `lte` includes the whole day, not just midnight."""
+    23:59:59 on date_to so `lte` includes the whole day, not just midnight.
+
+    Phase 8.98: made timezone-aware (`timezone.make_aware()`, in the
+    active TIME_ZONE = 'Asia/Dhaka') — a genuine, if latent, pre-existing
+    bug surfaced by this phase's own new date-filtered export test (no
+    earlier test ever exercised this function with date_from/date_to
+    actually set). A naive datetime compared against `created_at`
+    (`DateTimeField`, `USE_TZ=True`) made Django coerce it into the active
+    timezone anyway with a loud `RuntimeWarning` — same end result, just
+    noisy. This makes the intent explicit instead of relying on that
+    implicit coercion."""
     date_from = request.GET.get("date_from")
     date_to = request.GET.get("date_to")
-    start = datetime.strptime(date_from, "%Y-%m-%d") if date_from else None
-    end = datetime.combine(datetime.strptime(date_to, "%Y-%m-%d"), time.max) if date_to else None
+    start = timezone.make_aware(datetime.strptime(date_from, "%Y-%m-%d")) if date_from else None
+    end = timezone.make_aware(datetime.combine(datetime.strptime(date_to, "%Y-%m-%d"), time.max)) if date_to else None
     return start, end
 
 
@@ -60,6 +72,57 @@ def _category_id(request):
 def _supplier_id(request):
     value = request.GET.get("supplier")
     return int(value) if value and value.isdigit() else None
+
+
+def _product_id(request):
+    value = request.GET.get("product")
+    return int(value) if value and value.isdigit() else None
+
+
+def filter_movements(request, base_qs=None):
+    """Phase 8.99d — single source of truth for what "the current Movement
+    History filter" means: date_from/date_to (via `_date_bounds()`,
+    already timezone-aware — BUG-46), product, movement_type, and a
+    server-side search (q, product name/SKU icontains).
+
+    Used by BOTH `MovementHistoryListView` (the page) and
+    `build_movement_report()` (its CSV/PDF export), so the two can never
+    silently disagree again — before this phase, the page filtered dates
+    with `created_at__date__gte` while the export used this file's own
+    `_date_bounds()`-based `created_at__gte`, and the export had no
+    product/type/search filtering at all. One function, two callers.
+
+    `q` matches what used to be table-filter.js's client-side-only search
+    (product name/SKU). Made server-side here rather than kept
+    client-side-with-a-caveat: the exact "grows unbounded, so client-side
+    only ever sees one page" argument BUG-45 originally used to justify
+    server-side dates applies identically to search — a client-side-only
+    search could never be reflected in an export anyway (this phase's own
+    goal), and disclosing "search isn't exported" as a permanent UI
+    caveat is worse than just making it real. `table-filter.js` is no
+    longer loaded on this page as a result (still used by Forecasting/
+    Slow-Moving, untouched)."""
+    qs = base_qs if base_qs is not None else InventoryMovement.objects.select_related("product", "performed_by")
+
+    start, end = _date_bounds(request)
+    if start:
+        qs = qs.filter(created_at__gte=start)
+    if end:
+        qs = qs.filter(created_at__lte=end)
+
+    product_id = _product_id(request)
+    if product_id:
+        qs = qs.filter(product_id=product_id)
+
+    movement_type = request.GET.get("movement_type")
+    if movement_type in MovementType.values:
+        qs = qs.filter(movement_type=movement_type)
+
+    q = request.GET.get("q", "").strip()
+    if q:
+        qs = qs.filter(Q(product__name__icontains=q) | Q(product__sku__icontains=q))
+
+    return qs
 
 
 # --------------------------------------------------------------- 1. Inventory
@@ -94,10 +157,16 @@ def build_purchase_report(request):
     if supplier_id:
         qs = qs.filter(supplier_id=supplier_id)
 
-    headers = ["PO Number", "Supplier", "Status", "Order Date", "Expected Delivery", "Total Cost", "Created By"]
+    # Phase 8.99c — added "Reason" (PurchaseOrder.display_reason: cancelled_
+    # reason or rejected_reason, whichever applies), per this phase's
+    # Objective #3 ("visible wherever that record is reported or
+    # exported"). Extending an existing report type's columns rather than
+    # adding a 10th type — 10_REPORTS.md documents 9 fixed report types;
+    # this is the smaller, disclosed deviation (see project_memory.md §13).
+    headers = ["PO Number", "Supplier", "Status", "Order Date", "Expected Delivery", "Total Cost", "Created By", "Reason"]
     rows = [
         [po.po_number, po.supplier.company_name, po.get_status_display(), po.order_date,
-         po.expected_delivery or "—", f"{po.total_cost:.2f}", po.created_by.full_name]
+         po.expected_delivery or "—", f"{po.total_cost:.2f}", po.created_by.full_name, po.display_reason or "—"]
         for po in qs
     ]
     return "Purchase Report", headers, rows
@@ -106,7 +175,18 @@ def build_purchase_report(request):
 # ------------------------------------------------------------------ 3. Sales
 
 def build_sales_report(request, category_filtered=True):
-    qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED).select_related("created_by").prefetch_related("items").order_by("-transaction_date")
+    # Phase 8.99c — was `.filter(status=SaleStatus.COMPLETED)`, matching
+    # 10_REPORTS.md's own reference `sales_report_view` filter exactly.
+    # Disclosed deviation: this phase's Objective #3 requires cancellation/
+    # rejection reasons to be visible in every report a sale appears in: a
+    # completed-only queryset can never contain either, since neither
+    # status is reachable once a sale is COMPLETED. Broadened to all
+    # statuses so the new "Reason" column below is meaningful instead of
+    # permanently "—". The completed-only revenue KPI on the Reports page
+    # (ReportsView.get()'s own separate `sales_summary` query) is untouched
+    # by this — it never called build_sales_report() for that number, so
+    # "Total revenue"/"Total transactions" still mean realized revenue only.
+    qs = SaleTransaction.objects.select_related("created_by").prefetch_related("items").order_by("-transaction_date")
     start, end = _date_bounds(request)
     category_id = _category_id(request) if category_filtered else None
     if start:
@@ -116,10 +196,12 @@ def build_sales_report(request, category_filtered=True):
     if category_id:
         qs = qs.filter(items__product__category_id=category_id).distinct()
 
-    headers = ["Invoice", "Date", "Customer", "Items", "Total", "Status"]
+    # "Reason" added alongside "Status" for the same reason (and same §13
+    # disclosure) as build_purchase_report()'s own new column, just above.
+    headers = ["Invoice", "Date", "Customer", "Items", "Total", "Status", "Reason"]
     rows = [
         [sale.invoice_number, sale.transaction_date, sale.customer_name or "—",
-         sale.items.count(), f"{sale.total_amount:.2f}", sale.get_status_display()]
+         sale.items.count(), f"{sale.total_amount:.2f}", sale.get_status_display(), sale.display_reason or "—"]
         for sale in qs
     ]
     return "Sales Report", headers, rows
@@ -136,13 +218,18 @@ def sales_report_summary(sales_qs):
 # -------------------------------------------------------------- 4. Movements
 
 def build_movement_report(request):
+    """Reports page's own "Movements" report type (category-filterable,
+    via the 9 REPORT_BUILDERS/ReportExportView) AND Movement History's
+    dedicated export (MovementHistoryExportView) both call this — the
+    former only ever sets `category`, the latter only ever sets
+    date_from/date_to/product/movement_type/q (Phase 8.99d), so sharing
+    one function is safe: each caller's querystring only carries the
+    params it actually uses. `filter_movements()` is the shared date/
+    product/type/search logic; `category` stays this function's own,
+    since Movement History's own page has no category filter."""
     qs = InventoryMovement.objects.select_related("product", "product__category", "performed_by").order_by("-created_at")
-    start, end = _date_bounds(request)
+    qs = filter_movements(request, base_qs=qs)
     category_id = _category_id(request)
-    if start:
-        qs = qs.filter(created_at__gte=start)
-    if end:
-        qs = qs.filter(created_at__lte=end)
     if category_id:
         qs = qs.filter(product__category_id=category_id)
 
@@ -264,22 +351,14 @@ def generate_csv_response(headers, rows, filename):
     return response
 
 
-def generate_pdf_response(title, headers, rows, filename):
+def _styled_data_table(data, repeat_rows=1):
+    """The exact Table/TableStyle `generate_pdf_response()` always built
+    inline, pulled out so Phase 8.98d's per-record PDFs (below) can reuse
+    the same look — same reportlab objects, not a second styling scheme."""
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import landscape, letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Table, TableStyle
 
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), title=title, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
-
-    table_data = [headers] + [[str(cell) for cell in row] for row in rows]
-    if not rows:
-        table_data.append(["No data available for the selected filters."] + [""] * (len(headers) - 1))
-
-    table = Table(table_data, repeatRows=1)
+    table = Table(data, repeatRows=repeat_rows)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -290,9 +369,135 @@ def generate_pdf_response(title, headers, rows, filename):
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
     ]))
-    elements.append(table)
+    return table
+
+
+def generate_pdf_response(title, headers, rows, filename, filters_summary=None):
+    """`filters_summary` (Phase 8.99d): an optional list of "Label: value"
+    strings rendered under the title, above the table — a report of a
+    filtered subset that doesn't say what it was filtered by isn't a
+    usable record (Movement History's own PDF export is the first user of
+    this; the 9 REPORT_BUILDERS callers via ReportExportView don't pass
+    it, so their output is byte-for-byte unchanged)."""
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), title=title, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
+    if filters_summary:
+        elements.append(Paragraph("Filters: " + "; ".join(filters_summary), styles["Normal"]))
+        elements.append(Spacer(1, 12))
+
+    table_data = [headers] + [[str(cell) for cell in row] for row in rows]
+    if not rows:
+        table_data.append(["No data available for the selected filters."] + [""] * (len(headers) - 1))
+
+    elements.append(_styled_data_table(table_data))
     doc.build(elements)
 
     response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+# ------------------------------------------------- Per-record PDFs (Phase 8.98d)
+# Individual Purchase Order / Sale Transaction downloads — distinct from the
+# 9 whole-report exports above (Reports module, untouched by this phase).
+# Reuses the exact same reportlab setup: SimpleDocTemplate + getSampleStyleSheet
+# + _styled_data_table() (just above) for the line-items grid — no new PDF
+# library or rendering mechanism.
+
+def generate_purchase_order_pdf(po):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"Purchase Order {po.po_number}",
+                             topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph(f"Purchase Order {po.po_number}", styles["Title"]), Spacer(1, 12)]
+
+    meta_data = [
+        ["Field", "Value"],
+        ["Supplier", po.supplier.company_name],
+        ["Status", po.get_status_display()],
+        ["Order Date", str(po.order_date)],
+        ["Expected Delivery", str(po.expected_delivery) if po.expected_delivery else "—"],
+        ["Created By", po.created_by.full_name],
+        # Phase 8.99c — same conditional "—"-fallback pattern the Sale PDF
+        # already uses for Approved By/Approved At, just below. Reason
+        # covers rejected_reason too (display_reason), not just
+        # cancellation, per this phase's Objective #3.
+        ["Cancelled By", po.cancelled_by.full_name if po.cancelled_by else "—"],
+        ["Cancelled At", str(po.cancelled_at) if po.cancelled_at else "—"],
+        ["Reason", po.display_reason or "—"],
+    ]
+    elements += [_styled_data_table(meta_data), Spacer(1, 16)]
+
+    items = po.items.select_related("product").all()
+    headers = ["Product", "SKU", "Ordered Qty", "Received Qty", "Unit Price", "Discount %", "Tax %", "Line Total"]
+    rows = [
+        [item.product.name, item.product.sku, item.ordered_qty, item.received_qty,
+         f"{item.unit_price:.2f}", f"{item.discount:.2f}", f"{item.tax:.2f}", f"{item.line_total:.2f}"]
+        for item in items
+    ]
+    elements.append(_styled_data_table([headers] + rows))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"Total Cost: {po.total_cost:.2f}", styles["Heading3"]))
+
+    doc.build(elements)
+    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{po.po_number}.pdf"'
+    return response
+
+
+def generate_sale_transaction_pdf(sale):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"Sale {sale.invoice_number}",
+                             topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph(f"Sale {sale.invoice_number}", styles["Title"]), Spacer(1, 12)]
+
+    meta_data = [
+        ["Field", "Value"],
+        ["Customer", sale.customer_name or "—"],
+        ["Status", sale.get_status_display()],
+        ["Transaction Date", str(sale.transaction_date)],
+        ["Created By", sale.created_by.full_name],
+        # Phase 8.99b — a sale now goes through the same approval gate a
+        # PO does; not every sale reaches it (draft/pending/rejected/
+        # cancelled never set these), so both are conditional, same
+        # blank-vs-set pattern the purchases table itself already uses
+        # for expected_delivery.
+        ["Approved By", sale.approved_by.full_name if sale.approved_by else "—"],
+        ["Approved At", str(sale.approved_at) if sale.approved_at else "—"],
+        # Phase 8.99c — mirrors the PO PDF's own new rows, just above.
+        ["Cancelled By", sale.cancelled_by.full_name if sale.cancelled_by else "—"],
+        ["Cancelled At", str(sale.cancelled_at) if sale.cancelled_at else "—"],
+        ["Reason", sale.display_reason or "—"],
+    ]
+    elements += [_styled_data_table(meta_data), Spacer(1, 16)]
+
+    items = sale.items.select_related("product").all()
+    headers = ["Product", "SKU", "Quantity", "Unit Price", "Discount %", "Tax %", "Line Total"]
+    rows = [
+        [item.product.name, item.product.sku, item.quantity,
+         f"{item.unit_price:.2f}", f"{item.discount:.2f}", f"{item.tax:.2f}", f"{item.line_total:.2f}"]
+        for item in items
+    ]
+    elements.append(_styled_data_table([headers] + rows))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"Total Amount: {sale.total_amount:.2f}", styles["Heading3"]))
+
+    doc.build(elements)
+    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{sale.invoice_number}.pdf"'
     return response

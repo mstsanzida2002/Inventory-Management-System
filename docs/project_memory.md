@@ -2,7 +2,7 @@
 
 > **Read this file first, before any other document, before writing any code.**
 > This file is the permanent engineering memory of the project. It reflects the
-> **actual current state of the repository** as of 2026-08-02, updated after:
+> **actual current state of the repository** as of 2026-08-15, updated after:
 > (1) four frontend routing/consistency bug fixes, (2) **Backend Phase 1** —
 > full Django ORM schema (16 models), (3) **Backend Phase 2** — all 16
 > registered in Django admin, (4) **Backend Phase 3/3.4/3.5** —
@@ -156,7 +156,707 @@
 > polls now. Users & Roles required one disclosed field-list deviation —
 > a required password field the mock didn't have, since a `User` without
 > one can never log in. 125 tests passing (was 100). See §15 for the full
-> writeup.
+> writeup. **(17) Phase 8.6 — 4 live-usage bug fixes** (BUG-37 through
+> BUG-40, see `docs/bugsfound.md`): Users & Roles' filter was silently
+> dead (missing `table-filter.js` `<script>` tag); `TIME_ZONE` was `'UTC'`
+> — changed to `'Asia/Dhaka'` (`USE_TZ` stays `True`; storage was always
+> correct UTC, this was display-only, confirmed against a real AuditLog
+> row); the dashboard greeting was hardcoded "Good morning" regardless of
+> time (now computed server-side from `timezone.localtime().hour`); and it
+> showed "Amara" for every user (`dashboard.html` referenced a
+> `first_name` field `frontend.User` doesn't have — now uses the existing
+> `get_short_name()`). Cross-role Playwright sweep (Purchases/Adjustments/
+> Sales/Users action buttons, all 3 roles) found no other visible-but-dead
+> or wired-but-misgated buttons — see §15. 131 tests passing (was 125).
+> **(18) Phase 8.7 — wired table filtering** on Products/Suppliers/
+> Purchases/Sales/Adjustments (BUG-37 case (c)): missing `table-filter.js`
+> script tags, missing control `id`s, missing `data-*` row hooks, and
+> missing `value=` attributes on status/type `<select>` options (defaulted
+> to display text instead of the model's real choice value) — all fixed,
+> `table-filter.js` reused unchanged. Categories has no filter controls to
+> wire; **Inventory's page turned out to still be 100% mock** —
+> `inventory()` is a one-line `render()` with no queryset, previously
+> mislabeled ✅ in this file (now corrected, see §2/§11/§16) — its real
+> build-out is still outstanding, separate from filter-wiring. 131 tests
+> still passing. **(19) Phase 8.8 — documentation-integrity audit**, no
+> code changes: read every real view in `frontend/views.py` against every
+> ✅ claim in this file. Found one more mislabeled page beyond Inventory —
+> **the Dashboard**: only its greeting/user name are real (Phase 8.6);
+> every KPI card, both Chart.js charts, and all 4 widgets (Stock Alerts,
+> Pending Approvals — inert Approve/Reject buttons included, Recent
+> Activity, AI Insights) are hardcoded, and `dashboard()` passes no
+> queryset context at all — corrected here (see §2/§11/§16). Everything
+> else marked ✅ checked out genuinely real, including all 9 Reports
+> builders (`frontend/reports.py`) — no hardcoded rows anywhere, though 2
+> of the 9 (AI Forecast/Classification) are real queries against tables
+> nothing populates yet until AI is built (Phase 10/11), an honest gap,
+> not a fake one. Demand Forecasting/Slow-Moving were already correctly
+> disclosed as "All static/mocked" and needed no correction. Root cause
+> across all three misses (this one, Phase 3.9, Phase 4.5): a page whose
+> mock template renders cleanly gives no visual signal that its data is
+> fake — verifying the view's actual context, not how the page looks, is
+> the only reliable check; worth making a standing habit for any future
+> ✅ claim in this file, not just at these three checkpoints.
+> **(20) Phase 8.9 — built the real Inventory list view**, closing
+> BUG-37's Inventory portion. `InventoryListView` (`AnyStaffMixin`,
+> matching `07_INVENTORY.md`'s own `@staff_required` = all 3 roles in this
+> project's RBAC) replaces the one-line `render()` with a genuine
+> `InventoryRecord` queryset — status read straight off the model, not
+> recomputed. Real rows, real KPI/stat-strip aggregates, real "last
+> movement" column, filters wired to `table-filter.js`. Confirmed strictly
+> read-only: no `<form>` anywhere, no mutation call in the view, live
+> `POST /inventory/` → `405`. 5 new tests — 136/136 passing (was 131).
+> Every module now has a real view; only the Dashboard (Phase 8.8 finding)
+> remains mock. **(21) Phase 8.95/8.95.1 — `docs/09_DASHBOARD.md` written
+> and approved**: no `REQ` range or spec ever existed for the Dashboard
+> (`INDEX.md` linked to a file that didn't exist, BUG-17), so every KPI/
+> chart/widget was defined from scratch against `API_CONTRACTS.md` +
+> `SCHEMA.md` before any code was written — 8 disclosed decisions (30-day
+> KPI trends, chart windows, a single `DASHBOARD_PREVIEW_ROWS` constant,
+> Pending Approvals read-only not live-action, Recent Activity
+> admin/supervisor-only per `13_AUDIT.md`'s "Admin only" rule, 3 fields
+> kept beyond `API_CONTRACTS.md`'s documented payload, "Active suppliers"
+> over raw total, "Any role" as the page-wide default) — all approved,
+> none left open. **(22) Phase 8.96 — built it for real**, closing BUG-41.
+> `dashboard()` now computes every value from real `Sum`/`Count`/
+> `annotate` queries, zero `|default:"..."` fabrication remains (the one
+> exception — the greeting-name fallback — predates this and isn't a
+> fabrication, see BUG-40). AI Insights deleted outright, not shown as an
+> empty state. Pending Approvals has no Approve/Reject buttons anywhere.
+> Recent Activity confirmed absent from the *rendered HTML* for staff, not
+> just hidden. Live-verified against real Postgres, all 3 roles: every
+> KPI/stat matched a direct manual DB query exactly. 8 new tests —
+> 144/144 passing. **Every page in the app is now genuinely real** — the
+> mock-but-marked-done list Phase 8.8 opened is empty; the one open item
+> is `dashboard()` still having no RBAC/login gate at all (§12).
+> **(23) Phase 8.97 — closed the dashboard auth gap + a full-app wiring
+> audit.** Part A (BUG-42, fixed): `dashboard()` converted to
+> `DashboardView(AnyStaffMixin, View)` — anonymous access now `302`s to
+> login; all 3 roles unaffected; Recent Activity's existing
+> `is_authenticated` check is now belt-and-suspenders. Part B: audited
+> every one of the app's 31 routes against actual code (not prior ✅
+> claims — this file's claims have been wrong 3 times before: Phase 3.9,
+> 4.5, and Inventory/Dashboard in 8.7/8.8) for real-vs-mock views, correct
+> auth/RBAC, dead controls, and every `|default:`/hardcoded-row/hardcoded-
+> stat tell. Found two more real gaps, both reported, neither fixed this
+> session per the task's explicit scope: `demand_forecasting`/
+> `slow_moving_dead_stock` also have no auth requirement (BUG-43, lower
+> severity — both pages are still honestly-disclosed mock, no real data to
+> expose); "Export"/"Export CSV" buttons on Products/Suppliers/Audit Log
+> are decorative, never individually named before (BUG-44). Everything
+> else checked out: every other view is genuinely real with the correct
+> mixin, no orphaned fabricated `<tr>` rows or hardcoded stats anywhere,
+> and every remaining `|default:"..."` hit is a legitimate per-field null
+> fallback or the one already-reviewed anonymous-identity fallback — not a
+> new fabrication. 1 test updated + 1 added — 145/145 passing.
+> **(24) Phase 8.98 — made every button real.** Built the Movement History
+> page (BUG-45): `/inventory/movements/` (`MovementHistoryListView`,
+> `AnyStaffMixin`) over the real, already-complete `InventoryMovement`
+> ledger — server-side date-range filtering + real `Paginator` pagination
+> (the ledger grows unbounded forever, so client-side-only filtering would
+> only ever see one page), client-side search/type filtering on top of
+> that, an optional `?product=<id>` narrowing used by each Inventory row's
+> own link. Wired real CSV export on Products/Suppliers/Audit Log
+> (BUG-44) and Movement History, all reusing `frontend/reports.py`'s
+> existing `generate_csv_response()` — no new export mechanism — with
+> auth matching each source page exactly. Removed the global topbar
+> search box (present on every page, including the Dashboard) — it never
+> had any JS behind it at all. Found and fixed two small things while
+> building: a latent `RuntimeWarning` in `reports.py`'s `_date_bounds()`
+> (naive datetime against a tz-aware field — BUG-46, silently correct via
+> Django's coercion, now explicit via `timezone.make_aware()`) and a
+> flaky pre-existing test (`NotificationViewTests` asserting on a bare
+> `'T3'` substring against a page containing a random CSRF token). 21 new
+> tests — 156/156 passing (was 145). One known gap remains, unrelated to
+> this phase and already tracked: `demand_forecasting`/
+> `slow_moving_dead_stock` still have no auth requirement (BUG-43).
+> **Closed, Phase 8.99j** — `SupervisorRequiredMixin`, both server-side
+> and nav-link gating.
+> **(25) Phase 8.98a — topbar spacing investigation + real Change
+> Password modal.** Part 1: investigated a reported topbar-badge
+> left-shift regression exhaustively (9 viewport widths 480–1440px,
+> Dashboard/Products/Profile, sidebar open/closed, all 3 roles) and
+> **could not reproduce it** — `.topbar-actions`'s `margin-left: auto`
+> (Phase 8.98) sits correctly flush-right in every configuration tested,
+> confirmed via `getBoundingClientRect()`, not just visual inspection. No
+> code change made; likely explanation was a stale browser cache of
+> `dashboard.css` from mid-edit (this dev setup has no cache-busting on
+> static URLs) — **confirmed correct**: a hard refresh (Ctrl+Shift+R)
+> resolved it for the user. No residual code issue.
+> Part 2: password change moved off `profile_view`'s old inline "new
+> password" field (which had no current-password check and no confirm
+> field — real gaps) into a real modal + dedicated
+> `change_password_view`/`/profile/change-password/` endpoint, reusing
+> the existing modal.js/modal-form.js recipe and the same
+> `validate_password()`/`StrongPasswordValidator` chain, not rewritten.
+> Verified live: wrong current password rejected, weak new password
+> rejected (with the real validator message), mismatched confirmation
+> rejected, a valid change succeeds and the user can immediately log in
+> with the new password; `PASSWORD_CHANGED` audit log + notification still
+> fire (same `frontend/audit.py`/`frontend/notifications.py` calls,
+> unchanged). 3 old tests migrated to the new endpoint + 4 new — 160/160
+> passing (was 156).
+> **(26) Phase 8.98b — Purchases Expected Delivery + date guard.**
+> `expected_delivery` already existed on `PurchaseOrder` and in
+> `PurchaseOrderForm` (SCHEMA.md's own field) — no migration needed,
+> confirmed via `makemigrations --check`. The real gaps were display (no
+> table column) and validation (no past-date guard), both closed: a real
+> "Expected delivery" column in the purchases table, and a real,
+> server-side `clean_expected_delivery()` rejecting a past date, computed
+> against Asia/Dhaka's current date (`timezone.localdate()`) rather than
+> the OS clock — verified by POSTing a past date directly, bypassing the
+> client entirely (`400`, real field error, no PO created). `order_date`
+> stays `auto_now_add=True` (unchanged, matches SCHEMA.md) — never user-
+> submitted, always exactly "today" at save time, so "not before
+> order_date" collapses into the same past-date check, not a second rule
+> — explicitly reported rather than building a redundant check against a
+> value that can't exist yet at form-validation time. Client-side, the
+> date input's `min=` is the same server-computed Asia/Dhaka date passed
+> into the template, not the browser's local clock guessing. 5 new tests
+> — 165/165 passing (was 160).
+> **(27) Phase 8.98c — moved tax onto Product, auto-calculated on every
+> transaction.** `Product.tax_rate` (`DecimalField`, default 0%) is new —
+> undocumented in `SCHEMA.md`/`API_CONTRACTS.md` (both still describe `tax`
+> only as a per-line `PurchaseOrderItem`/`SaleItem` field), a disclosed
+> architecture decision (see §13), same treatment as the SKU-format
+> decision. The tax input was removed from the Purchase/Sale line-items
+> editor (`line-items.js`) entirely — it's now a read-only per-line display
+> sourced from the selected product's own `data-tax-rate` option attribute;
+> Adjustment never had a tax field to begin with (confirmed, not a code
+> change). `frontend.forms.parse_line_items()` — the one shared chokepoint
+> both Purchase and Sale line items already passed through — now always
+> sets `tax = product.tax_rate`, ignoring any client-submitted value even
+> if one is present; `SaleService.create_sale()` independently re-derives
+> it from the product too, as defense in depth, satisfying the task's
+> literal "never from a form field" instruction at both layers. The
+> previously-duplicated `line_total` formula (flagged as frontend/tech
+> debt in §12 since Phase 3) is now one function,
+> `frontend.pricing.calculate_line_total()` — a new dependency-free module
+> (avoids a circular import: `models.py` can't import `services.py`, which
+> already imports `models.py`) — used by both `PurchaseOrderItem.save()`
+> and `SaleService.create_sale()`. `tax` stays a real stored column on
+> `PurchaseOrderItem`/`SaleItem` (not derived at read-time) so it's a
+> historical snapshot — confirmed live: changing a product's `tax_rate`
+> after a transaction leaves that transaction's stored `tax`/`line_total`
+> untouched, but a new transaction created afterward picks up the new
+> rate. Stock/ledger logic was never touched — confirmed by reading every
+> line changed against `InventoryService`/`InventoryMovement` (BUG-20's
+> immutability), no entanglement found, matching the task's own "stop and
+> flag if this touches stock" scope guard. Dev DB wiped and reseeded (new
+> `seed_dev_data` management command, DEBUG-only like `seed_test_users`) —
+> 4 categories, 3 suppliers, 10 products with varied `tax_rate` (0%, 5%,
+> 7.5%, 10%, 12.5%, 15%), 12 purchase orders (10 received, 1 draft, 1
+> pending — real stock via the real service layer, not fabricated), 4
+> sales, 2 adjustments. Live-verified against the real running dev server
+> (not just the test suite): created a live PO and sale for a 15%-tax
+> product, hand-checked the math (`18.00 x 4 x 1.15 = 82.80`,
+> `32.00 x 2 x 1.15 = 73.60`) against the actual stored `line_total` —
+> exact match both times; then bumped that product's `tax_rate` to 25% and
+> confirmed a new sale used 25% while the two earlier lines stayed at 15%.
+> 8 new tests (`ProductTaxRateTests`, `TaxAutoCalculationTests`) —
+> 173/173 passing (was 165).
+> **(28) Phase 8.98d — per-record Purchase/Sale PDF download.** A single
+> PO's/sale's own PDF, distinct from Reports' 9 whole-report exports
+> (`frontend/reports.py`'s `REPORT_BUILDERS`/`ReportExportView`,
+> `reports/reports.html` — none touched this phase). Reused the exact
+> existing ReportLab machinery: `generate_pdf_response()`'s inline
+> `Table`/`TableStyle` was pulled out into `_styled_data_table()` (a pure
+> refactor, same visual output for every existing report PDF) so the two
+> new builders — `generate_purchase_order_pdf()`/
+> `generate_sale_transaction_pdf()` — could reuse it for both a small
+> metadata table (supplier/customer, status, dates, created by) and the
+> real line-items table (product, qty, unit price, discount, the Phase
+> 8.98c auto-calculated tax, line total), plus a `Total Cost`/`Total
+> Amount` line — no new PDF library. `PurchaseOrderPDFView`/
+> `SaleTransactionPDFView` (`purchases/<pk>/pdf/`, `sales/<pk>/pdf/`) use
+> the same `AnyStaffMixin` gate as `PurchaseListCreateView`/
+> `SaleListCreateView` themselves — viewing a record's PDF needs the same
+> access as viewing the record on its list page, no stricter or looser.
+> A "Download PDF" pill-button (`icon-receipt`, a plain `<a href>` GET
+> link like Reports' own export links, not a fetch-based control) added
+> to every row on both pages. Live-verified against the real reseeded dev
+> DB: downloaded a real PO PDF and a real sale PDF, decompressed each
+> PDF's content stream by hand (ASCII85+Flate) to confirm the actual
+> rendered text, not just headers — both matched the DB exactly, tax and
+> totals included (`8.50 × 100 × 1.10 = 935.00`, `15.00 × 3 × 1.10 =
+> 49.50`); confirmed anonymous requests to both PDF URLs `302` to login,
+> matching the list pages' own gate. 6 new tests
+> (`PerRecordPDFViewTests`) — 179/179 passing (was 173).
+> **(29) Phase 8.98e — admin user creation with emailed credentials,
+> password-change admin alerts, validated profile images.** Email
+> backend: `EMAIL_BACKEND` is `django.core.mail.backends.console.
+> EmailBackend` (config/settings.py, env-overridable) — dev/test only;
+> real delivery needs a real SMTP backend (`ENVIRONMENT.md`'s Gmail
+> setup, or Render's email config at deployment) — this phase wires the
+> flow correctly against the console backend and does not pretend real
+> email is configured. **Part 1**: `UserForm` (Phase 8's own disclosed
+> decision) had the Admin type a password directly — reversed here,
+> disclosed a second time (§13): the form has no password field at all
+> now. `UserListCreateView.post()` generates one via
+> `frontend.validators.generate_strong_password()` (`secrets`-based,
+> guaranteed to pass every validator in `AUTH_PASSWORD_VALIDATORS` by
+> construction), calls `set_password()`, and emails it directly via a new
+> `frontend.notifications.send_new_user_credentials_email()` —
+> deliberately NOT built on `notify_user()`, since that function stores
+> its exact message in a `Notification` row and this phase's hard rule is
+> that the password must never appear in a notification or audit log,
+> not even the new user's own; sent unconditionally, ignoring
+> `SystemSettings.email_notifications_enabled` (disclosed — that flag is
+> a discretionary alert preference, not a valid reason to strand a new
+> user with no way to ever learn their password). No new
+> `NotificationType` invented for "account created" (11_NOTIFICATIONS.md
+> has none), matching this project's existing precedent of not inventing
+> undocumented types. `change_password_view` now also calls a new
+> `notify_admins()` (same shape as `notify_supervisors()`, Admin-only),
+> reusing the documented `PASSWORD_CHANGED` type for a second recipient —
+> every Admin is told *who* changed their password, never what it was.
+> **Part 2**: `User.profile_image` already existed (SCHEMA.md's own
+> field, Phase 1) with zero validation — `profile_view()` now runs it
+> through `validate_product_image()` (frontend/validators.py), reused
+> unchanged from Product.image/SystemSettings.company_logo, not
+> duplicated. Displays for real now too: `.avatar` (topbar user menu,
+> sidebar, profile page) shows the actual photo when set, falling back to
+> initials exactly as before when not. Same Render-ephemeral-disk caveat
+> as Phase 5/deployment (`DEPLOYMENT.md` line ~179) — flagged, not
+> re-solved here. Live-verified end-to-end against the real dev DB and
+> the real console backend (not just the test suite): an Admin created a
+> new user through the real view; the console backend printed a real
+> credentials email with a real generated password; the DB's hashed
+> password matched what was emailed; the new user logged in with it for
+> real (`302` to `/dashboard/`); confirmed zero rows in `Notification`
+> or `AuditLog` contain that password anywhere, and no in-app
+> `Notification` was created for the new user at all (email-only, by
+> design); the new user then changed their password, and the Admin
+> received a real notification naming who changed it with the new
+> password absent from both the title and message; a profile image
+> upload was rejected for a bad extension, accepted for a valid one, and
+> then rendered as a real `<img>` on both the profile page and the
+> dashboard topbar. 9 new tests (`PasswordGeneratorTests`,
+> `ProfileImageValidationTests`, plus additions to
+> `ChangePasswordViewTests`/`UserManagementViewTests`) — 188/188 passing
+> (was 179).
+> **(30) Phase 8.99 — production deployment configuration + the
+> auto_now_add/OS-clock pre-deploy fix (BUG-47).** Closed the gap
+> flagged, not fixed, in Phase 8.6/BUG-38: `PurchaseOrder.order_date`/
+> `SaleTransaction.transaction_date` (`DateField(auto_now_add=True)`) and
+> their PO/invoice-number generation
+> (`timezone.now().strftime('%Y%m%d')`) both silently ignored
+> `TIME_ZONE`, reading the OS clock's raw date / raw UTC respectively —
+> invisible on this project's Dhaka-clocked dev machine, would have
+> produced wrong dates **and wrong identifiers** on a UTC production
+> server near Dhaka midnight. Fixed by setting both fields explicitly via
+> `timezone.localdate()` in each model's `save()` (migration `0003`,
+> `AlterField` only, no DB-level change) and switching both number
+> generators to the same call. Existing dev records checked directly, not
+> assumed: all agreed with each other, consistent with the dev machine's
+> OS clock already being set to Bangladesh time, not evidence the bug was
+> ever harmless. New `TimezoneAwareDateGenerationTests` mocks
+> `timezone.now()` to a UTC instant on a different Dhaka calendar day and
+> asserts the stored date and the number's date segment land on the
+> Dhaka day — a regression back to either old mechanism fails it
+> immediately, since it doesn't touch the real OS clock at all. Full
+> writeup: `docs/bugsfound.md` BUG-47.
+> Configuration: `DEBUG`/`SECRET_KEY`/`ALLOWED_HOSTS`/`DATABASES` were
+> **already** fully env-driven with safe fail-closed defaults (confirmed,
+> not re-implemented) — this project never had the hardcoded-dev-key/
+> `DEBUG=True` mistake to begin with. Added: WhiteNoise
+> (`CompressedManifestStaticFilesStorage` via Django 6's `STORAGES` dict —
+> the old `STATICFILES_STORAGE` setting no longer exists in this Django
+> version), verified locally by running with `DEBUG=False` +
+> `collectstatic` end to end (163 files, gzip + content-hashed filenames,
+> confirmed serving with correct headers); `SECURE_PROXY_SSL_HEADER` for
+> Render's TLS-terminates-at-the-edge proxy shape (undocumented in
+> `SECURITY.md`/`DEPLOYMENT.md` but required — without it
+> `SECURE_SSL_REDIRECT` would infinite-loop-redirect every request behind
+> Render's proxy); `SECURE_SSL_REDIRECT`/HSTS tied to `not DEBUG`, the
+> same established pattern `SESSION_COOKIE_SECURE`/`CSRF_COOKIE_SECURE`
+> already used; `EMAIL_HOST`/`PORT`/`USE_TLS`/`HOST_USER`/`HOST_PASSWORD`
+> newly wired from env (`ENVIRONMENT.md` documented them, but nothing
+> read them before this phase — setting only `EMAIL_BACKEND=...smtp...`
+> without them would have silently fallen back to Django's own
+> `localhost:25` no-auth default). `SECURE_BROWSER_XSS_FILTER`
+> (`SECURITY.md`'s list) deliberately omitted — removed from Django
+> itself in 4.0, inert under this project's Django 6.0.7.
+> Media: `SERVE_MEDIA_IN_PRODUCTION` (new, default `False`) added rather
+> than silently extending dev's DEBUG-gated media serving into
+> production — Render's default disk is ephemeral, so serving media
+> there at all only makes sense once a persistent disk is actually
+> mounted at `MEDIA_ROOT`, a deliberate deploy decision the operator
+> makes once, not a side effect of flipping `DEBUG`. Recommendation
+> stated, not built: Render persistent disk for this app's actual scale;
+> `django-storages` + S3/Cloudinary as the better long-term answer once
+> multi-instance/high-traffic needs justify a new dependency and real
+> cloud credentials, neither available to verify in this phase.
+> First production admin: `createsuperuser` (already correctly
+> Render-listed in `DEPLOYMENT.md`'s own checklist) — verified live
+> end-to-end against this project's actual custom `User`
+> model/`UserManager`, both via `--noinput` (env vars) and confirmed the
+> resulting account has `role='admin'`/`is_staff`/`is_superuser` all
+> correctly set and a working password; recommend running it
+> **interactively** for the real first admin specifically, since
+> `--noinput` mode skips `AUTH_PASSWORD_VALIDATORS` entirely (a Django
+> limitation, not a project bug) while interactive mode enforces
+> `StrongPasswordValidator` like everywhere else. `seed_test_users`/
+> `seed_dev_data` reconfirmed DEBUG-guarded — correctly refuse to run in
+> production, not a viable substitute.
+> **The 3 "faked in dev" gate — explicit verdicts, none left ambiguous:**
+> (a) **Emailed new-user credentials (Phase 8.98e): ✅ PROVEN LOCALLY over
+> real SMTP** (Phase 8.99f, re-confirmed 8.99f-3/f-5/f-6). Real SMTP (a
+> genuine Gmail app password, owner-supplied), a real admin-creates-a-user
+> test, a real credentials email confirmed received in a real inbox — not
+> just "`send_mail()` didn't raise." Phase 8.99f-5 found and fixed the one
+> real remaining gap (BUG-53): the console backend never raises either, so
+> the success message used to overclaim "credentials emailed" even when
+> nothing left the machine — the response now distinguishes a real send
+> from a local-only console print. Phase 8.99f-6 closed the thread: every
+> email-related bug (BUG-48/52/53) audited against actual code and
+> confirmed genuinely Fixed, one further end-to-end regression pass run
+> clean on real SMTP. What remains for Phase D is narrower than "first
+> real send" — it's "re-confirm this same, already-proven send against
+> Render's real domain/environment," since a new deploy target is exactly
+> the kind of change this gate exists to catch early. **Phase 8.99f-7:
+> real SMTP is now the RESTING DEFAULT for local use**, not a manual
+> flip-then-revert — `.env`'s `EMAIL_BACKEND` stays pointed at real Gmail
+> SMTP, proven safe for the test suite specifically (real credentials
+> present in `.env` throughout a full 254/254 run; `settings.EMAIL_
+> BACKEND` directly confirmed to resolve to `locmem` under `manage.py
+> test`, both via Django's own `setup_test_environment()` and this
+> project's own explicit `sys.argv`-based guard in `settings.py`).
+> Console stays a one-line, fully-supported opt-in
+> (`EMAIL_BACKEND=django.core.mail.backends.console...` in `.env`) with
+> BUG-53's honesty message unchanged. A new `UserResendCredentialsView`
+> (Admin-only, shown while `last_login` is still `None`) closes the
+> operational gap real-SMTP-by-default opens: one transient send failure
+> no longer strands an account with no recovery path. `.env.example`
+> corrected (Phase 8.99f-7): `EMAIL_BACKEND`/`DEFAULT_FROM_EMAIL` must be
+> *absent*, not present-and-empty, for `config/settings.py`'s own
+> fallback defaults to actually apply — confirmed live, a real bug in
+> 8.99f-6's own version of this file, now fixed. (b) **"Forgot password?"
+> reset: ✅ PROVEN LOCALLY, same SMTP sessions as (a).** Same email
+> dependency as (a) — proven together deliberately, since it's the same
+> one dependency underneath both features. Already re-enabled in the UI
+> since Phase 8.99a; a real reset email was sent and confirmed received
+> in the same real inbox. (c) **Uploaded images (product + profile):
+> still DEFERRED, ephemeral — unrelated dependency, untouched by the email
+> thread (Phases 8.99f through f-7).** Uploads work within a single running instance but are lost on every redeploy
+> until `SERVE_MEDIA_IN_PRODUCTION=True` + a Render persistent disk (or
+> `django-storages`) is actually attached — see the media section above.
+> `MAX_LOGIN_ATTEMPTS`/`LOCKOUT_DURATION` reconfirmed already env-driven
+> with sensible defaults (5/300) — genuinely LIVE, just needs the values
+> set in Render if a non-default is wanted. `python manage.py check
+> --deploy` passes clean with zero warnings under `DEBUG=False`+a real
+> `ALLOWED_HOSTS`. 2 new tests
+> (`TimezoneAwareDateGenerationTests`) — 190/190 passing (was 188).
+> **(31) Phase 8.99a — finished the forgot-password flow (local-only;
+> deployment explicitly out of scope this session).** Closes the last
+> visibly-disabled control in the app (Phase 4.5's `<span
+> aria-disabled>`) and a real audit gap behind it (BUG-48). Built the 4
+> real templates (`registration/password_reset_form.html`/`_done.html`/
+> `_confirm.html`/`_complete.html`) plus the 2 Django needs to send a
+> correctly-linked email (`password_reset_email.html`/
+> `password_reset_subject.txt`) — all extend `base.html` and reuse
+> `auth.css` + `components.css`'s existing `.field`/`.input`/
+> `.form-alert`/`.btn-primary`, zero new CSS, `login.html`'s own
+> `.auth-page`/`.auth-shell`/`.auth-card` structure duplicated exactly as
+> the reference, not reinvented. `password_reset_confirm.html` branches
+> on Django's own `validlink` context flag for the expired/already-used
+> case, styled the same way instead of admin's fallback template.
+> **The audit gap, confirmed by reading Django's source before writing
+> any fix**: `PasswordResetConfirmView.form_valid()` calls `form.save()`
+> and redirects — it never touches `change_password_view`, the only place
+> `audit.log_action(PASSWORD_CHANGED)`/`notify_admins()` were ever called
+> — so a password reset via email was a real change invisible to both the
+> audit log and every Admin, unlike the identical change via the profile
+> modal. Fixed by extracting the shared `notify_user()`/`notify_admins()`/
+> `audit.log_action()` triplet out of `change_password_view` into a new
+> `_record_password_change(user, request)` helper, and a new
+> `StockwellPasswordResetConfirmView` that calls it after
+> `super().form_valid(form)` — Django's own password-setting logic
+> reused, not reimplemented; `form.user` (not `self.request.user`, which
+> is anonymous at this point) is the target, and the new password itself
+> is never read here, so there's nothing for either function to leak.
+> **Namespace decision**: the whole flow (all 4 URLs) now lives under
+> `frontend:`, not the pre-existing-but-dead `accounts:` django.contrib.
+> auth.urls include — removed outright from `config/urls.py`, not left
+> dead a second time. Matches this project's own established precedent
+> (login/logout already left `accounts:` for `frontend:` — BUG-01) and
+> was the only option that actually works: Django's default `success_url`s
+> and the default email template's `{% url 'password_reset_confirm' %}`
+> tag reverse a *bare*, non-namespaced name, which `NoReverseMatch`es the
+> moment the route only exists inside a namespaced include — confirmed by
+> hitting that exact error live before explicitly overriding every
+> `success_url` and building a custom `email_template_name` with an
+> explicit `frontend:password_reset_confirm` tag. Verified zero other
+> references to `accounts:` existed first (a full-repo grep — only a
+> code comment did).
+> **SMTP smoke test (Part 4): explicitly skipped, not attempted.** No
+> real Gmail app password exists in this environment (confirmed by
+> checking `.env` for `EMAIL_HOST_USER`/`PASSWORD` — absent) — per this
+> phase's own instruction, skipped and stated plainly rather than
+> simulated. This flow and Phase 8.98e's emailed new-user credentials
+> both remain **UNVERIFIED against a real inbox** (not "working"); the
+> follow-up carries to a future deployment phase once real SMTP
+> credentials exist. **Superseded, Phase 8.99f: both proven ✅ LIVE**
+> against a real Gmail inbox — see §15 item 52.
+> Live-verified end to end against the real seeded `verify_user` account,
+> not just the test suite: real console-backend reset email sent with a
+> working link; confirm page renders Stockwell-styled (not admin
+> fallback); a weak new password is rejected with the real
+> `StrongPasswordValidator` message and leaves no audit row; a valid
+> reset succeeds, and `verify_user` logged in with the new password for
+> real (`302` to `/dashboard/`); a real `AuditLog` `PASSWORD_CHANGED` row
+> now exists for the reset path specifically; `verify_admin` received a
+> real notification naming Talia Nakamura, with the new password absent
+> from both its title and message; an invalid/tampered token shows the
+> real Stockwell-styled "This link no longer works" message, not admin's.
+> `verify_user`'s password restored via `seed_test_users` afterward so
+> the standard dev credentials still work. 10 new tests
+> (`PasswordResetFlowTests`) — 200/200 passing (was 190).
+> **(32) Phase 8.99b — Sales now go through approval before completing,
+> mirroring Purchases.** The highest-risk phase since 8.98c (money +
+> stock-timing on the app's other core transaction type). Two design
+> questions were raised to the owner before writing any code rather than
+> guessed at, since both would have been expensive to redo: **(1)
+> segregation of duties** — confirmed Purchases has no creator≠approver
+> restriction today (read the code, not assumed), owner chose to match
+> that for Sales too, not implemented any stricter without approval; **(2)
+> draft state shape** — owner confirmed the full Draft→Submit→Pending
+> mirror (a real `SaleSubmitView`/"Submit for approval" action, not a
+> single combined create-and-submit step), matching Purchases exactly and
+> making the task's own requested `SALE_SUBMITTED` audit constant a real,
+> non-redundant event.
+> **State decision**: no separate `APPROVED` status — `SaleStatus` gained
+> `DRAFT`/`PENDING`/`REJECTED` alongside the pre-existing `COMPLETED`/
+> `CANCELLED` (reusing `COMPLETED`, not renaming it, so every pre-existing
+> dev row stayed valid with zero data migration). Reasoning: for a
+> Purchase, approval and receipt are genuinely different moments (approval
+> commits; stock moves later, on receive, possibly in parts) — for a Sale,
+> approval *is* the moment stock moves, so a distinct `APPROVED` status
+> would describe no second, later event of its own. Disclosed as its own
+> §13 decision, same treatment as `Product.tax_rate` — explicit divergence
+> from `SCHEMA.md` §6's original two-status shape.
+> **Service layer split** (`frontend/services.py`): `create_sale()` now
+> creates a DRAFT with **zero** `InventoryService` contact — no
+> availability check, no movement row; the money math
+> (`calculate_line_total()`/`Product.tax_rate`, Phase 8.98c) is completely
+> untouched, confirmed by reading every line before and after. New
+> `submit_for_approval()` (DRAFT→PENDING) and `approve_sale()` — the
+> *only* place a sale's stock now moves, mirroring
+> `PurchaseService.receive_items()` being the only place a PO's stock
+> moves. New `reject_sale()` mirrors `PurchaseService.reject()` — no
+> notification type exists for "sale rejected" (11_NOTIFICATIONS.md has
+> none), so it logs but doesn't notify, matching `AdjustmentService.
+> reject()`'s identical precedent rather than inventing a second
+> undocumented type in the same phase as the one (`SALE_PENDING`) already
+> disclosed as load-bearing. `cancel_sale()` restricted to `DRAFT`/
+> `PENDING` only — the Objective's own explicit "once completed, a sale
+> can never be cancelled" rule — and, since nothing is ever deducted
+> before approval now, it no longer calls `InventoryService.
+> increase_stock()` at all; `06_SALES.md`'s original "cancellation
+> restores stock" rule no longer describes what this method does, also
+> disclosed in §13. What happens to an already-completed sale that needs
+> reversing is explicitly out of scope, named in the task itself as
+> Phase 8.99c's problem to own.
+> **Stock-at-approval finding, reported plainly, not silently accepted**:
+> confirmed live (two drafts against the same limited stock, deliberately
+> set up) that a draft/pending sale reserves nothing — the second
+> approval fails with a clean, specific error
+> ("Insufficient stock for 'X'. Available: N, Requested: M") and leaves
+> the sale pending, stock untouched. **Customer-facing consequence**: a
+> staff member can tell a customer "order placed" and have it fail at
+> approval — real stock reservation at draft time was explicitly not
+> built (a materially bigger feature: reservation expiry, released-on-
+> reject, reserved-vs-available shown everywhere), matching the task's own
+> explicit instruction not to build it. Recommended, not built: an
+> indicative (non-binding) stock check at creation time so this is rare in
+> practice, same "indicative client-side, authoritative server-side"
+> principle already established for tax/line-total math.
+> **`SALE_PENDING`** added as `NotificationType`'s 13th value — a
+> deliberate, disclosed override of this project's own Phase 8.98e
+> precedent (skip a notification rather than invent an undocumented type)
+> because that precedent covered a merely-informational case, while this
+> one is load-bearing: without a real notification a Supervisor/Admin has
+> no way to learn a sale even exists, and the whole approval gate has no
+> trigger. `SALE_COMPLETED` (pre-existing since Phase 1, never actually
+> fired by any reference code before this) gets its first real use, on
+> approval, notifying the sale's creator — mirrors `PO_APPROVED`'s
+> `notify_user(po.created_by, ...)` shape exactly.
+> **RBAC**: `AnyStaffMixin` on create/submit (any role), new
+> `SupervisorRequiredMixin`-gated `SaleApproveView`/`SaleRejectView`
+> (confirmed live: Admin can approve too, the hierarchy holds), no
+> creator≠approver check per the owner's confirmed decision above.
+> **UI**: `sales.html` gained real status badges + Submit/Approve/Reject/
+> Cancel row actions matching `purchases.html`'s shape exactly (including
+> removing a pre-existing, decorative "View invoice" button with no
+> handler, found while editing this exact area); a new "Pending approval"
+> stat card (mirrors Purchases' own); the status `<select>` filter's
+> `value=` attributes match the real `TextChoices` (Phase 8.7's own rule);
+> the "New sale" modal copy changed from "Complete sale" to "Save draft"
+> so it stops claiming to do something it no longer does. `row-actions.js`
+> reused unchanged for the new submit/approve/reject handlers — no sixth
+> copy of the CSRF/fetch helper (§18's own standing rule). Phase 8.98d's
+> per-record Sale PDF now shows Approved By/Approved At (blank-dash when
+> unset, same pattern the purchases PDF already uses for
+> expected_delivery) — confirmed live by decompressing a real PDF's
+> content stream for both a completed and a still-pending sale, not
+> assumed correct from the code alone.
+> `seed_dev_data.py` updated — sales now need to be pushed through
+> submit+approve to reach a realistic `COMPLETED` state (3 of 4 seeded
+> sales fully approved; 1 left `PENDING` so the approval queue has a real
+> row, same in-progress-state variety the PO seed already had).
+> Live-verified end to end against the real reseeded dev DB, all 3 roles:
+> a real draft created touching zero stock; staff blocked server-side
+> from approving directly (not just button-hidden); supervisor approves —
+> real stock deduction, real `InventoryMovement`, real notification to
+> both admin and supervisor on submit, real notification to the creator
+> on completion (actual console-backend email content captured for all of
+> these, not just HTTP status codes); the deliberately-engineered
+> insufficient-stock-at-approval race produced the exact clean failure
+> Step 3 predicted; reject flow correctly left stock untouched with the
+> reason stored; a completed sale's cancel attempt correctly `400`'d with
+> stock and status both unchanged. Existing test suite swept for every
+> other `SaleService`/`SaleStatus` call site (tax tests, PDF tests,
+> dashboard tests) — all still pass unchanged since none of them depended
+> on immediate completion; `SaleServiceTests`/`SaleWorkflowViewTests`/
+> `LowStockNotificationTests` rewritten for the new flow, one test per
+> documented transition per Phase 7's own precedent. 14 net new tests —
+> 214/214 passing (was 200). (11) **Phase 8.99c** — cancellation
+> restricted (draft/pending only, both Purchase and Sale — overrides
+> `05_PURCHASES.md`'s "any state -> CANCELLED"; full disclosure, the
+> named-not-solved "stranded approved PO" gap, and `InventoryAdjustment`
+> as the documented post-completion correction path are all in §13) and
+> a reason is now required and stored (who/when included) for every
+> cancellation, surfaced in the list tables, both per-record PDFs, and
+> the Purchase/Sales Report CSV+PDF exports. Full detail: §13, §15 item
+> 49. 217/217 passing (was 214). (12) **Phase 8.99d** — Movement
+> History's date/product/type/search filters unified into one shared,
+> server-side function so the page and its export can never disagree
+> again; PDF export added (reused `generate_pdf_response()`, states its
+> active filters); investigated a "cancelled/rejected source" filter and
+> found it's structurally unbuildable-as-useful under Phase 8.99c's own
+> rules, so it was documented rather than shipped as a dead control;
+> removed the unused `MovementType.RETURN` filter option. Full detail:
+> §13, §15 item 50. 225/225 passing (was 217). (13) **Phase 8.99e** —
+> Product Edit/Delete, this project's first per-entity update route.
+> Diagnosed first: Add was confirmed genuinely working live; the report
+> meant Edit/Delete, which never existed. `ProductUpdateView`
+> (`AnyStaffMixin`) reuses `ProductForm` unchanged via `instance=`;
+> `ProductDeactivateView` (`SupervisorRequiredMixin`) is the real
+> `is_active = False` soft-delete, relabelled "Delete" -> "Deactivate"
+> rather than left mislabelled — two different mixins on two buttons in
+> the same row, matching 02_RBAC.md's asymmetric edit/deactivate split.
+> SKU made read-only on edit, enforced server-side. Full detail: §13,
+> §15 item 51. 238/238 passing (was 225). (14) **Phase 8.99f** —
+> verification only, no rebuild: proved the existing Phase 8.98e/8.99a
+> emailed-credentials and password-reset flows end to end. Console
+> backend: no regression (real user created, real password emailed, real
+> login succeeds, password confirmed absent from every `AuditLog`/
+> `Notification` row). Real SMTP: the owner supplied a genuine Gmail app
+> password (a real-account-password offer was caught and declined first —
+> see §13/§15 item 52) — both a real credentials email and a real
+> password-reset email were sent and **confirmed received in the actual
+> inbox**, closing the DEFERRED verdict below to **LIVE** for both.
+> Forced-password-change-on-first-login confirmed advisory-only today
+> (no enforcement field/hook anywhere) and recommended, not built, per
+> the task's own scope limit. `EMAIL_BACKEND` reverted to console for
+> normal dev; real `EMAIL_HOST_*` values kept in `.env` (gitignored,
+> never committed). No code changes — 238/238 passing, unchanged.
+> (15) **Phase 8.99f-2** — three items, diagnosed first. Admin-creates-
+> user email: already proven live (14), just re-confirmed, no regression.
+> User delete: `UserDeactivateView`/`UserReactivateView` (Phase 8) turned
+> out already complete and correctly labelled — no dead/mislabelled
+> button to fix — so the real gap was that no true delete existed at
+> all; built one deliberately narrow (new `UserDeleteView` + `audit.
+> USER_DELETED`), succeeding only for a user referenced by none of the 9
+> `User`-FK tables (8 `PROTECT`, 1 `SET_NULL`), refusing everyone else
+> with a clear message rather than a `ProtectedError` 500. Sidebar
+> notification badge: found the literal hardcoded "6" (Phase 3.6 mock
+> era), rewired it to share the topbar bell's existing 30s poll of
+> `/notifications/unread-count/` — one callback now drives both badges,
+> hiding both at zero. Full detail: §13, §15 item 53. 245/245 passing
+> (was 238). (16) **Phase 8.99f-3** — Add User modal audited field-by-
+> field against `SCHEMA.md` §1 (clean, no changes needed); found and
+> fixed a real defect where a failed credentials-email send was
+> indistinguishable from a real success (`UserListCreateView.post()`
+> never checked `send_new_user_credentials_email()`'s return value) —
+> account creation stays either way, but the response now carries a
+> `warning` naming the affected email on failure. Re-proven over real
+> SMTP for both a Staff and a Supervisor creation, including the
+> `email_notifications_enabled=False` override. Full detail: §15 item 54.
+> 247/247 passing (was 245). (17) **Phase 8.99f-4** — BUG-51: a leaked
+> multi-line `{# #}` comment (BUG-03/BUG-36's shape, a third time) above
+> the Add User modal's info banner, rendering as literal text — the
+> "stray lines." BUG-52: the modal's real success path had never shown a
+> user-visible confirmation at all (no Add-modal in this app ever has;
+> reproduced live, diagnosed as a genuine missing feature, not a create
+> failure) — fixed by extending 8.99f-3's `warning` field with a
+> mutually-exclusive `message` naming the emailed address on real
+> success, alert()'d by the existing mechanism before the reload. Full
+> detail: §15 item 55. 248/248 passing (was 247). (18) **Phase 8.99f-5**
+> — BUG-53, the real cause of "works when the tool does it, not when I do
+> it": `EMAIL_BACKEND` was the console backend (this session's own
+> resting dev state after every prior SMTP-proving phase), which never
+> raises — it "sends" by printing locally, so `email_sent=True` meant the
+> same thing for a real delivery and a local-only print, and the success
+> message overclaimed either way. Diagnosed via the task's own 4-cause
+> checklist (config print, bare-shell isolated `send_mail()` test, live
+> repro) before any code change; the SMTP config itself was already
+> correct (confirmed again). Fixed by giving the console-backend case its
+> own honest message distinct from both the real-send and failed-send
+> ones; resting default kept on console per the owner's own choice, put
+> to them directly rather than decided unilaterally. `send_new_user_
+> credentials_email()` untouched — the bare-shell test proved it was
+> never the problem. Full detail: §15 item 56. 249/249 passing (was 248).
+> (19) **Phase 8.99f-6** — close-out audit, not a new investigation: every
+> email-related bug (BUG-48/52/53) inventoried and verified genuinely
+> Fixed against actual code, not just the table (all-fixed outcome, no
+> drift, no stale entries to flip). One further real-SMTP regression pass
+> confirmed clean; the console-branch honesty message re-verified
+> unchanged. `.env.example` was missing its `EMAIL_*` keys entirely — not
+> a secret leak, but a real gap — added as documented placeholders. The
+> Phase 8.99 deploy gate now reads emailed credentials/password-reset as
+> **PROVEN LOCALLY over real SMTP**, not DEFERRED; Phase D's remaining
+> email work is "re-confirm on Render," not "first real send." **The
+> email thread (8.99f through f-6) is closed.** Full detail: §15 item 57.
+> 249/249 passing, unchanged. (20) **Phase 8.99f-7** — real SMTP became
+> the resting default for local use (was: manual flip-then-revert every
+> time). Test-suite safety proven FIRST, before the flip: real SMTP creds
+> present in `.env` throughout a full 254/254 run; `settings.EMAIL_
+> BACKEND` directly confirmed `locmem` under `manage.py test`, both via
+> Django's own mechanism and a new explicit `settings.py` guard.
+> `.env.example`'s `EMAIL_BACKEND`/`DEFAULT_FROM_EMAIL` fixed to be
+> genuinely absent rather than present-and-empty (the latter shadows
+> `settings.py`'s own safe fallback and crashes — a real bug in 8.99f-6's
+> version, corrected). New `EMAIL_TIMEOUT` (10s default) so a hung
+> connection fails fast. New `UserResendCredentialsView` — the recovery
+> path real-SMTP-by-default needs, shown while `last_login` is `None`,
+> live-verified against a deliberately-wrong app password (honest
+> `warning`, then a real successful resend once corrected). Console stays
+> a one-line opt-in, BUG-53's honesty message unchanged. Full detail:
+> §13, §15 item 58. 254/254 passing (was 249). (21) **Phase 8.99f-8** —
+> the "works when the tool does it, not when I do it" report traced to a
+> stale `runserver` process (started before `.env`'s last edit — proven
+> by comparing the process's own `CreationDate` against the file's
+> `LastWriteTime`, not guessed at). Not a code bug. Fixed by a real stop/
+> start, confirmed via real `curl` HTTP requests against the actual
+> listening process across two independent restarts. Full detail: §15
+> item 59. 254/254 passing, unchanged. (22) **Phase 8.99i** — Products'
+> Edit/Deactivate already existed (Phase 8.99e); added the missing
+> Reactivate + a guarded true-Delete. Categories and Suppliers had *zero*
+> Edit/Delete views or JS handlers at all — built the full set for both,
+> matching Products' pattern exactly (`AnyStaffMixin` edit,
+> `SupervisorRequiredMixin` deactivate/reactivate/delete, delete guarded
+> to referenced-vs-unreferenced, "one way to change active status" —
+> edit never touches `is_active`). Found and fixed BUG-55 along the way
+> (Products' Deactivate button used the same `icon-trash` the new, real
+> Delete buttons use — fixed to `icon-x` on all three modules). Real
+> `InventoryRecord` subtlety handled: excluded from Products' history
+> check (every product has one regardless of use) but explicitly deleted
+> as part of a genuinely-safe product delete, since it's `PROTECT` too.
+> 27 new tests, 254/254 → 281/281 passing. Live-verified through the
+> actual running server (`curl`, not just the test client) for all three
+> modules' full create→edit→deactivate→reactivate→delete cycle. Full
+> detail: §13, §15 item 60.
 >
 > If anything in this file conflicts with the other `docs/*.md` files, **this
 > file wins for "what exists today."** The other docs win for "what the
@@ -301,6 +1001,23 @@ What is actually built and working:
   `PASSWORD_CHANGED` all write real `AuditLog` rows; password change also
   fires a real `Notification` + email. Verified live against the real
   Postgres dev DB, not just the test suite — see §12/§15.
+  **Profile images (Phase 8.98e)**: `User.profile_image` (already on the
+  model since Phase 1) is now actually validated on upload
+  (`validate_product_image()`, reused from Product/SystemSettings, not
+  duplicated) and actually displayed — the topbar user menu, sidebar, and
+  profile page all show the real photo when set, falling back to
+  initials exactly as before when not. **Password changes now also alert
+  every Admin** (`notify_admins()`, reusing the documented
+  `PASSWORD_CHANGED` type), naming who changed it, never the new value.
+  **Forgot-password reset (Phase 8.99a)**: real, Stockwell-styled 4-step
+  flow under `frontend:password_reset*` (`registration/password_reset_
+  *.html`), closing Phase 4.5's disabled login-page link. A password
+  reset via the emailed link now writes the same `AuditLog`
+  `PASSWORD_CHANGED` row and fires the same `notify_admins()` alert the
+  profile-modal path already did (`StockwellPasswordResetConfirmView`,
+  BUG-48) — previously it silently did neither. Delivery runs on the
+  console backend in normal dev; real-inbox delivery proven ✅ LIVE
+  against a real Gmail inbox (Phase 8.99f, §13/§15 item 52).
 - ✅ **RBAC mechanism (Phase 4)** — `frontend/decorators.py`
   (`require_role`/`admin_required`/`supervisor_required`/`staff_required`)
   and `frontend/mixins.py` (`RoleRequiredMixin`/`AdminRequiredMixin`/
@@ -315,8 +1032,31 @@ What is actually built and working:
   notification-bell dropdown, and (Phase 4) a working user-menu dropdown
   showing the real logged-in user's name/role/initials (`My Profile`,
   `Log out`) — no longer hardcoded to "Amara Tenzin".
-- ✅ **Dashboard page** (`dashboard/dashboard.html`) — KPI cards, Chart.js
-  sales/inventory charts, static preview panels.
+- ✅ **Dashboard page (real, Phase 8.96)** — genuinely built now, against
+  `docs/09_DASHBOARD.md` (originated Phase 8.95, approved 8.95.1). Closes
+  the gap Phase 8.8 found (this entry previously read "✅" while the view
+  passed only `{"greeting": ...}` — see `docs/bugsfound.md` BUG-41). All 4
+  KPI cards are real DB counts (`Product`/`Category`/`Supplier`
+  (`is_active=True`)/`User`), each with a real "+N new in the last 30
+  days" trend, not a fabricated percentage; the 4-item stat strip reuses
+  `InventoryRecord`'s own aggregates (`Sum(total_value)`,
+  `Sum(current_stock)`, `status` counts — same definitions as the real
+  Inventory page, Phase 8.9); both Chart.js charts render real,
+  DB-aggregated series (`Sum`/`annotate`/`TruncWeek`/`TruncMonth`, zero-
+  filled per bucket) passed via `{{ chart_data|json_script:
+  "dashboardChartData" }}`, not hardcoded arrays; Stock Alerts shows real
+  low/out-of-stock `InventoryRecord` rows; Pending Approvals is a
+  **read-only** summary of real pending `PurchaseOrder`/
+  `InventoryAdjustment` rows — no Approve/Reject buttons anywhere on this
+  page, a deliberate decision (Phase 8.5's action-button risk class, see
+  `09_DASHBOARD.md` §4b); Recent Activity shows real `AuditLog` rows
+  (business actions only, `authentication` module excluded) and renders
+  **only** for admin/supervisor — genuinely absent from the rendered HTML
+  for staff, confirmed by test and live Playwright check, not just CSS-
+  hidden. The AI Insights section is gone entirely (not an empty state) —
+  returns once Phase 10/11 populate its source tables for real.
+  `DASHBOARD_PREVIEW_ROWS = 5` is defined once in `frontend/views.py` and
+  reused for all 3 preview widgets. 8 new tests — 144/144 passing.
 - ✅ **Product module (real, Phase 5)** — list page renders the real
   `Product` queryset (with real Category/Supplier FK display, computed
   stock-status badge); "Add Product" modal posts to a real
@@ -326,7 +1066,10 @@ What is actually built and working:
   `InventoryRecord` created via `InventoryService` on every product. The
   template/JS pattern (modal.js/form-validation.js/dom-utils.js/
   modal-form.js + product-form.js) this module established is still the
-  one every later module copies — see §5/§12/§15.
+  one every later module copies — see §5/§12/§15. **`tax_rate` (Phase
+  8.98c)**: a new, disclosed (§13) percentage field on the product itself
+  — not per-transaction — non-negative-validated, optional (defaults to
+  0%), feeding every Purchase/Sale line's auto-calculated tax.
 - ✅ **Category module (real, Phase 6)** — grid-card list renders the real
   `Category` queryset (real product counts via `category.products.count()`);
   "Add Category" modal posts to a real `CategoryListCreateView` guarded by
@@ -347,20 +1090,97 @@ What is actually built and working:
   Approve/Reject (`SupervisorRequiredMixin`), Receive — full or partial
   (`AnyStaffMixin`), Cancel from any cancellable state
   (`SupervisorRequiredMixin`). Every transition calls `PurchaseService`,
-  never a raw model save.
-- ✅ **Sale module (real, Phase 7)** — list page renders the real
-  `SaleTransaction` queryset; "New sale" modal creates a real sale with
-  real line items via `SaleTransactionForm` + `parse_line_items()`,
-  routed through `SaleService.create_sale()` (pre-validates stock, deducts
-  on success). Cancel (`SupervisorRequiredMixin`) restores stock via
-  `SaleService.cancel_sale()`.
+  never a raw model save. **Expected Delivery (Phase 8.98b)**:
+  `expected_delivery` already existed on the model and in
+  `PurchaseOrderForm` (SCHEMA.md's own field) — the actual gap was
+  display (no table column) and validation (no past-date guard), both
+  closed. Now a real column in the purchases table (`—` when unset) and a
+  real, server-side-enforced rule: can't be in the past, computed against
+  Asia/Dhaka's current date (`timezone.localdate()`, Phase 8.6's
+  convention), not the OS clock. `order_date` itself is set explicitly in
+  `PurchaseOrder.save()` via `timezone.localdate()` (**Phase 8.99**: was
+  `auto_now_add=True` at the time this was written — closed as BUG-47,
+  see §12/§15, since a plain `DateField`'s `auto_now_add` ignores
+  `TIME_ZONE` entirely and would have used the OS clock's raw date on a
+  UTC production server) — never user-submitted, always exactly "today"
+  (Asia/Dhaka) at save time, so a separate "not-before-order_date" check
+  is still redundant with the past-date check, not a second real rule.
+  Client-side, the date input's `min=` is the same server-computed
+  Asia/Dhaka date (not the browser's local clock), so the two can never
+  disagree. **Tax (Phase 8.98c)**: each
+  line's tax is now auto-calculated server-side from the product's own
+  `tax_rate`, never a form field — the line-items editor's old tax
+  `<input>` is gone, replaced by a read-only display, and the order-total
+  footer now reads "Total (incl. tax)". **PDF (Phase 8.98d)**: a real
+  per-row "Download PDF" button (`PurchaseOrderPDFView`, same
+  `AnyStaffMixin` gate as the list view) — that PO's real line items,
+  tax, and total, reusing `frontend/reports.py`'s existing ReportLab
+  setup, not a new export mechanism and not the Reports module.
+- ✅ **Sale module (real, Phase 7; full approval workflow, Phase 8.99b)**
+  — list page renders the real `SaleTransaction` queryset; "New sale"
+  modal creates a real sale with real line items via
+  `SaleTransactionForm` + `parse_line_items()`. **Approval workflow
+  (Phase 8.99b)**: no longer create-and-complete in one step — mirrors
+  Purchases' own state machine. `SaleService.create_sale()` now creates a
+  `DRAFT` with zero stock effect; `AnyStaffMixin`-gated
+  `SaleSubmitView` moves it to `PENDING` (fires the new `SALE_PENDING`
+  notification, §13); `SupervisorRequiredMixin`-gated `SaleApproveView`/
+  `SaleRejectView` are the only place a sale's stock actually moves —
+  `approve_sale()` re-validates availability for real at that moment (see
+  §13's stock-at-approval finding) and deducts via `InventoryService`;
+  `reject_sale()` mirrors `PurchaseService.reject()`. `SaleCancelView`
+  (`SupervisorRequiredMixin`) now only reaches `DRAFT`/`PENDING` sales —
+  a completed sale can never be cancelled, and since nothing is deducted
+  before approval, cancelling a draft/pending sale no longer restores
+  stock (there's nothing to restore). Tax (Phase 8.98c) and the PDF
+  export (Phase 8.98d) are both unchanged — the money math and the
+  ledger were explicitly out of scope for this phase, confirmed
+  untouched. Sale's PDF now additionally shows Approved By/Approved At.
 - ✅ **Adjustment module (real, Phase 7)** — list page renders the real
   `InventoryAdjustment` queryset; "New adjustment" modal creates a real
   pending request via `AdjustmentForm` (`AnyStaffMixin`). Approve/Reject
   (`SupervisorRequiredMixin`) route through `AdjustmentService`.
-- ✅ **Inventory module (read-only)** — list page only, deliberately **no**
-  add/create modal (see §7/§18 — documented as API-driven only, never
-  user-created directly).
+- ✅ **Inventory module (real, Phase 8.9)** — genuinely built now, closing
+  the gap Phase 8.7/8.8 found (this entry incorrectly read "✅ read-only"
+  before the view actually existed; see `docs/bugsfound.md` BUG-37).
+  `InventoryListView` (`AnyStaffMixin` — matches `07_INVENTORY.md`'s own
+  `@staff_required`, which means all 3 roles in this project's RBAC, not a
+  stricter gate) renders a real `InventoryRecord` queryset: product,
+  current stock, reorder level, total value, and `status` read straight
+  off the model (InventoryService already keeps it correct on every real
+  mutation — not recomputed in the view). KPI/stat-strip numbers and the
+  "last movement" column are real aggregates too, not hardcoded. Filter
+  controls wired to `table-filter.js` the same way as Phase 8.7's 5 pages.
+  Confirmed strictly read-only: no `<form>` in the template, no mutation
+  call anywhere in the view, live `POST /inventory/` returns `405`.
+  **Movement History added (Phase 8.98, BUG-45)** — `/inventory/movements/`
+  (`MovementHistoryListView`, `AnyStaffMixin`), the real page behind the
+  page's own "Movement history" button (previously dead). Real
+  `InventoryMovement` ledger, real `Paginator`-backed pagination (the
+  ledger is append-only and grows forever — client-side filtering would
+  only ever see one page of it). Also strictly read-only, same as
+  Inventory itself.
+  **Phase 8.99d — every filter went server-side, and export gained a PDF
+  twin of the CSV.** Date range, product, movement type, and search (`q`,
+  product name/SKU) are now all query-string filters read by one shared
+  `frontend/reports.py` function (`filter_movements()`), used by both this
+  page and its own export view — the page and the export can no longer
+  silently disagree, which they previously did (the page filtered dates
+  with `created_at__date__gte`; the export used a different, timezone-
+  aware range; the export had no product/type/search filtering at all).
+  `table-filter.js`/`movement-history.js` (the latter deleted, now dead)
+  are gone from this page — search moved server-side rather than staying
+  client-side-with-a-caveat, since a client-only search could never be
+  reflected in an export either, the same reasoning BUG-45 already used
+  for date range. The `?product=<id>` deep-link from Inventory's per-row
+  links now lands in a real, visible `<select>` in the same filter form,
+  not a separate hidden-input mechanism. Export CSV unchanged in shape;
+  Export PDF is new, reusing `generate_pdf_response()`/
+  `_styled_data_table()` verbatim (no new PDF mechanism) with a new
+  optional `filters_summary` line rendered under the title stating
+  exactly what was filtered. See §13 for the full disclosure, including
+  why a "cancelled/rejected source document" filter was *not* added as a
+  UI control despite being buildable.
 - ✅ **Demand Forecasting page** (`intelligence/forecasting.html`) — KPI
   cards, trend chart, prediction table with filters, "AI insights" copy,
   reorder-priority panel. All static/mocked; "Run forecast" button just
@@ -385,17 +1205,29 @@ What is actually built and working:
   export straight from their card (no preview panel existed for those in
   the mock either); every export audit-logged
   (`REPORT_GENERATED`/`REPORT_EXPORTED_PDF`/`REPORT_EXPORTED_CSV`);
-  `SupervisorRequiredMixin`-gated.
+  `SupervisorRequiredMixin`-gated. **Confirmed genuinely real (Phase 8.8
+  audit)** — all 9 builders are real querysets, no hardcoded rows anywhere.
+  One honest caveat, not a bug: AI Forecast/AI Classification query
+  `DemandForecast`/`InventoryClassification`, which nothing populates yet
+  (AI is Phase 10/11) — those two exports are real code against
+  currently-empty tables, correctly producing an empty report, not fake
+  data standing in for real data.
 - ✅ **Notifications module (real, Phase 8)** — real `Notification`
   queryset for the logged-in user; mark-read/mark-all-read/unread-count
   endpoints; topbar bell badge (`#notifBadge`) polls `/notifications/
   unread-count/` every 30s and only shows when something's actually
   unread — no role gate, any authenticated user sees their own.
-- ✅ **Users & Roles module (real, Phase 8)** — real `User` queryset +
-  role counts; "Add user" gained a required password field the Phase 3.6
-  mock explicitly didn't have — disclosed deviation, not a silent one: a
-  `User` saved without one gets `set_unusable_password()` and can never
-  log in (see `UserForm`'s docstring, `frontend/forms.py`). Deactivate/
+- ✅ **Users & Roles module (real, Phase 8; password field removed again,
+  Phase 8.98e)** — real `User` queryset + role counts. Phase 8 gave "Add
+  user" a required password field (a `User` saved without one gets
+  `set_unusable_password()` and can never log in); Phase 8.98e removes
+  that field a second time, deliberately, for the opposite reason — the
+  Admin must never choose or see a new user's password at all now.
+  `UserListCreateView.post()` generates a strong random one
+  (`frontend.validators.generate_strong_password()`), sets it, and emails
+  it directly to the new user (`frontend.notifications.
+  send_new_user_credentials_email()`) — never returned in this view's own
+  response, never logged, never stored in a `Notification`. Deactivate/
   Reactivate wired for real; an admin cannot deactivate their own account.
   `AdminRequiredMixin`-gated.
 - ✅ **Audit Log module (real, Phase 8)** — real `AuditLog` queryset
@@ -437,7 +1269,7 @@ inventory 3/
 ├── frontend/                  The ONLY Django app. Holds both the backend schema and the entire UI.
 │   ├── models.py              16 concrete models + TimeStampedModel abstract base (Backend Phase 1), matching docs/SCHEMA.md exactly. Migrated (Phase 3.7).
 │   ├── admin.py                All 16 models registered (Backend Phase 2) — list_display/search_fields/list_filter/ordering configured. Data-browsing works (Phase 3.7, see §5).
-│   ├── views.py               login/logout_view/profile_view real (Phase 4); ProductListCreateView (Phase 5), CategoryListCreateView/SupplierListCreateView (Phase 6) real; Purchases/Sales/Inventory/Adjustments still one-line render() — see §5
+│   ├── views.py               981 lines. Every view is real now (Phase 4-8.9) except Dashboard's — see §5/§16
 │   ├── forms.py                Phase 5 — ProductForm; Phase 6 — CategoryForm/SupplierForm
 │   ├── urls.py                app_name="frontend"; 19 registered routes (products/, categories/, suppliers/ point at their List/CreateView.as_view(), see §5)
 │   ├── decorators.py          Phase 4 — require_role/admin_required/supervisor_required/staff_required (RBAC, function-based views)
@@ -649,13 +1481,17 @@ nothing calls.
 - **URLs**: `config/urls.py` registers 3 top-level patterns: `/admin/`,
   `/accounts/` (Django's built-in `django.contrib.auth.urls`, namespaced
   `accounts`), and `/` (includes `frontend.urls`, namespaced `frontend`).
-  `frontend/urls.py` registers 33 routes as of Phase 8 (was 31 after Phase
-  7): the original GET-rendered template routes (landing/dashboard/login/
-  logout/profile/inventory/AI pages), the 12 Purchase/Sale/Adjustment
-  workflow routes (Phase 7), `reports/`/`notifications/`/`users/`/
-  `audit-log/`/`settings/` (all 5 already existed as routes, now pointing
-  at real class-based views instead of one-line `render()` functions), and
-  Phase 8's 6 net-new sub-routes: `reports/export/<slug:report_type>/`,
+  `frontend/urls.py` registers 39 routes as of Phase 8.98a (was 38 after
+  Phase 8.98, 33 after Phase 8, 31 after Phase 7 — grew again via Phase
+  8.9's `inventory/movements/` (+2, list and export), Phase 8.98's
+  `products/export/`/`suppliers/export/`/`audit-log/export/` (+3), and
+  Phase 8.98a's `profile/change-password/` (+1)): the original
+  GET-rendered template routes (landing/dashboard/login/logout/profile/
+  inventory/AI pages), the 12 Purchase/Sale/Adjustment workflow routes
+  (Phase 7), `reports/`/`notifications/`/`users/`/`audit-log/`/`settings/`
+  (all 5 already existed as routes, now pointing at real class-based
+  views instead of one-line `render()` functions), and Phase 8's 6
+  net-new sub-routes: `reports/export/<slug:report_type>/`,
   `notifications/<pk>/read/`, `notifications/read-all/`,
   `notifications/unread-count/`, `users/<pk>/deactivate/`,
   `users/<pk>/reactivate/`.
@@ -712,12 +1548,15 @@ nothing calls.
   `AdminRequiredMixin` its first real (non-throwaway) use — Audit Log,
   Users & Roles, Settings — and plain Django `LoginRequiredMixin` its
   first use anywhere in this project, on Notifications (correctly
-  role-less: every user's notifications are their own). Every view in the
-  app is now RBAC-gated one way or another — Inventory is the one
-  remaining read-only view with no mixin at all (see §12/§16), by design,
-  not oversight (it has no create/write action to gate). DRF's
-  `BasePermission` classes (`IsAdmin` etc.) from the same doc were
-  explicitly out of scope — DRF isn't installed.
+  role-less: every user's notifications are their own). **Every view in
+  the app is RBAC-gated one way or another** — Inventory's real
+  `InventoryListView` (Phase 8.9) closed the last gap with
+  `AnyStaffMixin` (matching `07_INVENTORY.md`'s own `@staff_required`,
+  which means all 3 roles in this project's RBAC — not a stricter gate;
+  it still has no create/write action to gate, by design, just a real
+  login/role check now instead of none at all). DRF's `BasePermission`
+  classes (`IsAdmin` etc.) from the same doc were explicitly out of
+  scope — DRF isn't installed.
 - **Forms (Phase 5/6/7 — real ModelForms)**: `frontend/forms.py`'s
   `ProductForm` (Phase 5) — server-side enforcement of what the JS modal
   previously only checked client-side (unique SKU/barcode via Django's
@@ -1066,14 +1905,19 @@ matching SCHEMA.md exactly — see §6, migrated to PostgreSQL since
 Phase 3.7/3.8. All 16 registered and browsable in Django admin — see §5.
 
 **Partially completed:**
-- Search/filter controls exist visually on most list pages (Products,
-  Suppliers, Purchases, Sales, Inventory, Adjustments) but are **not
-  wired** to actually filter the static table rows — only the Intelligence
-  pages' filters (`table-filter.js`) actually work.
+- Search/filter controls now filter real data on every list page that has
+  them: Products, Suppliers, Purchases, Sales, Adjustments (Phase 8.7),
+  Inventory (Phase 8.9), Users & Roles (Phase 8.6), Forecasting/
+  Slow-Moving/Audit Log/Reports (already working pre-8.6). One exception,
+  confirmed intentional not overlooked (Phase 8.7): **Categories** has no
+  filter controls in its template at all — nothing to wire. This bullet
+  predates Phase 5-8; the "Approve/reject have no click handlers" line
+  immediately below is similarly stale — see §2/§15 Phase 7/8.5.
 - Pagination controls exist on several list pages but are non-functional
   (Previous disabled, Next does nothing).
-- Approve/reject buttons exist on Purchase/Adjustment pending rows but
-  have no click handlers.
+- ~~Approve/reject buttons exist on Purchase/Adjustment pending rows but
+  have no click handlers.~~ Stale — real since Phase 7 (Purchases/
+  Adjustments) and role-gated since Phase 8.5, see §2/§15.
 
 **No longer missing**: Reports, Notifications, Audit Log, Users & Roles,
 Settings all got real mock pages in Phase 3.6 (§11) — sidebar links
@@ -1086,27 +1930,36 @@ re-enabled, nothing left disabled.
 - ✅ Landing
 - ✅ Login (real, Phase 4 — username/email, lockout, session timeout)
 - ✅ Profile (`/profile/`, Phase 4 — new page, not in the sidebar; reached
-  via the topbar user-menu dropdown only)
-- ✅ Dashboard
-- ✅ Products (real, Phase 5 — list + Add modal against the live DB, RBAC-guarded)
-- ✅ Categories (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded)
-- ✅ Suppliers (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded)
-- ✅ Purchases (real, Phase 7 — list + Add modal against the live DB, full submit/approve/reject/receive/cancel workflow, RBAC-guarded)
-- ✅ Sales (real, Phase 7 — list + Add modal against the live DB, cancel restores stock, RBAC-guarded)
-- ✅ Inventory (list only, read-only by design)
+  via the topbar user-menu dropdown only). Password change moved to its
+  own real modal (Phase 8.98a) — `/profile/change-password/`, current-
+  password verification + confirm-match, same `StrongPasswordValidator`
+  chain reused from Phase 4.
+- ✅ Dashboard (real, Phase 8.96 — real KPIs/stats/charts/widgets against
+  `docs/09_DASHBOARD.md`, Recent Activity admin/supervisor-only — see §2/§16)
+- ✅ Products (real, Phase 5 — list + Add modal against the live DB, RBAC-guarded; Phase 8.99e/8.99i added the full Edit/Deactivate/Reactivate/Delete lifecycle — see §13)
+- ✅ Categories (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded; Phase 8.99i added the full Edit/Deactivate/Reactivate/Delete lifecycle — previously unwired, see §13)
+- ✅ Suppliers (real, Phase 6 — list + Add modal against the live DB, RBAC-guarded; Phase 8.99i added the full Edit/Deactivate/Reactivate/Delete lifecycle — previously unwired, see §13)
+- ✅ Purchases (real, Phase 7 — list + Add modal against the live DB, full submit/approve/reject/receive/cancel workflow, RBAC-guarded; Phase 8.99c: cancel is draft/pending-only and requires a reason — see §13)
+- ✅ Sales (real, Phase 7 — list + Add modal against the live DB, full submit/approve/reject/cancel workflow mirroring Purchases since Phase 8.99b, RBAC-guarded; Phase 8.99c: cancel is draft/pending-only and requires a reason, same as Purchases — see §13)
+- ✅ Inventory (real, Phase 8.9 — real `InventoryRecord` list, read-only
+  by design, `AnyStaffMixin`-guarded, filters wired — see §2/§16)
 - ✅ Adjustments (real, Phase 7 — list + Add modal against the live DB, approve/reject workflow, RBAC-guarded)
 - ✅ Demand Forecasting (`/ai/forecasting/`)
 - ✅ Slow-Moving & Dead Stock (`/ai/slow-moving/`)
 - ✅ Reports (`/reports/`, real, Phase 8 — 9 report types, all export real PDF/CSV; Sales/Low Stock keep a real HTML preview, RBAC-guarded Supervisor+)
-- ✅ Notifications (`/notifications/`, real, Phase 8 — real per-user list, mark-read/mark-all, 30s-polling topbar badge)
-- ✅ Users & Roles (`/users/`, real, Phase 8 — list + Add User (now with password) against the live DB, Deactivate/Reactivate, RBAC-guarded Admin-only)
+- ✅ Notifications (`/notifications/`, real, Phase 8 — real per-user list, mark-read/mark-all, 30s-polling topbar badge; Phase 8.99f-2: the sidebar's own badge — previously a hardcoded "6" — now driven by the same poll/endpoint, not a second one)
+- ✅ Users & Roles (`/users/`, real, Phase 8 — list + Add User against the live DB (password field removed again, Phase 8.98e — a generated password is emailed instead, see §13), Deactivate/Reactivate, RBAC-guarded Admin-only; Phase 8.99f-2: real Delete added, guarded to users with zero referential history — see §13)
 - ✅ Audit Log (`/audit-log/`, real, Phase 8 — real `AuditLog` queryset, RBAC-guarded Admin-only)
 - ✅ Settings (`/settings/`, real, Phase 8 — real `SystemSettings` singleton, RBAC-guarded Admin-only)
 
-All 15 sidebar links now resolve to a real page, and every one of them is
-real (Phase 8 was the last batch — see §16). Inventory is the only page
-left with no create/write action to gate; every other page now runs
-through a real form/queryset and a real RBAC mixin.
+All 15 sidebar links now resolve to a real page, every one of them is
+real, and (Phase 8.97 Part A) every one of them is now genuinely
+RBAC-guarded too — Inventory (Phase 8.9), Dashboard content (Phase 8.96),
+and Dashboard's own auth gate (Phase 8.97) closed the last gaps, see
+§2/§16. Every page except Inventory runs through a real form/queryset and
+a real RBAC mixin; Inventory runs through a real queryset and
+`AnyStaffMixin` (no form, since it's read-only by design); Dashboard now
+does the same (`DashboardView(AnyStaffMixin, View)`, Phase 8.97).
 
 ---
 
@@ -1159,9 +2012,14 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
   out of scope for Phase 2).
 
 **Technical debt:**
-- `line_total` calculation logic duplicated in 3 places on the frontend
+- ~~`line_total` calculation logic duplicated in 3 places on the frontend
   (see §8), and a 4th time server-side in the new `PurchaseOrderItem`/
-  `SaleItem` models — worth reconciling once a real service layer exists.
+  `SaleItem` models~~ — **server-side duplication RESOLVED (Phase 8.98c)**:
+  `PurchaseOrderItem.save()` and `SaleService.create_sale()` both now call
+  the same `frontend.pricing.calculate_line_total()`. The frontend copy in
+  `line-items.js` is unchanged and still indicative-only (server is
+  authoritative) — that half of the debt still stands, tax is just no
+  longer part of what it duplicates as a user-editable input.
 - `.card` CSS class defined in `components.css` but completely unused
   (every real card uses `.card-flat` or a more specific variant instead).
 - `MockCatalog.products`/`.suppliers` raw arrays exported but unused
@@ -1179,6 +2037,34 @@ applied to `db.sqlite3` (reset first — it had zero real rows). See §15.
   not fixed (see §6).
 - `InventoryClassification.classified_at` duplicates the inherited
   `updated_at` (see §6).
+- ~~`dashboard()` had no `@login_required`/RBAC mixin at all~~ —
+  **FIXED (Phase 8.97 Part A, BUG-42).** Converted to
+  `DashboardView(AnyStaffMixin, View)`, matching every other real view's
+  convention. Verified live: anonymous `GET /dashboard/` → `302` to
+  `/login/?next=/dashboard/`; all 3 roles still load correctly; Recent
+  Activity's `is_authenticated` guard (Phase 8.96) is now
+  belt-and-suspenders, not load-bearing.
+- ~~`demand_forecasting`/`slow_moving_dead_stock` (`/ai/forecasting/`,
+  `/ai/slow-moving/`) also have no auth requirement at all~~ — **FIXED
+  (Phase 8.99j, BUG-43).** Converted both to CBVs
+  (`DemandForecastingView`/`SlowMovingDeadStockView`), gated
+  `SupervisorRequiredMixin` (Admin+Supervisor only — narrower than
+  `AnyStaffMixin`, since this phase's actual requirement was "staff can't
+  see the AI models," a disclosed deviation from BUG-43's own original
+  suggested fix). Sidebar's Intelligence nav group gated to match.
+  Verified live, all 3 roles + anonymous, by direct URL. Both pages
+  remain 100% disclosed mock (§10/§11) pending Phase 10/11 — only the
+  access gate changed here.
+- ~~"Export"/"Export CSV" buttons on Products, Suppliers, and Audit Log
+  are decorative~~ — **FIXED (Phase 8.98, BUG-44).** All 3 now produce
+  real CSV via `frontend/reports.py`'s existing `generate_csv_response()`
+  — exactly the reuse this entry predicted. Auth matches each source
+  page (`AnyStaffMixin` on Products/Suppliers, `AdminRequiredMixin` on
+  Audit Log). Products/Suppliers export the full dataset, not the current
+  client-side filter selection (disclosed, not silent). Movement History
+  (BUG-45, same phase) got the same treatment, and — being genuinely
+  server-side date-filtered already — its export actually respects the
+  current filter, unlike the other three.
 
 **Open items from Backend Phase 4** (real, verified, but with real gaps —
 kept together here rather than scattered, since they were all found in
@@ -1269,6 +2155,11 @@ the same phase):
   fully unreferenced by any template (nothing left points at the
   `accounts:` namespace) but was deliberately left in place — dead but
   harmless, and removing it was outside this cleanup's explicit scope.
+  **RESOLVED for real, Phase 8.99a**: the flow is now real and
+  Stockwell-styled (own templates, not admin's fallback ones), the link
+  is a genuine `<a href>` again, and the `accounts:` include this entry
+  called "deliberately left in place" is now actually removed — its last
+  reason for existing (this flow) no longer needs it. See §15.
 
 **Missing backend**: no API, no AI execution, no Celery. RBAC not wired
 into any real module view yet (above). Migrations + `AUTH_USER_MODEL`
@@ -1453,6 +2344,483 @@ inert but undeleted for the same reason.
   writes no movement at all keeps the ledger honest and keeps
   `InventoryService` as the single place `InventoryRecord` rows are
   created or mutated either way (see §5/§6).
+- **`Product.tax_rate` added with no source in any doc — disclosed, not
+  silently invented (Phase 8.98c), same treatment as the SKU-format
+  decision above.** `SCHEMA.md`/`API_CONTRACTS.md` both still document
+  `tax` only as a per-line `PurchaseOrderItem`/`SaleItem` field (a
+  transaction-time value); this task explicitly asked to move it onto
+  `Product` instead — a property of the product, not something entered
+  per-transaction — and to auto-calculate every line's tax from it.
+  Defaults to 0% (matches the field's own model default, and the general
+  principle used elsewhere in this project of not baking in an assumed
+  jurisdiction/tax regime — see `SystemSettings`, which has no tax-rate
+  field of its own either). `PurchaseOrderItem.tax`/`SaleItem.tax` are
+  kept as real, separately-stored columns rather than being derived at
+  read-time from `product.tax_rate` — deliberately, so each transaction
+  keeps a historical snapshot of what was actually charged: a later change
+  to a product's `tax_rate` must only affect new transactions, never
+  retroactively rewrite an already-completed one. `InventoryAdjustment`
+  was left alone entirely — it has no monetary/tax field in `SCHEMA.md` and
+  none was added; tax is a purchase/sale concern only.
+- **`UserForm`'s password field (Phase 8's own disclosed decision) removed
+  again (Phase 8.98e) — the second reversal on this exact field.** Phase 8
+  added it because a `User` saved without ever calling `set_password()`
+  could never log in; Phase 8.98e removes it again because this task
+  requires the Admin to never choose or see a new user's password at
+  all. Both states were real, working, and disclosed at the time — this
+  is not a bug being fixed, it's a requirement changing. A random
+  password is now generated server-side and emailed instead.
+- **The new-user credentials email (Phase 8.98e) bypasses
+  `SystemSettings.email_notifications_enabled`**, unlike every other
+  email this app sends. That flag is framed throughout `SCHEMA.md`/
+  `11_NOTIFICATIONS.md` as a discretionary alert-noise preference; the
+  credentials email is the *only* channel through which a new,
+  Admin-invisible password can ever reach its owner, so honoring a
+  blanket "no emails" toggle here would strand that account with no way
+  to log in. Disclosed rather than silently special-cased.
+- **No new `NotificationType` added for "account created" (Phase
+  8.98e)**, even though the new-user flow does send a real email.
+  `11_NOTIFICATIONS.md`'s type table has no such entry, and this
+  project's existing precedent (`PurchaseService.cancel()`/`reject()`,
+  §12) is to skip the in-app `Notification` rather than invent an
+  undocumented type — applied here too. There is a stronger reason on
+  top of precedent this time: `notify_user()` always stores its exact
+  message in a `Notification` row, and the message would have to contain
+  the password to be useful, which this phase's own hard security rule
+  forbids. So `send_new_user_credentials_email()` (frontend/
+  notifications.py) sends the real email directly via `send_mail()` and
+  creates no `Notification` row for the new user at all.
+- **`SERVE_MEDIA_IN_PRODUCTION` (Phase 8.99) defaults to `False`,
+  deliberately not tied to `DEBUG`.** Serving media in production is only
+  correct once a persistent disk is actually mounted at `MEDIA_ROOT`
+  (Render's default disk is ephemeral) — making it a bare
+  `not DEBUG`-style flag like the security headers would mean the very
+  first production deploy silently starts "serving" media it's about to
+  lose on the next redeploy. A separate, explicit opt-in makes attaching
+  real storage a deliberate step, not an accidental side effect of
+  flipping `DEBUG`.
+- **`SECURITY.md`'s `SECURE_BROWSER_XSS_FILTER` deliberately not added
+  (Phase 8.99).** Django removed this setting in 4.0 — the
+  `X-XSS-Protection` header it controlled was itself deprecated/removed
+  by every major browser for being an exploitable security hole. Setting
+  it under this project's Django 6.0.7 would do nothing; disclosed as an
+  intentional gap against the doc rather than added as inert cargo.
+- **Emailed new-user credentials and the forgot-password reset were
+  reported DEFERRED, not LIVE, after Phase 8.99** even though all the
+  SMTP settings existed and were wired correctly — that phase had no real
+  Gmail app-password or outbound SMTP access to prove an email actually
+  reaches a real inbox, and claiming "LIVE" on code-correctness alone
+  would have been exactly the silent-failure mode Phase 8.99's own
+  verification gate exists to catch. **Superseded, Phase 8.99f: both are
+  now ✅ LIVE** — a real Gmail app password became available, both a real
+  credentials email and a real password-reset email were sent and
+  confirmed received in a real inbox. See §15 item 52 and the intro
+  blockquote's "3 faked in dev gate" paragraph for the full verification.
+- **Password reset (Phase 8.99a) lives entirely under `frontend:`, and
+  the `accounts:` django.contrib.auth.urls include is now removed, not
+  left dead.** Matches this project's own established precedent (login/
+  logout already left `accounts:` for `frontend:`, BUG-01) and was the
+  only option that actually works, not just the more consistent one:
+  `PasswordResetConfirmView`/`PasswordResetView`'s own default
+  `success_url`s, and Django's default `registration/
+  password_reset_email.html`'s `{% url 'password_reset_confirm' %}` tag,
+  all reverse a *bare*, non-namespaced name — confirmed via a live
+  `NoReverseMatch` before fixing it — which cannot resolve once the route
+  only exists inside a namespaced include. Every `success_url` is now
+  explicitly namespaced (`frontend:password_reset_done` etc.), and a
+  custom `password_reset_email.html` explicitly tags
+  `{% url 'frontend:password_reset_confirm' ... %}` rather than relying
+  on Django's default template's bare one. Confirmed via full-repo grep
+  that nothing still referenced `accounts:` before removing the include —
+  only a code comment did.
+- **`SaleTransaction.status` extended to a 5-value state machine
+  (Phase 8.99b), diverging from `SCHEMA.md` §6's documented two values
+  (`completed`/`cancelled`).** The owner is the source of this rule, not
+  the doc — same "the owner overrides the doc" treatment as
+  `Product.tax_rate`. No separate `APPROVED` status was added alongside
+  the pre-existing `COMPLETED`: for a Purchase, approval and receipt are
+  genuinely different moments (approval commits to the order; stock only
+  moves later, on receive, and can move in parts across several
+  receipts) — for a Sale, approval *is* the moment stock moves, so a
+  distinct `APPROVED` status would describe no second, later event of
+  its own; adding one would be a state with no real meaning. `COMPLETED`
+  was reused, not renamed, specifically so every pre-existing dev record
+  stayed a valid row with zero data migration needed.
+- **`SALE_PENDING` added as `NotificationType`'s 13th value (Phase
+  8.99b), a deliberate override of this project's own Phase 8.98e
+  precedent** ("skip a notification rather than invent an undocumented
+  type," applied there to `PurchaseService.cancel()`/
+  `AdjustmentService.reject()`-style purely-informational gaps). That
+  precedent doesn't apply here: without a real notification, a
+  Supervisor/Admin has no way to ever learn a sale is awaiting them, and
+  the entire approval gate this phase builds has no trigger at all — a
+  functional gap, not a cosmetic one. `reject_sale()`'s own missing
+  notification type, by contrast, *is* the informational-gap shape the
+  Phase 8.98e precedent describes, and was left un-invented, matching it
+  exactly (same reasoning `AdjustmentService.reject()` already used).
+- **`SaleService.cancel_sale()` no longer restores stock (Phase 8.99b)**,
+  diverging from `06_SALES.md`'s documented "Cancellation | Restores
+  stock via `InventoryService.increase_stock()`" rule. Not an oversight:
+  cancellation is now restricted to `DRAFT`/`PENDING` sales only (a
+  completed sale can never be cancelled by this method — the task's own
+  explicit rule), and a draft/pending sale has had nothing deducted yet
+  under the new approval-gated model (only `approve_sale()` moves
+  stock), so there is nothing left to restore. What should happen to an
+  already-completed sale that needs reversing is an explicitly separate,
+  out-of-scope concern — named in this phase's own task spec as Phase
+  8.99c's problem to own, not solved here.
+- **`PurchaseService._CANCELLABLE_STATUSES` narrowed to `DRAFT`/`PENDING`
+  only (Phase 8.99c), overriding `05_PURCHASES.md`'s own state machine
+  ("Any state -> CANCELLED") and business-rules table.** The owner is the
+  source of this rule, not the doc — same treatment as `Product.tax_rate`
+  and the Sale status extension above. Reason: an approved PO is a
+  commitment already made to the supplier; cancelling it after that point
+  isn't a status flip, it's reneging on an order the supplier may already
+  be fulfilling. `APPROVED`/`PARTIAL` were previously cancellable
+  (Phase 3.4 / BUG-25's original implementation, which read the doc's
+  diagram literally); `RECEIVED`/`REJECTED`/`CANCELLED` were already
+  terminal and remain so.
+  **Named, unsolved consequence**: an approved or partially-received PO
+  the supplier will never fulfil now has no terminal state to reach. It
+  stays in the pending-approvals view and the Purchases list indefinitely,
+  and the Dashboard's Pending Approvals widget keeps counting it. The
+  minimal fix is a future, distinct "close/abandon PO" supervisor action —
+  not a new status invented to paper over it now, and not built this
+  phase. Flagged here as a real gap, not quietly worked around.
+- **`InventoryAdjustment` is the one, official path for post-completion
+  stock corrections (Phase 8.99c)** — customer returns, mis-keyed
+  quantities, damaged goods discovered after a Purchase is `RECEIVED` or a
+  Sale is `COMPLETED`. Never via editing or deleting a completed
+  transaction (both are effectively append-only once terminal — Purchase/
+  Sale cancellation is now pre-approval-only, see above). This is a pure
+  documentation decision, not new code: `InventoryAdjustment` already had
+  everything a correction needs before this phase — a mandatory `reason`
+  field, `requested_by`/`approved_by`, an approval workflow, and a real
+  `InventoryMovement` row on approval (`AdjustmentService.approve()`).
+  Restricting cancellation without naming the existing alternative would
+  leave staff no documented way to fix a mistake after the fact.
+- **`PurchaseOrder.cancelled_reason`/`cancelled_by`/`cancelled_at` and the
+  identical trio on `SaleTransaction` added (Phase 8.99c)** — checked
+  `SCHEMA.md` §5/§6 first, per this phase's own instruction: neither model
+  has any cancellation-equivalent field there (only `rejected_reason`,
+  itself a Phase 8.99b addition to `SaleTransaction`, undocumented in
+  `SCHEMA.md` too). A new field rather than overloading `rejected_reason`
+  — cancellation and rejection are different events with different
+  actors, and conflating them would make `PurchaseRejectView`'s and
+  `PurchaseCancelView`'s data indistinguishable on the record itself.
+  `cancelled_reason` matches `rejected_reason`'s own shape (`TextField`,
+  `blank=True`, no `null=True`); `cancelled_by`/`cancelled_at` mirror
+  `approved_by`/`approved_at` exactly — a reason with no attributable
+  author and timestamp isn't an audit record. `ReasonForm` (already shared
+  by `PurchaseOrder.reject`, `InventoryAdjustment.reject`, and
+  `SaleTransaction.reject`) is reused a third/fourth time for both cancel
+  views rather than writing a new form. A new `display_reason` property on
+  both models (cancelled_reason if `CANCELLED`, rejected_reason if
+  `REJECTED`, else empty) is the one place the list tables, per-record
+  PDFs, and Purchase/Sales Report all read from — single source, not
+  four places computing the same conditional independently. Migration:
+  `0005_purchaseorder_cancelled_at_and_more`.
+- **`build_sales_report()`'s `status=SaleStatus.COMPLETED` filter removed
+  (Phase 8.99c), diverging from `10_REPORTS.md`'s own reference
+  `sales_report_view`, which filters identically.** This phase's own
+  Objective ("every cancellation and rejection must record a reason...
+  visible wherever that record is reported or exported") cannot be met
+  under a completed-only filter — a completed sale can never carry a
+  cancellation or rejection reason, so the new "Reason" column (below)
+  would be permanently empty for every row the report could ever contain.
+  Broadened to all statuses so the column is meaningful. The Reports
+  page's own revenue KPI (`ReportsView.get()`'s separate `sales_summary`
+  query) is untouched — it was never sourced from `build_sales_report()`
+  to begin with, so "Total revenue"/"Total transactions" still mean
+  realized (completed-only) revenue, unaffected by this change.
+- **`build_purchase_report()`/`build_sales_report()` both gained a
+  "Reason" column, in CSV and PDF export alike (Phase 8.99c)** — sourced
+  from the new `display_reason` property above. Both report builders
+  already had a "Status" column (this phase's task spec assumed neither
+  did — confirmed otherwise by reading `reports.py` directly before
+  changing it). Disclosed as extending two of `10_REPORTS.md`'s 9
+  documented, fixed-column report types rather than adding a 10th type —
+  the smaller, more consistent change. The two per-record PDFs
+  (`generate_purchase_order_pdf`/`generate_sale_transaction_pdf`) gained
+  matching "Cancelled By"/"Cancelled At"/"Reason" rows in their existing
+  metadata table via the same `_styled_data_table()` helper, no new PDF
+  machinery. The Reports page's live Sales preview panel
+  (`reports/reports.html`) was updated to match: a 7th "Reason" column,
+  and the status badge's CSS class now follows the row's actual status
+  label instead of being hardcoded to `badge-success` (accurate now that
+  the preview can show non-completed rows too).
+- **Movement History's search moved server-side, dropping
+  `table-filter.js` from this page entirely (Phase 8.99d)** — the
+  explicit choice offered by the task between "keep search client-side
+  and disclose it's not exported" and "make it server-side and drop the
+  client layer." Took the latter: the exact "the ledger is append-only
+  and grows unbounded, so client-side filtering only ever sees one page"
+  reasoning BUG-45 already used to justify server-side date range applies
+  identically to search, and a permanent "search isn't part of the
+  export" UI caveat is a worse outcome than just making it real,
+  especially given this phase's whole point is that export must match
+  filter. `q` matches product name/SKU via `icontains`. `movement-
+  history.js` (this page's only consumer of `table-filter.js`) is now
+  dead code and was deleted rather than left unreferenced.
+- **One shared `filter_movements()` function (`frontend/reports.py`,
+  Phase 8.99d) is now the single source of truth for what "the current
+  Movement History filter" means** — date range, product, movement type,
+  and search — called by both `MovementHistoryListView` (the page) and
+  `build_movement_report()` (its CSV/PDF export, and also the Reports
+  page's own "Movements" report type, which additionally applies its own
+  `category` filter on top — untouched, still works, confirmed live).
+  Before this, the page and the export computed date filtering two
+  different ways (the page: `created_at__date__gte`; the export: this
+  file's own timezone-aware `_date_bounds()`) and the export had no
+  product/type/search filtering at all — an export was never guaranteed
+  to match what was on screen. One function, two callers, closes that gap
+  structurally rather than by convention.
+- **`generate_pdf_response()` gained an optional `filters_summary` param
+  (Phase 8.99d) instead of a second PDF-building function.** Movement
+  History's new PDF export is the first caller to pass it (a list of
+  "Label: value" strings rendered as one line under the title, e.g.
+  "Filters: Product: Wireless Mouse; Type: Purchase Receipt", or "Filters:
+  None — full ledger" when nothing is set) — a filtered export that
+  doesn't say what it was filtered by isn't a usable record. The existing
+  9 `REPORT_BUILDERS` callers (via `ReportExportView`) don't pass it, so
+  their PDF output is byte-for-byte unchanged; confirmed live.
+- **No "filter by cancelled/rejected source document" control was added
+  to Movement History's UI, even though the task explicitly asked the
+  question and the honest, join-based implementation was written and
+  confirmed correct (Phase 8.99d).** `InventoryMovement` records stock
+  changes only — a cancelled PO or rejected adjustment never moved stock
+  (BUG-25's invariant), so it has no ledger row and never will; adding
+  synthetic rows for non-events would corrupt the one honest ledger this
+  app has, and was never on the table. The honest alternative — filter
+  movements by the *current* status of their source document, joining by
+  hand through `reference_type`/`reference_id` (no real DB FK exists
+  there; `django.contrib.contenttypes` isn't used in this project) — was
+  built and confirmed correct against the real dev DB. It was then
+  deliberately **not** wired to a UI control, because it is not merely
+  empirically empty today (0 of 19 real movements match) but
+  *structurally* empty: Phase 8.99c locked cancellation/rejection to
+  states strictly before any stock moves, for every one of the three
+  source types (`PurchaseOrder.cancel()`/`reject()`: draft/pending only;
+  `SaleTransaction.cancel_sale()`: draft/pending only, `reject_sale()`:
+  pending only; `InventoryAdjustment.reject()`: pending only, before
+  `approve()` ever calls `InventoryService`). A movement's source
+  reaching CANCELLED/REJECTED *after* that movement was recorded is
+  therefore impossible under this codebase's own enforced rules, not just
+  unobserved — shipping a filter option that can never match anything
+  would be exactly the `MovementType.RETURN` defect this same phase
+  removes elsewhere, just reintroduced under a different name. If Phase
+  8.99c's own named-but-unsolved "close/abandon PO" action is ever built,
+  this becomes reachable again and the filter can be wired up then — the
+  underlying function (`reference_type`/`reference_id`-based lookup) is
+  documented here so it doesn't need rediscovering.
+- **`reference_type`/`reference_id` confirmed consistently populated
+  across every real `InventoryMovement`-writing path (Phase 8.99d
+  finding, feeding the decision above).** `InventoryService.increase_
+  stock()`/`decrease_stock()` both require `reference_type`/
+  `reference_id` as non-default positional params — no call path can
+  create a movement without them. All 3 real call sites
+  (`PurchaseService.receive_items()`, `SaleService.approve_sale()`,
+  `AdjustmentService.approve()`) pass one of exactly `'PurchaseOrder'`/
+  `'SaleTransaction'`/`'InventoryAdjustment'`, matching each model's own
+  class name. Confirmed live against the dev DB: every one of 19 real
+  movements has exactly one of those 3 `reference_type` values, no stray
+  or blank ones.
+- **`MovementType.RETURN` confirmed unused everywhere, left on the model,
+  removed from both filter UIs (Phase 8.99d).** Grepped `services.py`/
+  `views.py` for `MovementType.RETURN` and for every real
+  `movement_type=` call site: only `PURCHASE`, `SALE`, and `ADJUSTMENT`
+  are ever produced, by exactly the 3 call sites in the finding above —
+  nothing creates a `RETURN` movement anywhere in this codebase. Removed
+  the option from Movement History's type filter (the only place it
+  existed as UI — see below) since a filter value that can never match is
+  a defect, same reasoning as removing dead sidebar links (§13, earlier).
+  Left `MovementType.RETURN` on the model untouched — it's `SCHEMA.md`'s,
+  and removing it is a migration for no benefit; it may stay permanently
+  unused, and that's fine: Phase 8.99c already documented
+  `InventoryAdjustment` as the path for customer returns, so `RETURN`
+  was never going to be the mechanism.
+  **Correction to this phase's own task premise**: the task described
+  the dead option as being on "the main Inventory page's filter." Checked
+  before removing anything — `inventory.html`'s own status filter
+  (`available`/`low_stock`/`out_of_stock`, `InventoryStatus` values) has
+  no movement-type concept and never had a `return` option; only Movement
+  History's separate type filter did. Reported rather than silently
+  "fixing" a page that had nothing to fix, or inventing a `return` option
+  on Inventory's filter just to have something to remove.
+- **`ProductUpdateView`/`ProductDeactivateView` (Phase 8.99e) are this
+  project's first per-entity detail/update routes.** Every module before
+  this phase had list+create only, by deliberate decision — no dedicated
+  bullet ever recorded that decision explicitly (the closest is BUG-45's
+  own entry in `docs/bugsfound.md`, which references "this project's
+  existing §13 architecture decision" as if one existed; it didn't, as a
+  standalone bullet — it was an emergent, consistent pattern across every
+  module's views, not a written-down rule until now). Recorded properly
+  here: the owner asked for editable products specifically, not a general
+  "add detail routes" mandate, so only Products gained one this phase —
+  every other module's list+create-only shape is unchanged.
+  **Does this open the door to Suppliers/Categories edit/delete too?**
+  Structurally, yes, cleanly — `SupplierForm`/`CategoryForm` already
+  exist and already work for create; the exact same `instance=`-reuse
+  pattern `ProductUpdateView` establishes would apply with no new
+  mechanism needed. The RBAC shape is *simpler* there than Products':
+  02_RBAC.md gives Products an asymmetric split (edit: all 3 roles;
+  deactivate: Admin/Supervisor only), but "Create/edit categories" and
+  "Manage suppliers" are both flatly Admin/Supervisor-only (no Staff
+  access to either verb) — so both edit and deactivate would share one
+  `SupervisorRequiredMixin` gate each, not two different mixins on two
+  buttons the way Products needed. **Recommendation: don't build them
+  this phase** (this task's own "Products only" scope, and "one
+  responsibility per phase" — Purchases/Sales' edit views and PO/sale
+  detail pages are still-pending per §17 too, and also out of scope
+  here) — **but do build them next**, back to back if the owner wants,
+  since the pattern this phase establishes (reuse the existing form via
+  `instance=`, one shared modal-JS parameterization, embed pre-fill JSON
+  on the row like `purchases.html`'s own `receive_items_json`) transfers
+  directly with no new design work, just repetition of a now-proven shape.
+  **Superseded, Phase 8.99i: built.** Both modules got the full pattern —
+  `CategoryUpdateView`/`SupplierUpdateView` (`AnyStaffMixin`) +
+  Deactivate/Reactivate/Delete (`SupervisorRequiredMixin`), same shape
+  predicted here, transferred with no new design work as expected.
+- **SKU is read-only on `ProductUpdateView` (Phase 8.99e), a disclosed
+  decision — no doc gives SKU an editable-after-creation rule either
+  way.** It's an identifier the product is referenced by across the app
+  (POs, sales, reports, already-issued PDFs) and changing it post-
+  creation has no documented use case, so the safer default was chosen.
+  Enforced server-side, not just by disabling the client-side input: the
+  posted `sku` is always overwritten with the instance's current value
+  before `ProductForm` ever validates it — this also sidesteps a real
+  gotcha, since `ProductForm.clean_sku()`'s "blank -> auto-generate a new
+  one" branch exists for *create*, and a disabled input (which browsers
+  simply omit from a submission) would otherwise silently trigger it on
+  every edit. Confirmed by test (`test_sku_is_immutable_on_edit_even_if_
+  tampered`): a tampered POST attempting to steal another product's SKU
+  succeeds (the rest of the edit is valid) while the SKU itself is left
+  completely unchanged — not an error, just a no-op on that one field.
+  As a consequence, this phase's own Verification ask — "test a
+  duplicate SKU on edit specifically" — is structurally impossible to
+  exercise as literally worded (the edit endpoint never lets a client-
+  supplied SKU reach uniqueness validation at all); tested barcode's
+  uniqueness constraint instead, which genuinely does re-run
+  `ProductForm`'s validation end-to-end on edit and proves the same
+  underlying mechanism (`ModelForm.validate_unique()`) still applies.
+  Disclosed here rather than silently substituted.
+- **"Delete" relabelled to "Deactivate" on the Products row action (Phase
+  8.99e), not kept as "Delete" with soft-delete behavior underneath.**
+  03_PRODUCTS.md is explicit: never hard-delete, only `is_active = False`
+  — a button labelled "Delete" that actually deactivates is a UI lie a
+  confirm() dialog doesn't fully cure (a user who skims past the confirm
+  text still expects "Delete" to mean gone). The honest label was chosen
+  over keeping familiar icon/copy.
+- **`InventoryService.sync_reorder_level()` added (Phase 8.99e) — the
+  only `InventoryService` change this phase made**, per its own explicit
+  scope limit. `Product.reorder_level`/`InventoryRecord.reorder_level`
+  are undocumented duplicates of each other (§6) with no prior sync path
+  outside of initial creation (`initialize_for_product()`'s own
+  `defaults=`, which only ever applies once, at `get_or_create` time).
+  Editing a product's reorder_level needed *some* way to propagate to
+  `InventoryRecord` — kept inside `InventoryService` rather than written
+  directly from `ProductUpdateView`, since that class's own docstring
+  already claims sole ownership of writing `InventoryRecord` fields; a
+  view reaching around it to mutate `InventoryRecord` directly would be
+  exactly the kind of bypass that docstring exists to prevent. Writes no
+  `InventoryMovement` row — a reorder-threshold change isn't a stock
+  movement, same reasoning `initialize_for_product()` already uses for
+  product creation — but does call `update_status()`, since moving the
+  threshold can flip `LOW_STOCK`/`AVAILABLE` on its own with
+  `current_stock` unchanged.
+- **Reactivate was not built for Products this phase (Phase 8.99e),
+  despite Users having an exact precedent (`UserReactivateView`/
+  `USER_REACTIVATED`) to mirror.** Recommended for symmetry — a
+  deactivated product currently has no path back except `/admin/` — but
+  the task's own request was Edit/Delete, not Edit/Delete/Reactivate, and
+  this project's now-established discipline (Phase 8.99c's "stranded PO"
+  gap: name the follow-up, don't build it opportunistically inside an
+  unrelated phase) says the same here: flagged as a natural, low-effort
+  next step (the shape is already proven by `UserReactivateView`), not
+  built now. **Superseded, Phase 8.99i: built** — `ProductReactivateView`,
+  same `SupervisorRequiredMixin` gate as Deactivate, plus the identical
+  shape for Categories/Suppliers.
+- **`InventoryModal.open()` added to `modal.js`'s public API (Phase
+  8.99e)** — only `close()` existed before. A row action (Edit) needs to
+  populate a modal's fields *before* it becomes visible, which a plain
+  `data-modal-open` trigger can't do (it fires the open on click, with no
+  hook to run code first) — exposing the controller's own existing
+  `openModal()` internal function is a minimal, backward-compatible
+  addition to a shared file, not a new modal mechanism; every existing
+  `data-modal-open` trigger elsewhere in the app is completely unaffected.
+- **`audit.USER_DELETED` added (Phase 8.99f-2), undocumented in
+  `13_AUDIT.md`'s own action table.** Disclosed the same way `SALE_
+  PENDING` was (Phase 8.99b): not in the doc, added anyway because it's
+  load-bearing — a true user delete with zero audit trail would be a
+  worse gap than the one it closes. `UserDeleteView` is deliberately
+  narrow: it only ever succeeds for a user referenced by none of
+  `PurchaseOrder`/`SaleTransaction`'s 6 `PROTECT` FKs
+  (`created_by`/`approved_by`/`cancelled_by` on each),
+  `InventoryMovement.performed_by` (`PROTECT`), `InventoryAdjustment.
+  requested_by`/`approved_by` (`PROTECT`), or `AuditLog.user`
+  (`SET_NULL`) — every other user gets a clean refusal ("has activity
+  history... deactivate instead"), never a `ProtectedError` 500 and
+  never a silently-nulled audit actor. One shared helper
+  (`_user_ids_with_history()`, `frontend/views.py`) computes this once
+  and is read by both `UserListCreateView.get()` (which rows get a
+  "Delete" pill) and `UserDeleteView` (the actual enforcement) — the same
+  "server check is the real gate, showing the button is UX" split this
+  project has used since Phase 8.5, applied to a destructive action for
+  the first time. `UserDeactivateView`/`UserReactivateView` (Phase 8)
+  needed no changes at all — they already existed, complete, correctly
+  labelled, and already wired into `users.html`; the task's prediction
+  that the row pill was a mislabelled/dead "Delete" button turned out not
+  to match this codebase's actual state, confirmed by reading the
+  template and JS before changing anything.
+- **The sidebar notification badge and the topbar bell dot now share one
+  poll instead of each getting their own (Phase 8.99f-2).**
+  `notifications.js`'s existing `pollUnreadCount()` (Phase 8, originally
+  topbar-only) was extended to also update the sidebar's badge element
+  from the same `fetch('/notifications/unread-count/')` response, rather
+  than adding a context processor or a second `setInterval`. The two
+  badges differ only in presentation (the topbar's is a plain dot; the
+  sidebar's shows the real number) but now always agree on the
+  underlying count and on hiding entirely at zero — they physically
+  cannot disagree, since one callback sets both. The sidebar badge starts
+  `hidden` in the server-rendered markup, same as the topbar dot always
+  has, rather than showing a stale or zero value until the first poll
+  resolves.
+- **`config/settings.py` gained an explicit `sys.argv[1] == 'test'` guard
+  pinning `EMAIL_BACKEND` to `locmem` (Phase 8.99f-7), on top of
+  Django's own `setup_test_environment()` doing the identical thing
+  automatically.** Confirmed-redundant, kept anyway: Django's mechanism
+  was directly proven reliable (inspected `settings.EMAIL_BACKEND` after
+  it ran, with real SMTP credentials genuinely present in `.env`) before
+  this guard was even written, so this isn't "fixing" anything — it's
+  making "tests can never send real email" a property of this project's
+  own settings file, not solely of an external library's behavior this
+  project has no control over if its test-running path ever changes.
+- **`audit.USER_CREDENTIALS_RESENT` added (Phase 8.99f-7), same
+  disclosure treatment as `USER_DELETED` (§13, Phase 8.99f-2) —
+  undocumented in `13_AUDIT.md`, added because the alternative (a resend
+  action with no audit trail) is a worse gap than the one it closes.**
+  A real, deliberately-wrong-app-password test this same phase produced
+  a genuine SMTP failure live, underscoring that "resend" is a real
+  operational action now that real SMTP is the resting default, not a
+  hypothetical one.
+- **`EMAIL_TIMEOUT` added (Phase 8.99f-7, default 10s, env-overridable)
+  — not documented in `ENVIRONMENT.md`'s original 5-var SMTP list.**
+  Python's `smtplib` has no default timeout; a hung connection would
+  otherwise block the whole request indefinitely rather than failing
+  into the caught-exception path `send_new_user_credentials_email()`
+  already has. Disclosed the same way the other 5 SMTP vars were
+  (Phase 8.99): a real, deploy-relevant setting the original doc list
+  didn't anticipate.
+- **`.env.example`'s `EMAIL_BACKEND`/`DEFAULT_FROM_EMAIL` are omitted
+  entirely rather than present-but-empty (Phase 8.99f-7, correcting
+  8.99f-6's own version of this file).** Confirmed live:
+  `os.environ.get(KEY, default)` only uses `config/settings.py`'s own
+  safe fallback when the key is genuinely absent from the environment —
+  `KEY=` (present, empty string) overrides that fallback with `''` and
+  would crash on an empty backend import path / empty From address. The
+  other EMAIL_* keys with empty-string-safe defaults (`EMAIL_HOST_USER`/
+  `EMAIL_HOST_PASSWORD`) stay as blank lines, since blank is genuinely
+  equivalent to absent for those two specifically.
 
 ---
 
@@ -1921,6 +3289,1511 @@ session history, not `git log`:
     nothing about server-side enforcement, only whether the (still-
     necessary) block is ever visible. 125/125 tests still passing (none
     of this touched Python).
+32. **Phase 8.6: 4 live-usage bug fixes + cross-role sweep** (BUG-37
+    through BUG-40, `docs/bugsfound.md`). **Bug 1 (filters):** root-caused
+    to `users.html` never loading `table-filter.js`, even though
+    `user-form.js` unconditionally calls `TableFilter.init()` behind an
+    `if (window.TableFilter...)` guard that silently no-op'd — fixed with
+    one `<script>` tag; every other real `table-filter.js` consumer
+    (Forecasting, Slow-Moving, Audit Log, Reports) was independently
+    re-verified working, live, against real data. Products/Categories/
+    Suppliers/Purchases/Sales/Inventory/Adjustments/Notifications never
+    wired it at all — pre-existing, disclosed decorative debt (§10/§12),
+    left alone. **Bug 2 (timezone):** `TIME_ZONE` was `'UTC'`; changed to
+    `'Asia/Dhaka'` — `USE_TZ` stays `True`. Explicitly confirmed this was
+    display-only, not a storage bug: every timestamp in this project is
+    written via `auto_now_add`/`auto_now`/`timezone.now()`, all correctly
+    UTC-aware; verified against a real `AuditLog` row that
+    `timezone.localtime()` now correctly shifts it +6h. Found and
+    disclosed (not fixed — out of this task's scope) a related, deeper
+    gap: `PurchaseOrder`/`SaleTransaction`'s PO-number/invoice-number
+    generation and their `order_date`/`transaction_date` fields
+    (`DateField(auto_now_add=True)`) don't go through `TIME_ZONE` at all —
+    Django's own `DateField.auto_now_add` reads the OS clock directly, a
+    well-known Django gotcha, distinct from `DateTimeField`'s behavior.
+    **Bug 3 (greeting time):** `dashboard.html`'s "Good morning" was
+    literal text; `frontend/views.py`'s `dashboard()` now computes it
+    server-side from `timezone.localtime().hour`, deliberately the same
+    clock Bug 2 just fixed so the two can never disagree. **Bug 4
+    ("Amara"):** root-caused to `dashboard.html` reading
+    `request.user.first_name`, a field `frontend.User` doesn't have (only
+    `full_name`) — Django resolves unknown attributes to `''`, so
+    `|default:"Amara"` fired for every real user, not just anonymous ones.
+    Fixed by switching to the already-existing `get_short_name()`.  Swept
+    `topbar_actions.html`/`sidebar.html` for the same placeholder per this
+    task's instruction — both use `get_full_name()` and already resolve
+    correctly for real users; their `"Amara Tenzin"` fallback only fires
+    for a genuinely anonymous visitor, already documented/intentional
+    (§4) — left alone. Also disclosed, not fixed: `dashboard()` itself has
+    no RBAC/login guard at all, unlike every other real view — out of
+    this task's explicit no-RBAC-changes scope. **Cross-role sweep**
+    (Playwright, `verify_admin`/`verify_super`/`verify_user`, live dev
+    server + real Postgres data): sidebar gating (Users/Audit/Settings
+    admin-only, Reports supervisor+) confirmed by real navigation, not
+    just CSS; Purchases/Adjustments/Sales action buttons confirmed correct
+    per role *and* end-to-end functional — a real supervisor Approve
+    click flipped a PO pending→approved in the DB, a real Cancel click on
+    a live sale restored stock and set it cancelled, Users & Roles'
+    Deactivate/Reactivate round-tripped correctly on a throwaway account
+    (created and cleaned up during the sweep); a supervisor approving an
+    adjustment with genuinely insufficient stock correctly stayed
+    `pending` with a real `alert()` error rather than corrupting data; a
+    direct staff `fetch()` POST to a supervisor-gated endpoint came back
+    blocked (redirected), confirming server-side enforcement holds
+    independent of button visibility, consistent with Phase 8.5's own
+    verification. No visible-but-dead or wired-but-misgated button found.
+    2 new test classes (`TimeZoneConfigTests`, `DashboardGreetingTests`,
+    `frontend/tests.py`) — 131/131 tests passing (was 125).
+33. **Phase 8.7: wire table filtering on the main data tables** (BUG-37
+    case (c), `docs/bugsfound.md`). Products/Suppliers/Purchases/Sales/
+    Adjustments' visible search/select/segmented controls were decorative
+    debt since Phase 5-7 — same root shape as Phase 8.6's Users & Roles
+    fix, but wider: each page was missing the `table-filter.js` `<script>`
+    tag *and* `id`s on its controls *and* `data-search`/`data-<column>`
+    hooks on its `<tr>`s (the mock-era rows never had filter hooks at
+    all). Status/type `<select>`s also had no `value` attribute, so the
+    browser defaulted each option's value to its own display text
+    ("Pending approval") rather than the model's real lowercase choice
+    value (`pending`) — fixed by adding explicit `value="..."` matching
+    each field's real `TextChoices`. `table-filter.js` itself untouched —
+    reused exactly as-is on all 5, same module as everywhere else it
+    already worked. Two pages checked out as nothing-to-wire, not
+    overlooked: **Categories** has no filter controls in its template at
+    all; **Inventory**'s controls are real but the page underneath them
+    isn't — `inventory()` is still a one-line `render()` with zero real
+    rows (see the §2/§11/§16 corrections this phase made — that entry was
+    previously, incorrectly, marked ✅). Verified live (Playwright,
+    `verify_user`/`verify_super`, real Postgres data): bogus search hides
+    all rows on every page, each select correctly narrows to its matching
+    subset, clearing restores the full set — identical for both roles,
+    since this app's list pages don't vary row content by role. No
+    console errors across all 7 pages checked. 131/131 tests still passing
+    (frontend-only change).
+34. **Phase 8.8: documentation-integrity audit.** Verification only, no
+    code changes. Read every view in `frontend/views.py` (981 lines) plus
+    `frontend/urls.py` and classified each against every ✅ claim in this
+    file: (a) real — genuine queryset/form/service call, (b) mock —
+    one-line `render()` over hardcoded template data, (c) partial — some
+    real, some hardcoded. Confirmed real: Products/Categories/Suppliers/
+    Purchases/Sales/Adjustments (all Phase 5-7), Reports/Notifications/
+    Users & Roles/Audit Log/Settings (all Phase 8), login/logout/profile
+    (Phase 4), the Dashboard shell's sidebar/topbar/notification-dropdown/
+    user-menu, and all 9 `frontend/reports.py` builders — genuine
+    querysets throughout, no hardcoded rows found anywhere, including the
+    7 report types that only ever export (no on-page preview) — verified
+    those aren't stubs either. One honest, undisclosed-until-now gap:
+    2 of the 9 (AI Forecast/Classification) are real queries against
+    `DemandForecast`/`InventoryClassification`, tables nothing writes to
+    yet since AI is still Phase 10/11 — correct code, no data yet, not a
+    bug. Confirmed mock and correctly disclosed as such already: Demand
+    Forecasting/Slow-Moving pages ("All static/mocked" — no correction
+    needed). **Found one more mislabeled page, beyond Phase 8.7's
+    Inventory finding: the Dashboard.** `dashboard()` passes only
+    `{"greeting": ...}` — no querysets, no aggregates. Every KPI card
+    (`total_products` etc. are never in context — the `|default:"1,284"`
+    template fallback fires unconditionally), both Chart.js charts
+    (`dashboard.js` has the datasets as literal hardcoded arrays), and all
+    4 widgets (Stock Alerts, Pending Approvals — including Approve/Reject
+    buttons with no click handler or endpoint at all, Recent Activity,
+    AI Insights) are 100% fabricated. This file's previous entry ("KPI
+    cards, Chart.js sales/inventory charts, static preview panels")
+    undersold this — a reader could reasonably assume only the "preview
+    panels" were static. Corrected in §2/§11/§16. Swept every template for
+    the `|default:"..."` fallback pattern (Dashboard's specific tell) to
+    check for other instances of the same bug shape — every other hit was
+    a legitimate per-row null fallback for a genuinely optional field
+    (audit log's `affected_id`, suppliers' `contact_person`, etc.) or the
+    already-documented anonymous-visitor identity fallback — none were
+    another whole-page fabrication. Root cause noted for future phases: a
+    mock template renders cleanly regardless of whether its data is real,
+    so *how a page looks* is not evidence of *what built it* — only
+    reading the view's actual context is. This is the third time an
+    inaccurate ✅ has shipped in this file (also Phase 3.9, Phase 4.5); no
+    process fix applied here beyond writing this down, since one wasn't
+    asked for — flagged as worth deciding before Phase 9. No tests
+    added/changed (no code changed); 131/131 still passing.
+35. **Phase 8.9: build the real Inventory list view**, closing BUG-37's
+    Inventory portion for good. `InventoryListView` (`AnyStaffMixin`)
+    replaces the one-line `render()` with a genuine `InventoryRecord`
+    queryset — product, current stock, reorder level, total value, and
+    `status` read straight off the model (InventoryService already keeps
+    it correct on every real mutation; deliberately not recomputed in the
+    view, per 07_INVENTORY.md's own design and this project's standing
+    "InventoryService is the only code path that touches stock" rule).
+    `07_INVENTORY.md`'s own reference view uses `@staff_required`, which
+    in this project's RBAC (`frontend/decorators.py`) means all 3 roles —
+    matched here with `AnyStaffMixin` rather than leaving the view
+    unguarded, closing a second, smaller gap (the old mock view had no
+    login check at all). `inventory.html`'s rows, KPI/stat-strip numbers,
+    and "last movement" column (via `product.movements.order_by(
+    '-created_at').first()`, `{{ ...|timesince }} ago`) are all real; the
+    status wording changed from the mock's "In stock" to the model's own
+    `get_status_display()` ("Available") — a disclosed, honest naming
+    difference, not a mismatch masked over. Filter controls wired to
+    `table-filter.js` the same way as Phase 8.7's 5 pages, closing the
+    gap that phase explicitly deferred pending this one. Confirmed
+    strictly read-only, per the task's own explicit check: no `<form>`
+    anywhere in the template, no `InventoryRecord` mutation anywhere in
+    the view, and a live direct `POST /inventory/` returns `405`.
+    Verified live (Playwright, all 3 roles, real Postgres data): rendered
+    rows matched the DB exactly (SKU, stock, status badges "Low Stock" ×2/
+    "Available" ×1), search and status filters narrowed correctly, no
+    add/edit controls anywhere, no console errors. 5 new tests
+    (`InventoryListViewTests` — real-data rendering, real aggregate
+    counts, any-role access, 405 on POST) — 136/136 passing (was 131).
+    Every module in the app now has a real view; only the Dashboard
+    remains mock (Phase 8.8 finding, still open — see §16).
+36. **Phase 8.95: define the Dashboard's real metrics — decision, no
+    build.** No spec ever existed for the Dashboard (`INDEX.md` linked to
+    a nonexistent `09_DASHBOARD.md`, BUG-17) — every KPI/chart/widget the
+    old mock showed was invented UI wishlist, not a documented contract.
+    Reconciled three sources against each other (the mock, treated as a
+    wishlist not a spec; `API_CONTRACTS.md`'s `Dashboard`/`Inventory`
+    endpoints — the only place any field names were actually documented;
+    `SCHEMA.md`) into a full table: every element → precise definition →
+    exact query → real-data-backable now (yes/no). Produced 8 disclosed
+    decisions needing sign-off (all 4 KPI trend badges' format, chart
+    windows + the Purchases series' status filter, a single preview-row-
+    count constant, Pending Approvals' action-button question, Recent
+    Activity's `13_AUDIT.md`-adjacent visibility question, 3 fields kept
+    beyond the documented stats payload, "Active suppliers" over raw
+    total, page-wide role visibility) and recommended dropping the AI
+    Insights widget outright (not an empty state) since its source tables
+    stay empty until Phase 10/11. Written as `docs/09_DASHBOARD.md`,
+    matching the other module docs' style — closes the doc gap Phase 8.8
+    identified. No code touched, as scoped.
+37. **Phase 8.95.1: finalized the 8 decisions.** All approved as
+    recommended except Decision 5 (Recent Activity), where the safer
+    fallback was chosen over the stretch: **admin/supervisor-only**,
+    leaving `13_AUDIT.md`'s "Admin only" framing for audit-derived data
+    completely uncontested rather than carving out a disclosed exception
+    to it. Decision 3 also picked up a refinement — a single named
+    `DASHBOARD_PREVIEW_ROWS` constant instead of three separate hardcoded
+    `5`s. `09_DASHBOARD.md` marked `Status: FINAL`. Still no code touched.
+38. **Phase 8.96: built the real Dashboard**, closing BUG-41 and this
+    file's last mock-but-marked-done page. `dashboard()` computes every
+    KPI/stat/chart/widget from the exact queries `09_DASHBOARD.md`
+    specifies — `Sum`/`Count`/`annotate`/`TruncWeek`/`TruncMonth`,
+    DB-aggregated, never a whole table pulled into Python. `DASHBOARD_
+    PREVIEW_ROWS = 5` defined once, reused for Stock Alerts/Pending
+    Approvals/Recent Activity. Both Chart.js charts read real server data
+    via `{{ chart_data|json_script:"dashboardChartData" }}` — `dashboard.js`'s
+    hardcoded arrays are gone. Pending Approvals renders read-only, no
+    Approve/Reject buttons anywhere on the page (Decision 4). Recent
+    Activity gates on `request.user.role in (admin, supervisor)` —
+    confirmed genuinely absent from rendered HTML for staff (test +
+    live check), not CSS-hidden. AI Insights section deleted outright, not
+    an empty state. Every `|default:"..."` fabrication is gone except the
+    one already-approved, non-fabrication greeting-name fallback (BUG-40).
+    Verified live (Playwright, real Postgres, all 3 roles): every KPI/stat
+    matched a direct manual DB query exactly (products/categories/active
+    suppliers/users = 3/3/3/4, inventory value = $858.00, stock units =
+    111, low/out-of-stock = 2/0); Stock Alerts and Pending Approvals
+    showed real rows matching the DB; switching the Daily/Weekly/Monthly
+    toggle changed both the chart's data and labels to real values; no
+    console errors. Found and guarded one real gap while building: `
+    request.user.role` on an `AnonymousUser` has no `.role` attribute at
+    all and would crash the Recent Activity check — guarded with `request.
+    user.is_authenticated and ...` rather than silently assuming a logged-
+    in visitor; `dashboard()` itself still has no `@login_required`/RBAC
+    mixin at all (adding one wasn't one of `09_DASHBOARD.md`'s approved
+    decisions, so it wasn't added — flagged instead, see §12 technical
+    debt, now a real-not-cosmetic risk since real business aggregates are
+    what's exposed). 8 new tests (`DashboardViewTests`) — 144/144 passing
+    (was 136). **Every page in the app is now genuinely real.**
+39. **Phase 8.97: closed the dashboard auth gap (Part A) + a full-app
+    wiring audit (Part B).** Part A (BUG-42): `dashboard()` converted from
+    a bare function view to `DashboardView(AnyStaffMixin, View)` —
+    matches every other real view's convention and `09_DASHBOARD.md`'s
+    "any logged-in role" decision, not gated tighter. Verified live:
+    anonymous `GET /dashboard/` → `302 /login/?next=/dashboard/`; all 3
+    roles load correctly; Recent Activity's Phase 8.96
+    `is_authenticated` guard is now belt-and-suspenders, not
+    load-bearing. 1 test updated (`test_anonymous_redirects_to_login`,
+    replacing the old "doesn't crash" assertion) + 1 added (all 3 roles
+    load) — 145/145 passing. Part B: read every one of the app's 31
+    routes (`frontend/urls.py`) against `frontend/views.py` directly,
+    classifying each as real/mock, checking its auth mixin, and grepping
+    every template for `|default:`/hardcoded-`<tr>`/hardcoded-stat tells
+    — deliberately not trusting this file's own prior ✅ claims, which
+    have been wrong 3 times already (Phase 3.9's `bugsfound.md` drift,
+    Phase 4.5's role-field check, and Inventory/Dashboard in 8.7/8.8).
+    Confirmed real and correctly guarded: all 26 other real views. Found
+    2 more genuine gaps, both reported per this task's explicit
+    don't-fix-silently scope: **BUG-43** — `demand_forecasting`/
+    `slow_moving_dead_stock` also have zero auth requirement, same shape
+    as the dashboard gap just closed, lower severity since both pages
+    are still honestly-disclosed mock (no real data to expose yet).
+    **BUG-44** — "Export"/"Export CSV" buttons on Products/Suppliers/
+    Audit Log are decorative (no handler, no endpoint), unlike Reports'
+    genuinely-wired export — previously covered only by this file's
+    general "decorative controls exist" language, never named
+    specifically. Every other `|default:"..."` hit across every template
+    reconfirmed as a legitimate per-field null fallback or the one
+    already-reviewed anonymous-identity fallback (BUG-40) — no new
+    fabrication found anywhere. No orphaned hardcoded `<tr>` rows found
+    outside `{% empty %}` fallbacks in any real module.
+40. **Phase 8.98: made every button real** — Movement History (BUG-45),
+    CSV exports (BUG-44), Dashboard search-bar cleanup, plus two small
+    fixes found along the way. `MovementHistoryListView`
+    (`/inventory/movements/`, `AnyStaffMixin`) is the real page behind
+    Inventory's previously-dead "Movement history" button, over the real
+    `InventoryMovement` ledger that's existed since Phase 3 — nothing new
+    to create, just expose it. **Server-side date-range filtering was the
+    deliberate choice, not client-side**: the ledger is append-only and
+    grows forever, so `table-filter.js` alone would only ever see whatever
+    one page happened to be loaded — real `Paginator`-backed pagination
+    (page size 50) alongside it. Search (product/SKU) and movement-type
+    filtering stay client-side on top of the current date-filtered page,
+    same split every other real list page uses. An optional
+    `?product=<id>` param (used by each Inventory row's own link) narrows
+    to one product. `ProductExportView`/`SupplierExportView`/
+    `AuditLogExportView` each build headers/rows from a real queryset and
+    hand them to `frontend/reports.py`'s existing `generate_csv_response()`
+    — the exact reuse `docs/bugsfound.md`'s BUG-44 entry predicted, not a
+    new export mechanism — with auth matching each source page exactly
+    (`AnyStaffMixin` on Products/Suppliers, `AdminRequiredMixin` on Audit
+    Log). Products/Suppliers export the full dataset, not the current
+    client-side filter selection, disclosed explicitly. Movement History's
+    export reuses `build_movement_report()` directly and genuinely
+    respects the current date filter, since that function already reads
+    `date_from`/`date_to`. The global topbar search box (`.topbar-search`,
+    present on every page including the Dashboard) was removed entirely —
+    confirmed it never had any JS wiring at all; `.topbar-actions` picked
+    up `margin-left: auto` to stay pinned right now that the search box's
+    `flex:1` isn't there to do that anymore. Found and fixed two small
+    things while building, both disclosed rather than silently patched:
+    **BUG-46** — `frontend/reports.py`'s `_date_bounds()` built naive
+    datetimes and compared them against a `USE_TZ=True` field, triggering
+    a `RuntimeWarning` on every date-filtered report (silently correct via
+    Django's own coercion, never actually exercised by any test with real
+    date params until this phase's own new export test) — now explicit via
+    `timezone.make_aware()`. Also a flaky pre-existing test
+    (`NotificationViewTests` asserting on a bare `'T3'` substring against
+    a page that always contains a random CSRF token — hit once, by chance,
+    during this phase's own full-suite run) — fixture titles renamed to
+    collision-proof strings. Verified live (Playwright, real Postgres):
+    clicking "Movement history" navigates to the real page with 7 real
+    rows matching the DB; a date range with no matches shows an honest
+    empty state, not a fake zero; a wide range shows all 7; the per-row
+    link correctly filters to one product; timestamps render in Asia/Dhaka;
+    client-side search/type filters narrow correctly; all 4 exports
+    download real CSVs whose row counts match the database exactly
+    (Products 3, Suppliers 3, Audit Log 233 — the full log, not the
+    on-screen 500-row cap — Movement History 7); a direct staff request to
+    the Admin-only Audit Log export is blocked (`302`); no console errors
+    anywhere. 21 new tests — 156/156 passing (was 145).
+41. **Phase 8.98a: topbar spacing investigation + real Change Password
+    modal.** Part 1 — a reported regression ("notification bell/user-menu
+    badges moved left, should be pinned right") could not be reproduced:
+    checked 9 viewport widths (480–1440px) × 3 pages (Dashboard/Products/
+    Profile) × mobile-sidebar open/closed × all 3 roles, all 27
+    combinations show `.topbar-actions` correctly flush-right via Phase
+    8.98's own `margin-left: auto` fix, confirmed with
+    `getBoundingClientRect()` (not just eyeballing a screenshot). Checked
+    for a JS-side explanation too (nothing in any `.js` file touches
+    `.topbar-actions`) and for a page-specific CSS override (nothing
+    outside `login.html`/`landing/index.html` — both public pages with no
+    topbar at all — uses the `extra_css` block). No code change made,
+    since none reproduced a real defect to fix. Most likely explanation:
+    a stale browser cache of `dashboard.css` from mid-edit during Phase
+    8.98 itself — this dev setup has no cache-busting query param/hash on
+    static URLs, so a browser that loaded the file between the search-bar
+    removal and the compensating `margin-left: auto` fix landing would
+    keep serving that broken intermediate version until a hard refresh.
+    **Confirmed correct**: the user hard-refreshed (Ctrl+Shift+R) and the
+    spacing problem resolved — stale cached CSS, not a code defect. No
+    further action needed; noted here in case the same class of "looks
+    broken, code is fine" report recurs after a future static-file edit —
+    this project's dev server has no cache-busting on static URLs, so
+    it's a real, recurring risk, not a one-off.
+    Part 2 — Profile's old inline "new password" field (no current-
+    password check, no confirm field — both real, disclosed gaps since
+    Phase 4) replaced with a real "Change Password" button opening a
+    modal, reusing the modal.js/modal-form.js recipe exactly (no new
+    pattern) and posting to a new dedicated `change_password_view`
+    (`/profile/change-password/`, `@login_required`, JSON responses —
+    `profile_view`'s own POST still handles name/contact/photo separately
+    and still redirects, since that's a different interaction shape than
+    a modal). Three real server-side checks, all independent (not short-
+    circuited, so a user can see every problem with one submission):
+    current password correctness (`user.check_password()`), new/confirm
+    match, and the same `validate_password()` call (full
+    `AUTH_PASSWORD_VALIDATORS` chain, `StrongPasswordValidator` included)
+    `profile_view` already used — reused, not reimplemented.
+    `PASSWORD_CHANGED` audit log + notification calls are unchanged,
+    still fire exactly once per successful change (confirmed by test, not
+    just by reading the code — no duplicate-call risk since the old
+    inline path was removed, not left running in parallel).
+    `update_session_auth_hash()` keeps the session alive post-change, same
+    as before. Verified live: wrong current password → real field error;
+    weak new password → the real `StrongPasswordValidator` message, not a
+    generic one; mismatched confirmation → real field error (confirmed
+    twice — an initial rapid-fire multi-submission test read a stale/
+    cleared DOM value once, so re-verified in isolation via a direct API
+    call and a clean single-submission UI test, both showing the correct
+    error); a valid change succeeds, the modal's success reload shows the
+    real Django flash message, and the user can immediately log back in
+    with the new password. 3 tests migrated off the old inline-field
+    assertions onto the new endpoint (`test_password_change_hashes_...`,
+    `test_weak_new_password_rejected_...`, `test_session_stays_alive_...`)
+    + 4 new (`test_wrong_current_password_rejected`,
+    `test_mismatched_confirmation_rejected`, `test_requires_login`,
+    `test_get_not_allowed`) — 160/160 passing (was 156).
+42. **Phase 8.98b: Purchases Expected Delivery + date guard.** First
+    checked whether `expected_delivery` already existed on `PurchaseOrder`
+    before adding anything — it did (`SCHEMA.md`'s own field,
+    `DateField(null=True, blank=True)`), and was already in
+    `PurchaseOrderForm.Meta.fields` too; confirmed no migration was
+    needed via `manage.py makemigrations --check --dry-run` ("No changes
+    detected"). The real gaps were narrower than the task's framing
+    implied: (1) no table column — added "Expected delivery" as a real
+    column in `purchases.html`, `—` when unset, alongside the existing
+    "Order date" column; (2) no past-date guard — added
+    `PurchaseOrderForm.clean_expected_delivery()`, rejecting any date
+    before `timezone.localdate()` (Asia/Dhaka, the Phase 8.6 timezone
+    convention, not the OS clock). The task's Part 2 also asked for an
+    "order_date can't be in the past" guard and an "expected_delivery
+    can't be before order_date" guard as if they were two more separate
+    rules — investigated and reported rather than building phantom
+    checks: `order_date` is `auto_now_add=True` (SCHEMA.md, unchanged),
+    which Django's ModelForm machinery excludes from binding entirely (a
+    raw POST can't set it either) and which is always exactly "today" at
+    the moment a PO is actually saved — there is no order_date value to
+    compare against during `clean()` (the instance isn't saved yet), and
+    no way for it to ever be a past date in the first place since nothing
+    ever supplies one. So "expected_delivery not in the past" and
+    "expected_delivery not before order_date" are the same real-world
+    check, not two — implemented once, not duplicated. Client-side, the
+    date input's `min=` attribute is the same server-computed Asia/Dhaka
+    date (`PurchaseListCreateView.get()` now passes `today =
+    timezone.localdate()` into context), not the browser's local clock,
+    so the two can never disagree the way the Phase 8.6 dashboard-
+    greeting decision already established for this exact class of
+    problem. Verified live (Playwright, real Postgres): the table shows
+    the new column with real dates (and `—` for POs without one,
+    including older seed data — the guard only applies going forward, it
+    doesn't retroactively invalidate existing rows); the Add Purchase
+    modal's date input carries a real `min=` matching the server's
+    Asia/Dhaka today; a direct POST bypassing the client entirely with a
+    past `expected_delivery` is rejected (`400`, real field error, no PO
+    created) — confirmed the client-side `min=` isn't the only guard. 5
+    new tests (`PurchaseOrderExpectedDeliveryTests`) — 165/165 passing
+    (was 160).
+43. **Phase 8.98c: moved tax onto Product, auto-calculated on every
+    transaction.** Treated as the highest-risk item in its batch (a money-
+    math + transaction-record change), done one step at a time. Added
+    `Product.tax_rate` (`DecimalField(max_digits=5, decimal_places=2,
+    default=0)`, migration `0002_product_tax_rate.py`) and its form field
+    (`ProductForm.clean_tax_rate()`, non-negative, mirrors
+    `clean_purchase_price()`/`clean_selling_price()`; optional like
+    `reorder_level`, defaults to 0 when blank) — genuinely undocumented in
+    `SCHEMA.md`/`API_CONTRACTS.md`, disclosed as its own decision (§13).
+    Removed the tax `<input>` from `line-items.js`'s repeatable row editor
+    entirely (shared by Purchase and Sale) — replaced with a read-only
+    `.line-item-tax-display` div, sourced from the selected product
+    `<option>`'s `data-tax-rate` attribute (now rendered server-side in
+    `purchases.html`/`sales.html`'s `realProductOptions` template), updated
+    on product-select as well as on qty/price/discount change (the select's
+    `change` listener previously only cleared row errors, never
+    recalculated). Adjustment's form/template were checked and confirmed to
+    have no tax field to begin with — reported as a no-op, not built as a
+    phantom feature. Both order-total footers now read "Total (incl.
+    tax):" instead of a bare "Total:", since the grand total was always
+    tax-inclusive (it sums each already-tax-inclusive `line_total`) but
+    never said so.
+    Server-side, tax is sourced from `Product.tax_rate` at exactly one
+    place per flow, never a client value: `frontend.forms.
+    parse_line_items()` (shared by Purchase and Sale) always overwrites
+    `item['tax']` with `product.tax_rate` regardless of what a raw POST
+    contains, and `SaleService.create_sale()` independently re-derives it
+    from the product too rather than trusting whatever `items_data` was
+    handed — belt-and-suspenders, satisfying the task's literal "never
+    from a form field" wording at both the form-parsing layer and the
+    service layer. The `line_total` formula itself — previously duplicated
+    between `PurchaseOrderItem.save()` and `SaleService.create_sale()`
+    (flagged as tech debt since Phase 3, §12) — is now one function,
+    `frontend.pricing.calculate_line_total()`, in a new module with zero
+    internal imports (needed to dodge a circular import: `models.py`
+    cannot import `services.py`, which already imports `models.py`).
+    `PurchaseOrderItem.tax`/`SaleItem.tax` stay real, separately-stored
+    columns rather than derived at read-time — a deliberate historical-
+    snapshot design (§13) — confirmed live by changing a product's
+    `tax_rate` after creating a PO and a sale against it: both existing
+    lines' stored `tax`/`line_total` stayed exactly as they were, while a
+    third transaction created after the change picked up the new rate
+    correctly. Confirmed no entanglement with stock/ledger logic per the
+    task's explicit scope guard: the only lines touched in
+    `SaleService.create_sale()` were the `discount`/`tax`/`line_total`
+    computation inside the existing loop — the `InventoryService.
+    decrease_stock()` call directly below it is untouched, and
+    `InventoryMovement`'s immutability (BUG-20) was never approached.
+    A new `seed_dev_data` management command (DEBUG-only guard, same
+    pattern as `seed_test_users.py`) wipes the dev DB (`call_command
+    ("flush", ...)`) and reseeds it end-to-end through the real service
+    layer (`PurchaseService`/`SaleService`/`AdjustmentService`/
+    `InventoryService` — never raw model saves for stock) with 4
+    categories, 3 suppliers, 10 products spanning 6 distinct `tax_rate`
+    values including 0% (the field's own default, so both the "no tax" and
+    "has tax" cases exist in the seed), 12 purchase orders (10 fully
+    received to stock the catalog, 1 left `DRAFT` and 1 left `PENDING` so
+    the approval workflow has real in-progress rows to look at), 4 sales,
+    and 2 adjustments (1 approved, 1 pending). Live-verified against the
+    real running dev server, not just the reseed script or the test suite:
+    logged in via a real session, confirmed the rendered Add Product modal
+    has the new tax field and the Purchase/Sale line-items editor has no
+    `<input class="line-item-tax">` anywhere in the HTML; created a real
+    PO and a real sale, both against a 15%-tax product, and hand-verified
+    the math against the actual stored `line_total` (`18.00 × 4 × 1.15 =
+    82.80`, `32.00 × 2 × 1.15 = 73.60` — exact match both times, not
+    rounded-and-close); then raised that product's `tax_rate` to 25% and
+    confirmed a newly-created sale used 25% while the two earlier lines
+    stayed at 15%, satisfying the task's explicit "confirm changing a
+    product's tax_rate flows into a NEW transaction's calculation"
+    requirement. 8 new tests (`ProductTaxRateTests`: tax_rate persists from
+    the form, defaults to 0 when omitted, negative value rejected;
+    `TaxAutoCalculationTests`: a Purchase/Sale line's tax is sourced from
+    `Product.tax_rate` even when the client sends a different `tax` value
+    or omits it entirely, an existing line's tax is not retroactively
+    changed by a later `tax_rate` edit while a new one picks up the change,
+    and `InventoryAdjustment` genuinely has no `tax` field) — 173/173
+    passing (was 165).
+44. **Phase 8.98d: per-record Purchase/Sale PDF download.** Explicit
+    scope: individual record PDFs only, no change to the Reports module
+    at all — verified afterward by diffing `frontend/views.py`'s
+    `ReportsView`/`ReportExportView` and `reports/reports.html`, neither
+    touched. Rather than inventing a second PDF-rendering scheme,
+    `generate_pdf_response()`'s inline `Table`/`TableStyle` block (the
+    styling every one of Reports' 9 exports already uses) was pulled out
+    into `_styled_data_table()` — a pure refactor, confirmed behavior-
+    identical by keeping every existing report-export test green — so the
+    two new builders in `frontend/reports.py`,
+    `generate_purchase_order_pdf(po)`/`generate_sale_transaction_pdf(sale)`,
+    could call the same helper for both a small metadata table
+    (supplier/customer, status, dates, created by) and the real line-items
+    table (product, SKU, quantity, unit price, discount, the Phase 8.98c
+    auto-calculated tax, line total), closing with a `Total Cost`/`Total
+    Amount` line. `PurchaseOrderPDFView`/`SaleTransactionPDFView`
+    (`purchases/<pk>/pdf/`, `sales/<pk>/pdf/`) carry the same
+    `AnyStaffMixin` gate `PurchaseListCreateView`/`SaleListCreateView`
+    already use — downloading a record's PDF is just another way of
+    viewing a record already visible on that same page, so it gets the
+    same access rule, not a new one. A "Download PDF" pill-button
+    (`icon-receipt`) was added to every row on both `purchases.html` and
+    `sales.html` as a plain `<a href>` GET link — the same shape as
+    Reports' own CSV/PDF export links (`ReportExportView`), not a new
+    fetch-based control needing JS wiring. Live-verified against the real
+    reseeded dev DB, and more thoroughly than a status-code check: for
+    both a real PO (`PO-20260813-8901`, 100 × Wireless Mouse @ $8.50,
+    10% tax) and a real sale (`INV-20260813-5448`, 3 × Wireless Mouse @
+    $15.00, 10% tax), downloaded the actual PDF bytes and decompressed
+    the content stream by hand (`ASCII85Decode` + `FlateDecode`, the two
+    filters ReportLab applied) to read the literal rendered text back out
+    — not just trusting the HTTP headers — confirming every field
+    (supplier/customer, status, dates, each line's product/qty/price/
+    discount/tax/line-total, and the grand total) matched the database
+    exactly: `8.50 × 100 × 1.10 = 935.00` and `15.00 × 3 × 1.10 = 49.50`,
+    both exact. Confirmed anonymous `GET` on both PDF URLs `302`s to
+    login, matching the list pages' own gate; confirmed an unknown pk
+    `404`s rather than leaking a stack trace. 6 new tests
+    (`PerRecordPDFViewTests`: login-required + success + 404-on-unknown-pk
+    for each of Purchase/Sale) — 179/179 passing (was 173).
+45. **Phase 8.98e: admin user creation with emailed credentials,
+    password-change admin alerts, validated profile images.** The
+    largest of the improvement phases, with a hard email dependency read
+    first: confirmed `EMAIL_BACKEND` is the console backend (dev/test
+    only, prints to stdout instead of sending) — real delivery needs a
+    real SMTP backend at deployment, stated explicitly rather than
+    implied.
+    Part 1 reverses Phase 8's own disclosed decision to give `UserForm` a
+    required password field — a second reversal on the same field, this
+    time because the Admin must never choose or see a new user's
+    password at all. `frontend.validators.generate_strong_password()`
+    (new, `secrets`-based) builds one that passes every validator in
+    `AUTH_PASSWORD_VALIDATORS` by construction (one uppercase/lowercase/
+    digit/special char is always included, and a random string this long
+    can't plausibly collide with `CommonPasswordValidator`/
+    `UserAttributeSimilarityValidator` either); `UserListCreateView.
+    post()` sets it via `set_password()` and hands it to a new
+    `frontend.notifications.send_new_user_credentials_email()`, which
+    sends a real, credentials-only email directly via `send_mail()`.
+    That function is deliberately NOT built on `notify_user()` — the
+    task's own hard rule is that the password must never appear in a
+    notification or audit log, and `notify_user()` always stores its
+    exact message in a `Notification` row, so building on it would mean
+    either leaking the password into that row or lying about what
+    happened in the in-app notification. No `Notification` row is
+    created for the new user at all (11_NOTIFICATIONS.md has no
+    "account created" type anyway — same precedent as
+    `PurchaseService.cancel()`'s "logs but doesn't notify" reasoning, §12/
+    §13); the email is sent unconditionally, bypassing `SystemSettings.
+    email_notifications_enabled`, since that flag is a discretionary
+    preference and this is the only channel a new account's password can
+    ever travel through (disclosed, §13). `change_password_view` now
+    also calls a new `notify_admins()` (same shape as
+    `notify_supervisors()`, Admin-only), reusing the already-documented
+    `PASSWORD_CHANGED` type for a second recipient rather than inventing
+    one — every Admin learns *who* changed their password, never what it
+    became.
+    Part 2: `User.profile_image` already existed (SCHEMA.md's own field,
+    Phase 1) but had zero validation and was never actually displayed —
+    both closed, not built from scratch. `profile_view()` now runs
+    uploads through `validate_product_image()` (frontend/validators.py),
+    reused unchanged from `Product.image`/`SystemSettings.company_logo`
+    (same function, same precedent, no duplicate check invented); a
+    rejected upload shows a real error and leaves the existing value
+    untouched. `.avatar` (topbar user menu, sidebar, profile page) now
+    renders the real photo when set, via a small `.avatar img` CSS rule,
+    falling back to the pre-existing initials exactly as before when not
+    — the field existed but nothing ever rendered it before this phase.
+    Same Render-ephemeral-disk production caveat as Phase 5/deployment
+    (`DEPLOYMENT.md`) — flagged, not re-solved here, per this task's own
+    scope instruction.
+    Live-verified end to end against the real dev DB and the real
+    console backend, not just the test suite (the backend's actual
+    per-request stdout proved unreliable to capture through this
+    session's background-process tooling, so verification ran through
+    Django's real request/response cycle via `Client()` in a foreground
+    `manage.py shell` process instead — same view code, same middleware,
+    same console `EmailBackend`, just not a separate OS process): an
+    Admin created a real user through the real `/users/` view; the
+    console backend printed a real credentials email containing a real
+    generated password; the DB's stored hash matched exactly what was
+    emailed; the new user logged in with it for real (`302` to
+    `/dashboard/`); a direct DB sweep confirmed that password appears in
+    zero `Notification` or `AuditLog` rows anywhere, and that no in-app
+    `Notification` exists for the new user at all; the new user then
+    changed their password, and the Admin's resulting notification named
+    them without the new password appearing in its title or message; a
+    `.txt` profile-image upload was rejected, a valid `.png` was
+    accepted, and it then rendered as a real `<img>` on both the profile
+    page and the dashboard topbar. 9 new tests (`PasswordGeneratorTests`,
+    `ProfileImageValidationTests`, plus additions to
+    `ChangePasswordViewTests`/`UserManagementViewTests` proving the
+    generated password never appears in any `Notification`/`AuditLog`
+    row) — 188/188 passing (was 179).
+46. **Phase 8.99: production deployment configuration + the
+    auto_now_add/OS-clock pre-deploy fix (BUG-47).** Treated the timezone
+    fix as a hard blocker, done before any deployment config, per the
+    task's own framing: after the first real production PO/sale is
+    created with a wrong date embedded in its own identifier, that's
+    permanent. Confirmed the exact mechanism with a live shell check
+    before touching code: `date.today()` and `timezone.now().strftime()`
+    both agreed with `timezone.localdate()` on this dev machine only
+    because its OS clock (`time.tzname` → Bangladesh Standard Time) is
+    already Dhaka time, not because either call was actually
+    TIME_ZONE-aware — `DateField.auto_now_add` is a documented Django
+    limitation (unlike `DateTimeField.auto_now_add`, which is correctly
+    UTC-aware). Fixed both `PurchaseOrder.order_date`/
+    `SaleTransaction.transaction_date` (now plain `DateField()`s, set via
+    `timezone.localdate()` in `save()`) and `_generate_po_number()`/
+    `_generate_invoice_number()` (now `timezone.localdate().strftime(...)`
+    instead of `timezone.now().strftime(...)`) — confirmed via the same
+    live shell check that the PO-number's embedded date is a real
+    identifier, not just a display column, so this was a potential
+    wrong-identifier bug, not only a wrong-date-field one. Migration
+    `0003_alter_purchaseorder_order_date_and_more` is `AlterField`-only,
+    zero DB-level change (removing `auto_now_add=True` only changes
+    Python-side `editable`/`blank` metadata, not the column). New
+    `TimezoneAwareDateGenerationTests` mocks `timezone.now()` to a UTC
+    instant on a different Dhaka calendar day, proving the fix doesn't
+    depend on the real OS clock at all (a regression back to
+    `auto_now_add=True` would still read this test's real, unmocked run
+    date and fail). Full writeup: `docs/bugsfound.md` BUG-47 (closing the
+    "related finding, disclosed not fixed" note left inside BUG-38 since
+    Phase 8.6).
+    Deployment configuration worked through `DEPLOYMENT.md`/
+    `ENVIRONMENT.md`/`SECURITY.md` item by item, verifying each against
+    actual `config/settings.py` rather than assuming: `DEBUG`/
+    `SECRET_KEY`/`ALLOWED_HOSTS`/`DATABASES` were already fully env-driven
+    with fail-closed defaults (no hardcoded dev key, no default-True
+    DEBUG, empty-list-not-wildcard `ALLOWED_HOSTS`) — confirmed, not
+    re-done. Added WhiteNoise (`requirements.txt` + middleware, placed
+    second per `DEPLOYMENT.md`'s own instruction) with Django 6's
+    `STORAGES` dict (`STATICFILES_STORAGE`, DEPLOYMENT.md's documented
+    setting name, no longer exists as of Django 5.1 — verified against
+    `django.conf.global_settings` directly rather than assuming
+    DEPLOYMENT.md's snippet still matched this Django version), verified
+    by actually running `collectstatic` (163 files, 489 post-processed)
+    then a local server with `DEBUG=False` — hit `SECURE_SSL_REDIRECT`'s
+    own 301 loop immediately (expected: no local HTTPS listener), added
+    `SECURE_PROXY_SSL_HEADER` for Render's edge-terminated-TLS proxy
+    shape (a real, undocumented-in-this-project's-docs deployment gotcha,
+    not spec'd in SECURITY.md/DEPLOYMENT.md) and re-verified with a
+    spoofed `X-Forwarded-Proto: https` header — every static asset then
+    served `200` with correct content-hashed filenames, gzip encoding,
+    and immutable cache headers, and the CSRF cookie carried `Secure`.
+    Wired `EMAIL_HOST`/`PORT`/`USE_TLS`/`HOST_USER`/`HOST_PASSWORD` from
+    env (documented in `ENVIRONMENT.md`, but nothing in `settings.py` had
+    ever actually read them before this phase — a real gap for Phase
+    8.98e's emailed-credentials feature specifically, which has no
+    fallback if the email silently never sends). Added `DB_SSLMODE` env
+    override (default `'prefer'`, psycopg's own default — a no-op unless
+    explicitly set, giving Render room to require SSL without a code
+    change). Deliberately omitted `SECURITY.md`'s `SECURE_BROWSER_XSS_FILTER`
+    — removed from Django itself in 4.0, would be inert cargo under this
+    project's Django 6.0.7, disclosed rather than added as dead weight.
+    `python manage.py check --deploy` passes clean (zero warnings) under
+    `DEBUG=False` with a real `ALLOWED_HOSTS` set.
+    Media: added `SERVE_MEDIA_IN_PRODUCTION` (default `False`) rather than
+    quietly extending dev's DEBUG-gated media serving into production —
+    Render's disk is ephemeral, so serving media there at all is only
+    correct once a persistent disk is deliberately mounted at
+    `MEDIA_ROOT`. Recommendation stated rather than guessed at: a Render
+    persistent disk fits this app's actual scale (small internal
+    inventory tool, not high-traffic); `django-storages` + S3/Cloudinary
+    is the better long-term answer once scale justifies a new dependency
+    and real cloud credentials this phase had no way to obtain or verify.
+    First production admin: verified `createsuperuser` actually works
+    against this project's custom `User`/`UserManager` (not assumed) —
+    created and immediately deleted a throwaway superuser, confirmed
+    `role='admin'`/`is_staff`/`is_superuser` all set correctly and the
+    password check succeeds. Noted a real, Django-level gotcha for the
+    go-live checklist: `--noinput` mode (env-var-driven, non-interactive)
+    skips `AUTH_PASSWORD_VALIDATORS` entirely, so the real first admin
+    should be created interactively instead, where
+    `StrongPasswordValidator` actually runs. Reconfirmed
+    `seed_test_users`/`seed_dev_data` stay DEBUG-guarded, refusing to run
+    in production — not an alternative path.
+    **The 3 "faked in dev" features, given explicit verdicts per the
+    task's own anti-ambiguity gate**: emailed new-user credentials and
+    the forgot-password reset are both **DEFERRED** — code/settings-ready
+    (SMTP wiring exists now) but not verified against a real inbox in
+    this phase (no real Gmail app password or outbound SMTP access
+    available to prove delivery), so calling either "LIVE" would be
+    exactly the silent-failure this gate exists to catch; forgot-password
+    stays disabled in the UI until the same follow-up closes it. Uploaded
+    product/profile images are **DEFERRED** — functional within a single
+    running instance, lost on every redeploy until
+    `SERVE_MEDIA_IN_PRODUCTION` + a persistent disk (or object storage)
+    is actually attached. None of the three are silently shipped as
+    "working." 2 new tests (`TimezoneAwareDateGenerationTests`) —
+    190/190 passing (was 188).
+47. **Phase 8.99a: finished the forgot-password flow, locally.**
+    Deployment explicitly out of scope this session — no WhiteNoise/media/
+    production-settings changes, just the last disabled control in the
+    app and the audit gap behind it. Confirmed the gap by reading
+    `PasswordResetConfirmView.form_valid()`'s actual source before writing
+    any fix, rather than assuming Django's own reference flow logs/
+    notifies anything (it doesn't — it just calls `form.save()` and
+    redirects). Built the 4 real templates plus the 2 email-side ones
+    Django needs to send a correctly-linked email
+    (`password_reset_email.html`/`password_reset_subject.txt`), all
+    reusing `login.html`'s exact `.auth-page`/`.auth-card` structure and
+    `auth.css`/`components.css`'s existing classes — no new CSS, no new
+    layout, per the task's own explicit constraint.
+    Closed BUG-48: extracted the shared `notify_user()`/`notify_admins()`/
+    `audit.log_action()` triplet out of `change_password_view` into a new
+    `_record_password_change(user, request)` helper, and added
+    `StockwellPasswordResetConfirmView`, which calls it once after
+    `super().form_valid(form)` — Django's own password-setting logic
+    reused unmodified, `form.user` (not `self.request.user`, anonymous at
+    this point) as the target, the new password itself never read.
+    Namespace decision: moved the whole flow onto `frontend:`, removed
+    the dead `accounts:` django.contrib.auth.urls include outright — not
+    a style preference but a real requirement, discovered live: Django's
+    own default `success_url`s and default email template both reverse a
+    *bare* URL name, which `NoReverseMatch`es once the route only exists
+    inside a namespace, confirmed by hitting that exact error before
+    fixing it with explicit `frontend:`-prefixed reverses everywhere.
+    SMTP smoke test (Part 4) explicitly skipped and reported as such — no
+    real Gmail app password exists in this environment; both this flow
+    and Phase 8.98e's emailed credentials remain unverified against a
+    real inbox, carried forward as a named follow-up rather than assumed
+    working.
+    Verified live against the real seeded `verify_user` account, not just
+    the test suite: real console-backend email sent with a working link;
+    Stockwell-styled pages confirmed (not admin's fallback ones, checked
+    via distinguishing markup); weak password rejected with the real
+    validator message and no audit row; valid reset succeeds and
+    `verify_user` logged in with the new password for real; a real
+    `AuditLog` row and a real `verify_admin` notification (new password
+    absent from both title and message) both now exist for the reset
+    path specifically; an invalid/tampered token shows Stockwell's own
+    "link no longer works" message. `verify_user`'s password restored via
+    `seed_test_users` afterward. 10 new tests (`PasswordResetFlowTests`)
+    — 200/200 passing (was 190).
+48. **Phase 8.99b: Sales go through approval before completing, mirroring
+    Purchases.** The highest-risk phase since 8.98c — moved one step at a
+    time as instructed, with two genuinely ambiguous design points raised
+    to the owner *before* writing code rather than guessed at (both would
+    have been expensive to redo): whether a Supervisor can approve a sale
+    they created themselves (owner: match Purchases' existing looseness,
+    no restriction — confirmed via reading the code that Purchases really
+    has none, not assumed), and whether Sales needs a full Draft→Submit→
+    Pending mirror or a simpler straight-to-Pending creation (owner: full
+    mirror, matching Purchases exactly and making the task's own
+    requested `SALE_SUBMITTED` audit constant a real, non-redundant
+    event rather than a duplicate of `SALE_CREATED` at the same instant).
+    State decision: no separate `APPROVED` status added — `SaleStatus`
+    gained `DRAFT`/`PENDING`/`REJECTED` alongside the pre-existing
+    `COMPLETED`/`CANCELLED`, reusing `COMPLETED` rather than renaming it
+    so every existing dev row stayed valid with zero migration. Reasoning
+    written up in full in §13: a Purchase's approval and receipt are
+    genuinely different moments; a Sale's approval *is* the moment stock
+    moves, so a distinct `APPROVED` status would have no event of its own
+    to describe. Added `approved_by`/`approved_at` (mirrors
+    `PurchaseOrder` exactly) and `rejected_reason` (new — `SaleTransaction`
+    never had a rejection concept before). Migration is additive/
+    `AlterField`-only; existing `completed` rows needed no data fix.
+    Split `SaleService`: `create_sale()` now creates a `DRAFT` with zero
+    `InventoryService` contact at all (confirmed by reading every changed
+    line against the money-math functions — `calculate_line_total()`/
+    `Product.tax_rate` — which are byte-for-byte unchanged); new
+    `submit_for_approval()` (mirrors `PurchaseService`'s own method name
+    and shape exactly); new `approve_sale()` — the only place a sale's
+    stock now moves, re-validating availability for real at that moment
+    rather than trusting whatever was true at draft time; new
+    `reject_sale()` mirrors `PurchaseService.reject()`, logs but doesn't
+    notify (no documented notification type for "sale rejected" — same
+    precedent `AdjustmentService.reject()` already established, not
+    re-litigated here). `cancel_sale()` restricted to `DRAFT`/`PENDING`
+    only, and — since nothing is deducted before approval anymore — no
+    longer calls `InventoryService.increase_stock()` at all; there is
+    nothing to restore pre-approval, and reversing an already-completed
+    sale is explicitly out of scope, named in the task itself as Phase
+    8.99c's own problem.
+    Confirmed live, deliberately: two drafts created against the same
+    limited stock (both look satisfiable at creation, since draft sales
+    reserve nothing) — the first approval succeeds, the second fails with
+    a specific, clean error ("Insufficient stock for 'Bluetooth Speaker'.
+    Available: 49, Requested: 51"), the sale stays pending, stock is
+    exactly what the first approval left. Customer-facing consequence
+    stated plainly, not discovered later: a staff member can tell a
+    customer "order placed" and have it fail at approval; real stock
+    reservation at draft time was deliberately not built (a materially
+    bigger feature — expiry, released-on-reject, reserved-vs-available
+    everywhere) per the task's own explicit instruction, with an
+    indicative (non-binding) creation-time stock check recommended as the
+    cheap mitigation, not built this phase either.
+    `NotificationType.SALE_PENDING` added as a disclosed, deliberate
+    override of the Phase 8.98e "don't invent an undocumented type"
+    precedent — that precedent covered a merely-informational gap; this
+    one is load-bearing, since without it the entire approval gate has no
+    trigger. `SALE_COMPLETED` (existed since Phase 1, never actually
+    fired by any reference code) gets its first real use, on approval,
+    notifying the sale's creator — mirrors `PO_APPROVED`'s shape exactly.
+    RBAC: `AnyStaffMixin` on create/submit, new `SupervisorRequiredMixin`-
+    gated `SaleApproveView`/`SaleRejectView` (confirmed live an Admin can
+    approve too — the hierarchy holds), no creator≠approver restriction
+    per the owner's confirmed decision.
+    UI: `sales.html` gained real status badges and Submit/Approve/Reject/
+    Cancel row actions matching `purchases.html`'s shape exactly —
+    removed a pre-existing, fully decorative "View invoice" button (no
+    handler at all) found while editing this exact region, not left as
+    stray dead markup once its neighborhood was already being rewritten;
+    added a "Pending approval" stat card mirroring Purchases' own; the
+    status filter's `<option value=...>`s match the real `TextChoices`
+    (Phase 8.7's rule); "Complete sale" button copy changed to "Save
+    draft" so it stops claiming something that's no longer true.
+    `row-actions.js` reused unchanged for the new row actions — no sixth
+    copy of the shared CSRF/fetch helper. Phase 8.98d's per-record Sale
+    PDF now shows Approved By/Approved At, confirmed live by
+    decompressing real PDF content streams for both a completed and a
+    still-pending sale (not assumed correct from the code), matching the
+    blank-dash pattern the Purchase PDF already used for
+    `expected_delivery`.
+    `seed_dev_data.py` updated so seeded sales reach a realistic
+    `COMPLETED` state (3 of 4 pushed through submit+approve; 1 left
+    `PENDING`, same in-progress variety the PO seed already had) —
+    without this fix, re-running the seed command after this phase would
+    have silently left every seeded sale stuck in `DRAFT`.
+    Swept every other `SaleService`/`SaleStatus` call site in the existing
+    test suite (Phase 8.98c's tax tests, Phase 8.98d's PDF tests, the
+    Dashboard tests) — all passed unchanged, confirming none of them
+    depended on immediate completion; `SaleServiceTests`/
+    `SaleWorkflowViewTests`/`LowStockNotificationTests` rewritten for the
+    new flow, one test per documented transition, matching Phase 7's own
+    "write tests alongside the views" precedent for exactly this class of
+    workflow logic. 14 net new tests — 214/214 passing (was 200).
+49. **Phase 8.99c: cancellation restricted, reason required everywhere.**
+    `PurchaseService._CANCELLABLE_STATUSES` narrowed to `DRAFT`/`PENDING`
+    (was also `APPROVED`/`PARTIAL`), overriding `05_PURCHASES.md`'s "any
+    state -> CANCELLED"; `SaleService.cancel_sale()`'s existing DRAFT/
+    PENDING-only rule (Phase 8.99b) confirmed and locked in. Full
+    reasoning, the named-but-unsolved "stranded approved PO" consequence,
+    and `InventoryAdjustment` as the documented post-completion correction
+    path are all written up in §13 — not repeated here.
+    New fields: `cancelled_reason`/`cancelled_by`/`cancelled_at` on both
+    `PurchaseOrder` and `SaleTransaction` (migration
+    `0005_purchaseorder_cancelled_at_and_more`), a required reason on both
+    services' `cancel()`/`cancel_sale()`, `ReasonForm` reused a third/
+    fourth time rather than writing a new form. New `display_reason`
+    property on both models feeds the list-table status-badge tooltip,
+    the per-record PDFs' new "Cancelled By"/"Cancelled At"/"Reason" rows,
+    and a new "Reason" column on both the Purchase Report and Sales
+    Report (CSV + PDF) — `build_sales_report()`'s `status=COMPLETED`
+    filter was removed for this to be non-vacuous (§13 has the full
+    disclosure). Client-side: `.po-cancel-btn`/`.sale-cancel-btn` now use
+    `prompt()` for the reason, mirroring the existing reject handlers —
+    no new modal.
+    Verified the receive/partial-receive flow is byte-for-byte
+    unchanged: `receive_items()` itself was not touched, and every
+    pre-existing receive test (Phase 7's full/partial-receive tests,
+    Phase 8.98b's expected-delivery tests) passed unmodified. The BUG-25
+    stock-untouched invariant survives under the new, narrower rule —
+    proven differently than before: a blocked cancel on `APPROVED`/
+    `PARTIAL` now leaves stock untouched because cancel() is refused
+    outright (a `ValueError`, not a special-cased no-op), confirmed via a
+    direct POST past the hidden button.
+    3 tests removed (they exercised cancelling from APPROVED/PARTIAL,
+    which is no longer legal), replaced with tests for each newly-refused
+    transition (APPROVED/PARTIAL/RECEIVED) plus blank-reason rejection on
+    both Purchase and Sale cancel — net +3 tests, 217/217 passing.
+50. **Phase 8.99d: Movement History filters go fully server-side, export
+    gets a PDF twin.** Date, product, movement type, and search are now
+    one shared GET filter (`frontend/reports.py`'s new
+    `filter_movements()`), used by both `MovementHistoryListView` and its
+    export — closing a real page-vs-export mismatch (date filtering used
+    two different comparisons; product/type/search weren't in the export
+    at all). Search moved server-side rather than staying client-side
+    with a "not exported" caveat — same unbounded-ledger reasoning BUG-45
+    already used for date range; `table-filter.js`/`movement-history.js`
+    (deleted) are gone from this page. The `?product=<id>` deep-link now
+    lands in a real `<select>` in the same form. PDF export added,
+    reusing `generate_pdf_response()`/`_styled_data_table()` (new optional
+    `filters_summary` param, only used here — the 9 existing report
+    exports are unaffected) with active filters stated in the header, e.g.
+    "Filters: Product: Wireless Mouse; Type: Purchase Receipt". Full
+    reasoning for all of the below is in §13, not repeated here.
+    Investigated whether a "cancelled/rejected source document" filter
+    could be added (the task's own explicit ask) — confirmed
+    `reference_type`/`reference_id` are populated consistently on every
+    one of the 3 real movement-writing call sites, built the honest join-
+    based version, confirmed it correct, then deliberately did **not**
+    wire it to a UI control: Phase 8.99c's own cancellation rules make it
+    structurally impossible (not just empirically empty — 0 of 19 real
+    movements match) for any movement's source to ever reach CANCELLED/
+    REJECTED after stock has moved, so a filter control for it would be
+    the exact `MovementType.RETURN` defect this same phase removes
+    elsewhere, reintroduced. `MovementType.RETURN` itself confirmed unused
+    everywhere (grepped both `.py` files — only PURCHASE/SALE/ADJUSTMENT
+    are ever produced) and removed from Movement History's type filter;
+    left on the model (SCHEMA.md's, no migration for no benefit).
+    Corrected the task's own premise along the way: the dead `return`
+    option was never on Inventory's own status filter (`available`/
+    `low_stock`/`out_of_stock` — no movement-type concept at all), only on
+    Movement History's — checked before "fixing" a page with nothing to
+    fix. 8 new tests (filter combinations, pagination-survives-filter,
+    CSV/PDF row counts against a direct DB query for 4 filter combos
+    including a zero-row one, the removed RETURN option) — 225/225
+    passing (was 217). Live-verified against the real dev DB throughout,
+    including decompressing the PDF's content stream to confirm the
+    filters line actually renders, and confirming the Reports page's own
+    "Movements" report (its `category` filter, layered on the same shared
+    function) still works unchanged.
+51. **Phase 8.99e: Product Edit/Delete — this project's first per-entity
+    update route.** Diagnosed before building anything, per the task's
+    own instruction: the report was "Add and Update buttons don't work,"
+    but Add was confirmed genuinely working live (page loads, modal
+    opens, a real POST persists a real product with a real audit row,
+    verified against the real dev DB) — the report meant Edit/Delete,
+    which never existed at all (plain dead `<button>`s, no handler, no
+    `data-*`, since Phase 3's mock era). Not a regression to fix; new
+    work to build.
+    `ProductUpdateView` (`AnyStaffMixin` — 02_RBAC.md: edit is all 3
+    roles) reuses `ProductForm` completely unchanged via `instance=`, not
+    forked — same validation (uniqueness, non-negative prices, active-
+    only Category/Supplier, tax_rate, image) applies to edit exactly as
+    create. `ProductDeactivateView` (`SupervisorRequiredMixin` —
+    02_RBAC.md: deactivate is Admin/Supervisor only) is the real
+    `is_active = False` soft-delete 03_PRODUCTS.md requires; the row
+    pill was relabelled "Delete" -> "Deactivate" rather than kept
+    mislabelled. Two different mixins on two buttons in the same row,
+    matched 1:1 to 02_RBAC.md's asymmetry, Phase 8.5 template-conditional
+    pattern. SKU made read-only on edit (disclosed decision) — enforced
+    server-side by always overwriting the posted `sku` with the
+    instance's current value before the form validates, not just by
+    disabling the client input. New `InventoryService.sync_reorder_level()`
+    keeps `InventoryRecord.reorder_level` (and its derived status) in
+    sync with an edited `Product.reorder_level`, writing no ledger row —
+    the only `InventoryService` change this phase made, per its own scope
+    limit. Full reasoning for all of the above, plus the
+    Suppliers/Categories "should this pattern extend to them" recommendation
+    (yes structurally, not built this phase) and the Reactivate
+    follow-up recommendation (yes for symmetry, not built this phase),
+    is in §13.
+    UI: a second modal (`#editProductModal`/`#editProductForm`) reusing
+    `modal-form.js`'s `ModalForm.init()` a second time on the same page
+    (explicitly designed to support this) rather than one form toggling
+    mode; pre-filled entirely client-side from each row's own
+    `data-product` JSON (`ProductListCreateView.get()`, mirroring
+    `PurchaseOrder.receive_items_json`'s existing pattern) — no
+    fetch-before-open round trip, no new fetch helper. `InventoryModal.
+    open()` added to `modal.js`'s public API (only `close()` existed) so
+    a row click can populate fields before the modal becomes visible.
+    13 new tests (edit persistence, negative-price/inactive-category
+    rejection, a SKU-tamper-is-a-no-op test replacing the literal
+    "duplicate SKU on edit" ask — see §13 for why that scenario is now
+    structurally impossible by design — barcode uniqueness standing in
+    to prove the same validation path still runs, reorder_level sync
+    with no ledger write, the RBAC split, deactivated-product exclusion
+    from Purchase/Sale forms) — 238/238 passing (was 225). Live-verified
+    against the real dev DB across all 3 roles: Staff edits successfully
+    and is blocked (302) from deactivating; Supervisor deactivates
+    successfully; a tampered SKU in the POST body is silently ignored;
+    zero new `InventoryMovement` rows from create+edit+deactivate
+    together; the deactivated product vanishes from Purchases'/Sales'
+    product dropdowns while remaining visible (with its history) on the
+    Products list itself.
+52. **Phase 8.99f: the emailed-credentials flow proven LIVE — the
+    DEFERRED verdict is closed.** Verification only, no rebuild — the
+    task's own explicit instruction was to prove the existing Phase
+    8.98e/8.99a machinery, not write a second one, and nothing here did.
+    **Step 1 (console backend): no regression since 8.98e.** Created a
+    real Supervisor and a real Staff user through the real `/users/` view
+    against the real dev DB — a real credentials email printed with a
+    real generated password, correct username, and the change-it note;
+    both new users logged in with that exact password (`302` to
+    `/dashboard/`); a DB-wide sweep for both passwords across every
+    `AuditLog.details` and `Notification.title`/`message` came back zero
+    hits, and neither new user got a `Notification` row at all — every
+    invariant Phase 8.98e's own writeup claimed still holds.
+    **Step 2 (real SMTP): now genuinely LIVE, not just code-verified.**
+    The owner provided a real Gmail account + app password (confirmed
+    it was an actual 16-character app password, not a real account
+    password, before using it — see the credential-hygiene note below).
+    Set `EMAIL_BACKEND`/`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD`/
+    `DEFAULT_FROM_EMAIL` in `.env` (never committed — confirmed gitignored
+    first). First attempt failed with a real, informative error (Gmail
+    `535 Bad Credentials`) — traced to a transcription mistake on this
+    session's own side (a character dropped while stripping spaces from
+    the app password), not a code or account problem; fixed and retried.
+    Sent one real admin-creates-a-user email and one real password-reset
+    email (Phase 8.99a's flow) in the same SMTP session, per the task's
+    own "prove both together, it's cheaper now than on deploy day"
+    instruction — **both confirmed received in the real inbox by the
+    owner**, not just "`send_mail()` didn't raise," which is exactly the
+    bar the task set ("send_mail() returned without error is NOT
+    verification — the inbox is"). Reverted `EMAIL_BACKEND` to the
+    console backend afterward for normal dev; the real `EMAIL_HOST_*`
+    values stay in `.env` (gitignored) so proving this again later — e.g.
+    before a real deploy — is a one-line edit, not a re-hunt for
+    credentials.
+    **Credential-hygiene finding, worth keeping**: the owner's first
+    offer wasn't an app password at all — it was their real Gmail account
+    password. Caught before it was written anywhere or used for an SMTP
+    attempt (format alone was the tell: real app passwords are 16 plain
+    lowercase characters, no digits/punctuation) and flagged back rather
+    than silently trying it — using a real account password for SMTP is
+    both likely to fail outright (Google blocks basic auth once 2FA is
+    on) and a strictly worse credential to have handled at all versus a
+    scoped, individually-revocable app password. The owner generated a
+    real app password once asked; that's the one actually in `.env` now.
+    **Step 3 (forced-change-on-first-login): reported, not built, per the
+    task's own explicit instruction.** Confirmed by grep — no
+    `must_change_password`-shaped field anywhere in `models.py`/
+    `SCHEMA.md`, no forced-change hook anywhere in `login_view`/
+    `01_AUTH.md` — the credentials email's "please change it" is advisory
+    only today; a new user can keep the generated password indefinitely.
+    Recommendation: enforced is more correct for a real deployment, but
+    advisory is a defensible choice for a tool this size, and building
+    the enforcement machinery (a `must_change_password` flag, a redirect
+    gate on every authenticated view, an exception carved out for the
+    change-password page itself so the gate doesn't lock a user out of
+    the one page that clears it) is real, scoped work — the owner's call,
+    flagged as a candidate for its own small phase, not built here.
+    **The "3 faked in dev" gate, updated**: emailed credentials and
+    password-reset both move from DEFERRED to **LIVE** (see the intro
+    blockquote above and the gate's own paragraph, both updated this
+    phase). Uploaded product/profile images remain the one still-DEFERRED
+    item of the original three — untouched by this phase, unrelated
+    dependency (persistent disk/object storage, not email). No code
+    changes beyond `.env` — 238/238 passing, unchanged from Phase 8.99e
+    (Django's test runner overrides `EMAIL_BACKEND` to an in-memory one
+    regardless of `.env`, so this phase's settings change was never
+    reachable by the suite — confirmed by re-running it after the `.env`
+    edit, same 238/238).
+53. **Phase 8.99f-2: admin email re-confirmed, real user delete, the
+    sidebar badge's hardcoded "6" fixed.** Three items, diagnosed against
+    the actual code before changing anything, per the task's own
+    instruction.
+    **Part 1 — already proven, re-confirmed only.** Phase 8.99f (this same
+    session) already sent real credentials/reset emails to a real Gmail
+    inbox and got them confirmed received — not redone. One console-
+    backend regression check (a real Supervisor + Staff creation) showed
+    no change since: real email printed, 2 audit rows, zero `Notification`
+    rows for the new users. No code touched.
+    **Part 2 — the on_delete reality, stated first.** Every `User` FK in
+    this project is `PROTECT` (`PurchaseOrder`/`SaleTransaction`'s
+    `created_by`/`approved_by`/`cancelled_by` — 6 fields — plus
+    `InventoryMovement.performed_by`, `InventoryAdjustment.requested_by`/
+    `approved_by`) except `AuditLog.user` (`SET_NULL`) and
+    `Notification.recipient` (`CASCADE`, harmless — a user's own in-app
+    notifications). Hard-deleting a user referenced by any `PROTECT` FK
+    would raise `ProtectedError` — a 500, not a delete; hard-deleting one
+    referenced only via `AuditLog.user` would silently null who performed
+    a real, audited action. `UserDeactivateView`/`UserReactivateView`
+    (Phase 8) already existed, complete, `AdminRequiredMixin`-gated, with
+    the self-deactivation guard already in place — and `users.html`'s row
+    pills were *already* correctly labelled "Deactivate"/"Reactivate" and
+    already wired via `user-form.js`, not a dead or mislabelled "Delete"
+    button as the task predicted. The actual gap was narrower: no true
+    delete existed at all, for anyone. Built one, deliberately narrow —
+    new `UserDeleteView` (`AdminRequiredMixin`) only ever succeeds for a
+    user who appears in *none* of the 9 tables above (new
+    `_user_ids_with_history()` helper, `frontend/views.py`: 10 cheap
+    `.values_list(...flat=True)` queries, one shared computation used by
+    both `UserListCreateView.get()` — to decide which rows even get a
+    "Delete" pill — and `UserDeleteView` itself, so the button's presence
+    and the server's enforcement can't disagree). Anyone with any history
+    gets a clean refusal ("This user has activity history and can't be
+    deleted; deactivate instead."), not a 500. Same self-action guard as
+    deactivate. New `audit.USER_DELETED` (undocumented in `13_AUDIT.md` —
+    disclosed addition, load-bearing: a delete with no audit trail at all
+    would be worse than the gap it closes) logs the deleted username in
+    `details=`, since `affected_id` alone points at a row that no longer
+    exists after this one action (every other audited user action leaves
+    the row in place). Label honesty: the new button says "Delete"
+    because it now genuinely, permanently deletes — no dishonesty to fix
+    on the existing Deactivate/Reactivate pills, since they were already
+    named correctly.
+    **Part 3 — the sidebar badge.** Found: a literal, static
+    `<span class="nav-item-badge">6</span>` in `includes/sidebar.html`,
+    left over from the Phase 3.6 mock era, wired to nothing (confirmed
+    via grep before touching it). The topbar bell's own badge
+    (`#notifBadge`) turned out to be a small dot, not a number — driven by
+    `notifications.js`'s existing 30-second poll of
+    `/notifications/unread-count/` (`NotificationUnreadCountView`, Phase
+    8: `Notification.objects.filter(recipient=request.user,
+    is_read=False).count()`), hidden by default and unhidden only when
+    the count is nonzero. Rather than add a context processor or a second
+    poll, `pollUnreadCount()` itself was extended to update *both*
+    badges from the one fetch response — one mechanism, not two, matched
+    to whichever the topbar already used. The sidebar badge is now
+    `hidden` by default in the markup too (same "hidden until the first
+    poll resolves" shape the topbar dot already had), text set to the
+    real count, and hidden again at zero — the two can't disagree since
+    they're now driven by the same number in the same callback. Confirmed
+    live: a user with 16 pre-existing unread notifications plus 3
+    deliberately created showed `unread_count: 19` at the shared
+    endpoint; marking one read dropped it to 18 immediately.
+    7 new tests (5 for the delete rules — clean-user succeeds, history-
+    via-PurchaseOrder refused, history-via-AuditLog-only refused,
+    self-delete refused, Staff blocked — plus the `deletable` context-flag
+    test and the sidebar-badge-markup test) — 245/245 passing (was 238).
+    Live-verified against the real dev DB across roles: a real clean
+    throwaway user hard-deleted successfully with a real `USER_DELETED`
+    audit row; a real user with real `PurchaseOrder` history refused with
+    the clear message; Staff blocked (`302`) from both delete and
+    deactivate; deactivate/reactivate round-tripped correctly on a real
+    account.
+54. **Phase 8.99f-3: Add User modal audited (clean), the stranded-account
+    email-failure gap closed.** **Part 1 — field-by-field audit against
+    `SCHEMA.md` §1, same discipline as BUG-31/BUG-35: no changes needed.**
+    `UserForm`'s 5 fields (`full_name`/`username`/`employee_id`/`email`/
+    `role`) exactly match every non-blank-required `User` field; no
+    invented fields, no `first_name`/`last_name` (BUG-40's lesson held),
+    no password field (confirmed still correctly absent, Phase 8.98e);
+    role `<option value>`s match `UserRole`'s real choice strings exactly;
+    client-side `REQUIRED_FIELD_IDS` matches the server-required set
+    exactly. Live-verified rather than inferred: duplicate username/email/
+    employee_id and a missing required field all returned clean, field-
+    mapped `400`s, no `500`. One non-blocking observation, not a defect:
+    `User.contact_number` (optional, `blank=True`) isn't collected at
+    creation — consistent with `profile_image` also being deferred to the
+    profile page rather than the create form, not fixed here since it
+    wasn't asked for and isn't required.
+    **Part 3 — a real, confirmed defect: a failed credentials-email send
+    was indistinguishable from a real success.**
+    `send_new_user_credentials_email()` already fails open internally
+    (catches its own exception, prints server-side, returns `False`) —
+    but `UserListCreateView.post()` never looked at that return value, so
+    a genuine SMTP failure produced the exact same `{"success": True}` as
+    a real send: a real, active account with a real, usable password that
+    nobody — not the Admin, not the new user — actually knows. Reproduced
+    live before fixing (mocking `send_mail` itself, not the wrapper, to
+    match the real failure shape): confirmed the account is created
+    either way and the response was unchanged. Fix, deliberately not a
+    rollback: the account creation stays (throwing away validated admin
+    work — username/employee_id/role already chosen — over what's usually
+    a transient delivery problem is the wrong trade), but the view now
+    checks the return value and adds a `warning` key naming the affected
+    email when the send failed; `user-form.js` surfaces it via `alert()`
+    before the reload. Absent on every normal success — confirmed the
+    existing 8.98e test asserting the bare `{'success': True}` shape still
+    passes unmodified. 2 new tests (failure produces the warning and still
+    creates a usable account; normal success has no warning key) — none
+    of Phase 8.98e's own tests needed changes.
+    **Part 2 — re-proven over real SMTP for both a Staff and a Supervisor
+    creation, plus the `email_notifications_enabled` override
+    specifically.** Both created through the real `/users/` endpoint
+    (Gmail `+`-alias addresses so two unique, real, same-inbox addresses
+    could be used) — the Staff account deliberately created with
+    `SystemSettings.email_notifications_enabled` set `False` first, to
+    prove the credentials email still bypasses it (Phase 8.98e's own
+    disclosed decision, §13); restored `True` before the Supervisor
+    creation. Both real emails confirmed received by the owner, correct
+    subject/username/password/change-note content. Security invariant
+    re-confirmed under real SMTP (not just console, per 8.99f): exactly
+    one clean `USER_CREATED` audit row per account, zero `Notification`
+    rows, `details={}` — no password anywhere. `EMAIL_BACKEND` reverted to
+    console afterward, both throwaway verification accounts deleted.
+    245/245 → 247/247 passing.
+55. **Phase 8.99f-4: the Add User modal's stray lines + the missing
+    success confirmation (BUG-51/BUG-52).** **Part 1** — grepped every
+    `{# #}` in `users.html` before touching anything: 3 of 4 close on
+    their own line and are fine; one, directly above the modal's info
+    banner, spans 3 lines — the exact BUG-03/BUG-36 shape (Django's
+    `{# #}` tokenizer isn't `DOTALL`), confirmed by rendering the page and
+    finding the literal comment text inside the actual HTML output before
+    fixing it, not just reading the template source. Converted to
+    `{% comment %}{% endcomment %}`, same fix as both prior occurrences.
+    **Part 2 diagnosis, reproduced live before changing anything**: the
+    create genuinely, reliably succeeds — the "no confirmation" report is
+    accurate not because anything is broken, but because nothing was ever
+    built. `UserListCreateView.post()` never called `messages.success()`
+    (ruling out the Phase 8.5 flashed-message-never-rendered shape) and
+    never returns a redirect (ruling out the `fetch()`-follows-302 shape,
+    already fixed elsewhere by `row-actions.js`'s `Response.redirected`
+    check) — it's a `JsonResponse` the whole time. Checked every other
+    Add-modal's own `onSubmit` (`product-form.js`, `purchase-form.js`):
+    all of them *also* just `window.location.reload()` on success with no
+    toast, `alert()` used only for confirm-prompts/warnings/errors
+    app-wide. So "it worked when tested" meant exactly what BUG-52 states:
+    every test (this project's own, and this phase's own scripted
+    verification) checked the DB row and the raw JSON — never a rendered,
+    visible message — because none existed to check.
+    **Part 3 fix**: rather than bolt a toast onto Products' "silent
+    reload is fine" default, recognized *why* Users is the one case that
+    needs an exception — the meaningful outcome (did the credentials
+    email really arrive) is invisible in the table, unlike a new Product
+    row. Every real success now carries a `message` naming the emailed
+    address, extending Phase 8.99f-3's own `warning` field (mutually
+    exclusive with it) rather than inventing a second signal;
+    `user-form.js` reads either and `alert()`s it before the reload — the
+    same mechanism already used for the warning case. Matches Users &
+    Roles' own sibling actions (deactivate/reactivate), which also just
+    reload with no toast on success, by *not* adding one there either —
+    the fix is scoped to the one action whose success is otherwise
+    unverifiable, not applied uniformly for its own sake.
+    Live-verified with a real POST shaped exactly like the browser
+    modal's own `fetch()` call — not a scripted DB-only check: the
+    returned payload is precisely what would get `alert()`'d
+    ("User created — credentials emailed to <email>."); a duplicate
+    resubmit stays a clean `400` with an inline field error. 2 existing
+    tests updated to assert on the message content (the old
+    `assertEqual(response.json(), {'success': True})` exact-shape
+    snapshot was itself part of why the gap shipped unnoticed — it never
+    looked at what a person would actually see); 1 new test (the
+    comment-leak regression) plus 8.99f-3's own `warning`-key test renamed
+    to assert `message`-vs-`warning` mutual exclusivity instead.
+    247/247 → 248/248 passing.
+56. **Phase 8.99f-5: the real root cause of "works when the tool does it,
+    not when I do it" (BUG-53).** Worked the 4-cause checklist in order,
+    with evidence, before touching anything. Cause (1), confirmed first
+    and decisively: `EMAIL_BACKEND` was the console backend — this
+    session's own established practice, every prior phase (8.99f, f-3,
+    f-5 itself) temporarily flips it to real SMTP to *verify* delivery,
+    then reverts it to console as the resting dev state once done. A real
+    admin click always runs against whatever the resting state actually
+    is, so it was never seeing a real send — reproduced live: a real POST
+    on the console backend returned a genuinely successful-looking
+    `{"success": True, "message": "User created — credentials emailed to
+    X."}`, identical in shape to a real SMTP success, because Django's
+    console backend never raises — `send_mail()` "succeeds" by printing
+    to whichever terminal runs the process, which is not the same claim
+    as "an email left the machine," and the application code had no way
+    to tell the two apart. This is why 8.99f-3/f-4's own honesty fix
+    (checking `email_sent`) didn't catch it: `email_sent` was `True` in
+    both cases.
+    Ruled out (2) (the running process's env is only read at startup —
+    not applicable, this session's own scripts are one-shot processes,
+    not a long-lived `runserver`) and confirmed (3)/config genuinely
+    correct via the checklist's own bare-shell isolation test:
+    `send_mail()` called directly, no user-creation code involved,
+    returned `1` with no exception. Gmail combination confirmed exactly
+    right: port `587` + `EMAIL_USE_TLS=True` + `EMAIL_USE_SSL` unset
+    (Django's own default `False`, no project override needed/present) —
+    the single most common Gmail failure (587/TLS vs. 465/SSL confusion)
+    doesn't apply here. One real, unplanned SMTP hiccup surfaced live
+    during this phase's own verification (`WinError 10054`, a connection
+    reset on the first of two back-to-back sends) — caught correctly as
+    a `warning`, not a false success, which is itself a live confirmation
+    the 8.99f-3 honesty fix works for a genuine, non-mocked failure.
+    Fix, matched to cause (1): `UserListCreateView.post()` now checks
+    `settings.EMAIL_BACKEND` and gives the console-backend case its own,
+    honest `message` — "using the local console email backend (dev
+    mode) — no real email was sent... configure real SMTP to actually
+    deliver this email" — distinct from both the real-send `message` and
+    the failed-send `warning`. No rewrite of `send_new_user_credentials_
+    email()` — the bare-shell test proved that path was never the
+    problem, so it was left untouched per the task's own explicit
+    instruction not to fix what wasn't broken.
+    **Resting-backend decision, presented and answered**: keep the
+    console backend as the resting dev default (owner's choice) —
+    matches this session's own established practice, and prevents
+    routine dev clicks from emailing real addresses by accident; real
+    SMTP stays a deliberate, occasional action. The new message makes
+    that state legible instead of silently misleading.
+    **Table-visibility half confirmed fine, no change needed**:
+    `UserListCreateView.get()`'s queryset has no active-only filter and
+    no pagination — every newly created user, regardless of role or
+    status, is visible on the very next reload; confirmed by rendering
+    the real page and finding the new row, not by inference.
+    Live-verified end to end over real SMTP, including a genuine
+    unplanned failure and a real login: two real accounts created (a
+    fresh Supervisor sent twice, since the first verification account
+    was deleted mid-session by the owner testing the real Delete feature
+    from 8.99f-2 — confirmed via its own `USER_DELETED` audit row, not
+    guessed at), both credential emails confirmed received in the real
+    inbox by the owner, login with the real emailed password succeeded
+    (`302` to `/dashboard/`, `check_password()` confirmed the exact
+    match). Security invariant re-confirmed clean under real SMTP once
+    more. 1 new test (`@override_settings`-driven, asserting the
+    console-backend message's actual content, not just its presence) —
+    249/249 passing (was 248). `.env` left on the console backend
+    afterward, all throwaway accounts deleted.
+57. **Phase 8.99f-6: close-out audit — the email thread is closed.** Not
+    a new investigation; a verification pass on top of 8.99f-5's already-
+    proven root cause. **Step 1 — inventory**: every email-related bug in
+    `docs/bugsfound.md` (BUG-48, BUG-52, BUG-53) grepped out and checked
+    individually — all three already marked ✅ Fixed in the table, and all
+    three verified genuinely fixed against actual code (not just trusted):
+    `StockwellPasswordResetConfirmView`/`_record_password_change()` (BUG-
+    48) still present and wired; the relevant test classes
+    (`PasswordResetFlowTests`, `UserManagementViewTests` — 26 tests) all
+    pass. **Outcome: all-fixed, no drift found** — the 15-minute close-out
+    path, not the flip-stale-entries or fix-genuinely-open path. Steps 2a/
+    2b were correctly no-ops, stated as such rather than manufacturing
+    work to fill them.
+    **Step 3 — one regression pass, real SMTP**: a real user created
+    through the real `/users/` endpoint appeared in the table on reload,
+    the credentials email arrived in the real inbox (owner-confirmed), the
+    account left a single clean `USER_CREATED` audit row with empty
+    `details` and zero `Notification` rows. Console-backend branch
+    (BUG-53's fix) re-verified live to still show its honest "dev mode, no
+    real email sent" message, unchanged. One throwaway account was
+    deleted prematurely mid-verification by this phase's own cleanup step
+    (not the owner this time) before a login re-test could run against
+    it — disclosed rather than silently worked around; login-with-a-real-
+    emailed-password was not re-tested a fourth time this session, since
+    it was already independently proven three separate times (8.99f,
+    8.99f-3, 8.99f-5) and every other part of Step 3's checklist passed.
+    **Step 4 — verdict flip + resting state**: the Phase 8.99 deploy
+    gate's "3 faked in dev" paragraph (intro blockquote, above) updated —
+    emailed credentials and password-reset both now read **PROVEN LOCALLY
+    over real SMTP**, not DEFERRED; Phase D's remaining scope named
+    explicitly as "re-confirm the same proven send against Render," not
+    "first real send." Confirmed `.env`'s resting `EMAIL_BACKEND` is
+    console (per 8.99f-5's owner-made choice) and stays gitignored. Found
+    and closed one small, genuine gap while confirming this: `.env.example`
+    had no `EMAIL_*` keys at all — not a leaked secret (there was nothing
+    there), but a real discoverability gap for the next developer, since
+    `docs/ENVIRONMENT.md` documents the Gmail setup but the actual env
+    file template never listed the keys. Added the same 6 keys as
+    placeholders (`EMAIL_BACKEND` defaulting to console, matching
+    `config/settings.py`'s own default; a note pointing at
+    `ENVIRONMENT.md`'s App Password steps). No code changes, no new
+    tests needed (nothing new to cover — a pure audit/confirmation/doc
+    phase) — 249/249 passing, unchanged from 8.99f-5.
+    **The email thread (Phases 8.99f → f-6) is closed**: admin-creates-
+    user delivers a real email over real SMTP, the console fallback is
+    honest about being a dev-only no-send, and every email-related bug
+    found along the way ends Fixed.
+58. **Phase 8.99f-7: real SMTP becomes the resting default for actual
+    use.** Three-way framing stated up front, all three satisfied: (1)
+    real admin use delivers real email by default, (2) the test suite
+    never sends real email regardless of the configured backend, (3)
+    console stays available as a deliberate, one-line opt-in. Not a naive
+    flip — (1) was only safe to do once (2) was proven airtight.
+    **Step 1, done first, on purpose**: proved test-suite send-safety
+    with real SMTP credentials genuinely present in `.env` throughout —
+    directly inspected `settings.EMAIL_BACKEND` after calling
+    `setup_test_environment()` (what `manage.py test` runs at startup)
+    and confirmed it resolves to `locmem`, then ran the full suite the
+    same way and got the identical, expected 249/249 (later 254/254). One
+    test (`test_console_backend_creation_message_discloses_dev_mode`,
+    8.99f-5) deliberately overrides to the *console* backend for itself
+    via `@override_settings` — still fully local, prints only, never a
+    real send; noted explicitly rather than left as an unexplained
+    exception to "tests never send." Added an explicit belt-and-
+    suspenders guard in `config/settings.py` anyway (pins `locmem` when
+    `sys.argv[1] == 'test'`, before Django's own mechanism even runs) —
+    redundant with Django's own reliable behavior, but makes it structural
+    to this project rather than resting solely on an external library's
+    behavior never being bypassed by some other future test-running path.
+    **Step 2**: `.env`'s `EMAIL_BACKEND` flipped to the SMTP backend as
+    the actual resting state (a `.env` change, never a `settings.py`
+    hardcode — the whole point of Phase 8.99's env-driven design). BUG-
+    53's console-branch honesty message is untouched, unreachable by
+    default now, still fully correct for anyone who deliberately opts
+    into `EMAIL_BACKEND=console...` for a session — confirmed live via
+    `override_settings`. `.env.example` fixed properly, not just left
+    "empty": `EMAIL_BACKEND`/`DEFAULT_FROM_EMAIL` are *omitted* rather
+    than set to `KEY=` (present-but-empty) — confirmed live that
+    `os.environ.get(KEY, default)` only falls through to
+    `config/settings.py`'s own safe default when the key is genuinely
+    *absent*; a present-but-blank value would have shadowed that default
+    with an empty string and crashed on an empty backend import path. A
+    real, disclosed correctness fix to what 8.99f-6 shipped, not a
+    stylistic tweak.
+    **Step 3 — hardening**: new `EMAIL_TIMEOUT` (default 10s, env-
+    overridable) so a hung SMTP connection fails fast into the already-
+    existing caught-exception path instead of blocking the request
+    indefinitely. New `UserResendCredentialsView` (`AdminRequiredMixin`)
+    — the missing recovery path a real-SMTP-by-default world actually
+    needs: generates a fresh `generate_strong_password()` (Admin still
+    never sees it), re-sends via the identical
+    `send_new_user_credentials_email()`, logs a new, disclosed
+    `audit.USER_CREDENTIALS_RESENT` (no password in `details=`, same
+    discipline as `USER_CREATED`). The 3-way response logic
+    (`UserListCreateView.post()` built across 8.99f-3/f-4/f-5) was
+    factored into a shared `_credentials_email_feedback()` so the resend
+    view doesn't duplicate it (§18) — both callers now read from one
+    place. UI: a "Resend credentials" pill shown while `user.last_login`
+    is still `None` (a real signal — Django's own field, not a new one —
+    that the original credentials were never actually used), gone the
+    moment they log in for real or if the account is inactive; wired via
+    `row-actions.js`'s existing `postAction()`/`reportResult()` with only
+    a custom `onSuccess` callback supplied (no new fetch mechanism) so the
+    message/warning actually surfaces, matching the Add User form's own
+    pattern. Live-verified with a real, deliberately-wrong Gmail app
+    password: create → honest `warning`, not a false success; corrected
+    the password → Resend succeeded with a real `message` and a real
+    audit row.
+    **Step 4**: `DEFAULT_FROM_EMAIL`/`EMAIL_HOST_USER` reconfirmed
+    identical (Gmail rejects/flags a mismatched From — already correct
+    since Phase 8.99f, just re-verified). `docs/ENVIRONMENT.md` gained a
+    "Deliverability Notes" section: SPF/DKIM/DMARC and a transactional
+    provider (SendGrid/Mailgun/SES) are flagged explicitly for Phase D,
+    not built now — Gmail SMTP is proven and adequate for local use, but
+    has real production-unsuitable limits (low daily send caps, a
+    personal-account credential as the auth story) worth naming ahead of
+    time rather than discovering at deploy.
+    5 new tests (fresh-password-generated-and-emailed, failure returns
+    `warning` not a false success, password absent from Notification/
+    AuditLog on resend, Staff blocked, the `resendable` context flag's 3
+    states) — 254/254 passing (was 249). Live-verified end to end: a real
+    admin click with zero manual backend flip delivered a real email,
+    the row appeared in the table, and the security invariant held under
+    real SMTP once more.
+59. **Phase 8.99f-8: the running server was reading a stale `.env`.**
+    Not a code bug, and not logged as one in `docs/bugsfound.md` —
+    Django reads `.env`/environment once at
+    process startup, and a live `runserver` process (PID 21028) had
+    started ~2.5 minutes *before* `.env`'s most recent edit, confirmed by
+    directly comparing the process's `CreationDate` (`wmic`) against the
+    file's `LastWriteTime`, not inferred. A fresh `manage.py shell`
+    process resolved everything correctly the whole time — proving the
+    SMTP config itself was never the problem, only the long-lived
+    process's stale snapshot of it. Fixed by a real stop/start (not the
+    autoreloader); verified via real `curl` HTTP requests (login + a real
+    user-creation POST) against the actual listening process, across two
+    independent full restarts, confirming it wasn't a fluke. Full suite
+    (254/254) re-confirmed passing with the fresh server running
+    concurrently.
+60. **Phase 8.99i: Products/Categories/Suppliers get real Edit/Deactivate/
+    Reactivate/Delete — Categories and Suppliers had literally none of it.**
+    **Step 0 diagnosis, per module**: Products already had
+    `ProductUpdateView`/`ProductDeactivateView` (Phase 8.99e) — confirmed
+    working, not rebuilt; missing only `Reactivate` (8.99e scoped it out
+    as optional) and a guarded true-`Delete`, both added this phase.
+    Categories and Suppliers had zero view classes and zero JS handlers
+    for Edit/Delete at all — plain, unwired `<button>`s left over from the
+    Phase 3.6/6 mock era, confirmed by reading `category-form.js`/
+    `supplier-form.js` directly (no `handleRowAction`, no click listener)
+    before writing anything.
+    **The `InventoryRecord` finding (Products' delete, the one genuine
+    subtlety)**: `Product` is referenced by 4 real `PROTECT` FKs
+    (`PurchaseOrderItem`/`SaleItem`/`InventoryMovement`/
+    `InventoryAdjustment`) — the actual history check — but also by a
+    5th, `InventoryRecord.product` (`OneToOneField`, also `PROTECT`),
+    which *every* product has from creation (`InventoryService.
+    initialize_for_product()`) regardless of whether it's ever used.
+    Deliberately excluded from the history check (it's current-state
+    bookkeeping, not history) but explicitly deleted as part of a
+    genuinely-safe `ProductDeleteView` delete — otherwise even a brand-
+    new, never-touched product's own `InventoryRecord` would block its
+    own deletion. `InventoryClassification`/`DemandForecast` are `CASCADE`
+    (disposable, AI-generated) and need no handling.
+    **Categories/Suppliers' history checks**: a Category is deletable iff
+    zero `Product.category` references it; a Supplier iff zero
+    `Product.supplier` AND zero `PurchaseOrder.supplier` reference it —
+    both computed as bulk `set()`s (`_category_ids_with_products()`/
+    `_supplier_ids_with_history()`), mirroring `_user_ids_with_history()`/
+    `_product_ids_with_history()`'s own shape: one shared computation, read
+    by both the list view's own `deletable` context flag and the delete
+    view's actual enforcement.
+    **The "one way to change active status" decision**: `CategoryForm`/
+    `SupplierForm` already had a synthetic `status` `ChoiceField` (not a
+    real model field — the *create* view interprets it manually) letting
+    the Add modal set initial active/inactive. Deliberately excluded from
+    both new Edit modals — `is_active` only ever changes through
+    Deactivate/Reactivate for all three modules now, matching Products'
+    own pre-existing pattern, rather than giving Categories/Suppliers a
+    second path to the same flag. `CategoryUpdateView`/`SupplierUpdateView`
+    reuse their forms via `instance=` unchanged, same as `ProductUpdateView`.
+    **Label/icon honesty (found while building the new Delete buttons)**:
+    Products' existing Deactivate button used `icon-trash` — the *same*
+    icon the new, genuine Delete buttons use everywhere — visually
+    implying destruction for what's actually a reversible soft-deactivate.
+    Fixed across all three modules: `icon-x` for deactivate (matching
+    Purchases/Sales/Adjustments/Users' own established convention),
+    `icon-trash` reserved exclusively for true delete.
+    RBAC: edit stays `AnyStaffMixin` (all 3 roles) on all three modules,
+    matching Products'/02_RBAC.md's existing asymmetry; deactivate/
+    reactivate/delete are `SupervisorRequiredMixin` on all three, for
+    consistency — 02_RBAC.md has no documented rule for Categories at all,
+    so it follows its two siblings rather than inventing a third gating
+    rule. 6 new, disclosed `audit.py` constants (`PRODUCT_REACTIVATED`/
+    `_DELETED`, `CATEGORY_DEACTIVATED`/`_REACTIVATED`/`_DELETED`,
+    `SUPPLIER_REACTIVATED`/`_DELETED` — none in `13_AUDIT.md`, same
+    treatment as `USER_DELETED`/`USER_CREDENTIALS_RESENT`, §13).
+    27 new tests across 3 test classes (`ProductUpdateDeactivateViewTests`
+    extended; new `CategoryUpdateDeactivateViewTests`/
+    `SupplierUpdateDeactivateViewTests`) covering edit persistence +
+    duplicate-field rejection + is_active untouched-by-edit for all three,
+    deactivate/reactivate + RBAC + picker-exclusion for all three, the
+    referenced-vs-unreferenced delete branch for all three, and — Products
+    specifically — the tax_rate edit-doesn't-alter-a-completed-line's-
+    stored-tax snapshot guarantee (a genuinely new test; nothing before
+    this phase exercised `ProductUpdateView` against an existing
+    `PurchaseOrderItem`). 254/254 → 281/281 passing.
+    Live-verified against the real dev DB through the actual running
+    server (`curl`, not just the Django test client) for all three
+    modules: create → edit → deactivate → reactivate → delete, each
+    confirmed by re-querying the DB directly (including that a deleted
+    product's `InventoryRecord` is genuinely gone too) — not inferred
+    from a `200` alone.
+61. **Phase 8.99j: dashboard decluttered, AI pages gated (BUG-43
+    closed).** Small, mostly UI, with one real security fix. Removed
+    "Refresh data" and "New purchase order" from the dashboard's own
+    heading row — confirmed first (grepped `dashboard.js`) that neither
+    button had any JS handler behind it at all, so nothing was orphaned
+    by deleting the markup. "New purchase order" specifically was exactly
+    the action-button class `09_DASHBOARD.md`'s own Decision 4 keeps off
+    this page on purpose (actions belong in their real modules; Pending
+    Approvals stays read-only, confirmed unaffected — a "View all" link
+    to `/purchases/`, no Approve/Reject anywhere near it, unchanged by
+    this phase) — removing it aligns the page with its own already-
+    approved spec, not just tidying. Confirmed no AI content lingers
+    anywhere on the dashboard to gate (Phase 8.96's own Decision 8/§4d
+    already dropped the AI Insights section outright, not as a deferred
+    placeholder).
+    **BUG-43 closed**: `demand_forecasting`/`slow_moving_dead_stock` had
+    zero auth requirement at all since Phase 8.97's audit found and
+    deliberately left them unfixed. Converted both from bare function
+    views to CBVs (`DemandForecastingView`/`SlowMovingDeadStockView`),
+    gated `SupervisorRequiredMixin` — **a disclosed deviation from
+    BUG-43's own original suggested fix** (`AnyStaffMixin`, mirroring
+    BUG-42's Dashboard fix): this phase's actual, more specific
+    requirement — "staff can't see the AI models" — is narrower than
+    "any logged-in role," so Admin+Supervisor only is correct here, not
+    the wider gate BUG-43's own text assumed would apply. Sidebar's
+    "Intelligence" nav group wrapped in the identical role conditional
+    Phase 8.5 established (already used one group down, for Reports) so
+    the hidden-link UX layer and the actual server-side gate can't
+    disagree — verified as a pair, not assumed to agree because one of
+    them was changed.
+    Verified live against the real dev DB, all 3 roles plus anonymous,
+    by direct URL (not just checking the nav link disappeared): anonymous
+    → `302` to login on both AI URLs; Staff → `302` back to the dashboard
+    on a direct GET to either (the real control) and doesn't see either
+    nav link or either removed dashboard button; Supervisor/Admin → both
+    pages load (`200`) and both nav links render. 8 new tests
+    (`AIPageAccessTests`) + 1 more on the existing `DashboardViewTests` —
+    281/281 → 287/287 passing.
 
 ---
 
@@ -1929,16 +4802,29 @@ session history, not `git log`:
 Highest priority first:
 
 1. **Wire the RBAC decorator/mixin (§5, Phase 4) and the service layer
-   into real module views, together, module by module** — **done.**
-   Products (Phase 5), Categories, Suppliers (Phase 6), Purchases, Sales,
-   Adjustments (Phase 7), Audit Log, Notifications, Users & Roles,
-   Settings, Reports (Phase 8) are all real now, see §2/§5/§12/§15.
-   Inventory is the one remaining page with no create/write action, so it
-   stays a plain read-only view by design — nothing left to wire there
-   beyond that.
-2. **Reconcile `INDEX.md`'s broken links**; write the missing module docs
-   (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `09_DASHBOARD.md`,
-   `12_SEARCH.md`, `14_SETTINGS.md`).
+   into real module views, together, module by module** — **done, all of
+   it.** Products (Phase 5), Categories, Suppliers (Phase 6), Purchases,
+   Sales, Adjustments (Phase 7), Audit Log, Notifications, Users & Roles,
+   Settings, Reports (Phase 8), and now Inventory (Phase 8.9 —
+   `InventoryListView`, real `InventoryRecord` queryset, `AnyStaffMixin`,
+   filters wired), Dashboard (Phase 8.96 — real KPIs/stats/charts/widgets
+   against `docs/09_DASHBOARD.md`; Phase 8.97 — real auth gate,
+   `AnyStaffMixin`), and Movement History (Phase 8.98, new — the real page
+   behind Inventory's own "Movement history" button) are all real and
+   correctly guarded, see §2/§5/§11/§12/§15. **Every module in the app now
+   has a genuinely real, correctly-guarded view, and every visible
+   Export/CSV button actually exports real data (Phase 8.98, BUG-44/45) —
+   nothing mock-but-marked-done, unguarded, or decoratively dead remains
+   among the app's 15 sidebar-linked pages or their sub-pages.** The one
+   gap named here previously — `demand_forecasting`/`slow_moving_dead_
+   stock` having no auth requirement (BUG-43) — is now closed (Phase
+   8.99j, `SupervisorRequiredMixin`, both server-side and nav-link
+   gating); both pages remain honestly-disclosed mock pending Phase
+   10/11, only the access gate changed.
+2. **Reconcile `INDEX.md`'s broken links**; write the remaining missing
+   module docs (`04_SUPPLIERS.md`, `08_ADJUSTMENTS.md`, `12_SEARCH.md`,
+   `14_SETTINGS.md` — `09_DASHBOARD.md` no longer belongs on this list,
+   written Phase 8.95).
 3. **Then** password reset (deferred from Phase 4), DRF API layer + its
    `BasePermission` classes (`02_RBAC.md`, deferred from Phase 4 — DRF
    still isn't installed), Celery (needed for the notification email
@@ -1966,19 +4852,30 @@ Grouped by module, per the documentation:
   module by module through Phase 5–8; template-level role conditionals +
   Django messages actually rendering landed Phase 8.5, see §12/§15/§16).
   Still needed: DRF `BasePermission` classes (needs DRF).
-- **Products**: real CRUD — ✅ **create + list done** (Phase 5, §2/§5),
-  SKU auto-generation implemented per `03_PRODUCTS.md`'s own documented
-  format and disclosed as its own architecture decision (§13, Phase 5.5 —
-  this bullet's "needs its own documented rule" gap is resolved), image
-  upload validation done (§5). Still pending: edit/deactivate views,
-  soft-delete (`is_active = False`, per `03_PRODUCTS.md`'s business
-  rules — no deactivate view exists yet, only create/list).
-- **Categories**: real CRUD — ✅ **create + list done** (Phase 6, §2/§5).
-  Still pending: edit/deactivate views.
-- **Suppliers**: real CRUD — ✅ **create + list done** (Phase 6, §2/§5; no
-  dedicated doc exists — see §12; built from `SCHEMA.md` + the existing
-  `suppliers.html` UI, reconciled per BUG-35). Still pending: edit/
-  deactivate views.
+- **Products**: real CRUD — ✅ **create + list + edit + deactivate done**
+  (create/list: Phase 5; edit/deactivate: Phase 8.99e — this project's
+  first per-entity update route, see §13). SKU auto-generation implemented
+  per `03_PRODUCTS.md`'s own documented format and disclosed as its own
+  architecture decision (§13, Phase 5.5 — this bullet's "needs its own
+  documented rule" gap is resolved), image upload validation done (§5).
+  Edit reuses `ProductForm` unchanged via `instance=` (`AnyStaffMixin`,
+  all 3 roles per 02_RBAC.md); Deactivate is the real
+  `is_active = False` soft-delete `03_PRODUCTS.md` requires
+  (`SupervisorRequiredMixin`, Admin/Supervisor only — an asymmetric gate
+  from Edit's, both correctly applied). SKU is read-only on edit
+  (disclosed, §13). Nothing still pending for Products' own CRUD —
+  Reactivate + a guarded true-Delete both landed Phase 8.99i (§13/§15
+  item 60).
+- **Categories**: real CRUD — ✅ **done, full lifecycle** (create + list:
+  Phase 6, §2/§5; edit/deactivate/reactivate/delete: Phase 8.99i, §13/§15
+  item 60 — previously zero view classes and zero JS handlers existed for
+  any of this, confirmed before building). Nothing still pending.
+- **Suppliers**: real CRUD — ✅ **done, full lifecycle** (create + list:
+  Phase 6, §2/§5; no dedicated doc exists — see §12; built from
+  `SCHEMA.md` + the existing `suppliers.html` UI, reconciled per BUG-35;
+  edit/deactivate/reactivate/delete: Phase 8.99i, §13/§15 item 60, same
+  starting point as Categories — nothing wired at all before this phase).
+  Nothing still pending.
 - **Purchases/Sales/Adjustments services**: ✅ **done** (Backend Phase
   3/3.4, §2) — `PurchaseService`, `SaleService`, `AdjustmentService`, all
   with audit/notification hooks (Phase 3.5). ✅ **Now wired to real
@@ -1987,13 +4884,16 @@ Grouped by module, per the documentation:
   layer. Still pending: edit views, PO/sale detail pages (this project
   has no per-entity detail routes anywhere yet, by design — see §13).
 - **Inventory service**: ✅ **done** (Backend Phase 3/3.8, §2) —
-  `InventoryService`, `select_for_update()`-safe. Still just a read-only
-  list page (§6/§13 — documented as API-driven only, deliberately no
-  create form), and deliberately still the one view with no RBAC mixin —
-  read-only with no write action to gate (§12/§16).
-- **Dashboard**: real KPI/stat aggregation replacing hardcoded numbers (no
-  dedicated doc — infer from the existing `dashboard.html` mock + general
-  patterns in other module docs).
+  `InventoryService`, `select_for_update()`-safe. The list page is real
+  too now (Phase 8.9, §2/§16) — read-only by design (§6/§13, still no
+  create form, correctly), `AnyStaffMixin`-guarded rather than left
+  unguarded like the old mock view was.
+- **Dashboard**: ✅ **done** (Phase 8.95/8.96, §2/§16) — real KPI/stat/
+  chart/widget aggregation against `docs/09_DASHBOARD.md` (written this
+  cycle, no dedicated doc existed before), replacing every hardcoded
+  number. Still open: `dashboard()` itself has no `@login_required`/RBAC
+  mixin (§12 technical debt) — out of `09_DASHBOARD.md`'s approved scope,
+  not silently added.
 - **Reports**: ✅ **done** (Backend Phase 8, §2/§5/§15) — all 9 report
   types, PDF (ReportLab, not WeasyPrint — see §15's Phase 8 entry for why)
   + CSV export, `SupervisorRequiredMixin`-gated, every export audit-logged.

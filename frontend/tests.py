@@ -8,11 +8,16 @@ profile, frontend/views.py) and the RBAC decorator/mixin (frontend/decorators.py
 frontend/mixins.py).
 """
 import json
-from datetime import timedelta
+import re
+import tempfile
+from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.core import mail
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 from django.test import TestCase, override_settings
@@ -53,6 +58,7 @@ from frontend.services import (
     PurchaseService,
     SaleService,
 )
+from frontend.validators import generate_strong_password
 
 User = get_user_model()
 
@@ -285,8 +291,23 @@ class PurchaseServiceTests(ServiceTestCase):
 
 
 class SaleServiceTests(ServiceTestCase):
+    """Phase 8.99b — Sale now mirrors Purchase's approval workflow: create
+    (DRAFT, no stock effect) -> submit_for_approval (PENDING) ->
+    approve_sale (stock moves, terminal COMPLETED) / reject_sale
+    (terminal REJECTED). cancel_sale is pre-approval-only. See
+    docs/project_memory.md §13 for the full disclosure of why this
+    diverges from 06_SALES.md's original one-step model."""
 
-    def test_create_sale_deducts_stock_and_computes_total(self):
+    def make_draft_sale(self, quantity=5, unit_price=Decimal('20.00'), **item_kwargs):
+        item = {'product_id': self.product.pk, 'quantity': quantity, 'unit_price': unit_price}
+        item.update(item_kwargs)
+        return SaleService.create_sale({}, [item], self.user)
+
+    def test_create_sale_creates_draft_with_no_stock_effect(self):
+        """Creating a sale must not touch InventoryService/InventoryRecord
+        at all — no availability check, no stock change, no movement —
+        while the money math (tax/discount/line_total) is computed exactly
+        as before."""
         self.give_stock(20)
         sale = SaleService.create_sale(
             {'customer_name': 'Acme Corp'},
@@ -295,90 +316,136 @@ class SaleServiceTests(ServiceTestCase):
             self.user,
         )
         record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 15)
+        self.assertEqual(record.current_stock, 20, "creating a sale must not touch stock")
         # (20 * 5) * (1 - 0.10) * (1 + 0) = 90.00
         self.assertEqual(sale.total_amount, Decimal('90.00'))
-        self.assertEqual(sale.status, SaleStatus.COMPLETED)
-
-    def test_create_sale_rejects_insufficient_stock_and_persists_nothing(self):
-        """Proves: stock is pre-validated for ALL items before anything is
-        created — a failing sale creates no SaleTransaction and deducts no
-        stock at all (not even for items that would have succeeded)."""
-        self.give_stock(3)
-        with self.assertRaises(InsufficientStockError):
-            SaleService.create_sale(
-                {}, [{'product_id': self.product.pk, 'quantity': 10, 'unit_price': Decimal('20.00')}],
-                self.user,
-            )
-        record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 3, "stock must be untouched after a rejected sale")
+        self.assertEqual(sale.status, SaleStatus.DRAFT)
         self.assertEqual(InventoryMovement.objects.filter(movement_type=MovementType.SALE).count(), 0)
 
-    def test_create_sale_atomic_across_multiple_items(self):
-        """Proves atomicity across a multi-line sale: if item 2 fails
-        pre-validation, item 1's stock (which alone would have succeeded)
-        is not deducted either."""
-        other_product = Product.objects.create(
-            sku='SKU-002', name='Gadget', category=self.category, supplier=self.supplier,
-            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
-        )
-        self.give_stock(20)  # plenty for self.product
-        InventoryService.increase_stock(
-            product=other_product, quantity=1, movement_type=MovementType.PURCHASE,
-            reference_type='TestSetup', reference_id=0, performed_by=self.user,
-        )  # only 1 unit of other_product — not enough for the sale below
-
-        with self.assertRaises(InsufficientStockError):
-            SaleService.create_sale(
-                {},
-                [
-                    {'product_id': self.product.pk, 'quantity': 5, 'unit_price': Decimal('20.00')},
-                    {'product_id': other_product.pk, 'quantity': 5, 'unit_price': Decimal('9.00')},
-                ],
-                self.user,
-            )
-        record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 20, "item 1 must not be deducted when item 2 fails validation")
-
     def test_create_sale_rejects_inactive_product(self):
-        self.give_stock(20)
         self.product.is_active = False
         self.product.save(update_fields=['is_active'])
         with self.assertRaises(ValueError):
-            SaleService.create_sale(
-                {}, [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00')}],
-                self.user,
-            )
+            self.make_draft_sale(quantity=1)
 
-    def test_sale_then_cancel_restores_correct_quantity(self):
-        """Proves: cancellation restores exactly the quantity that was
-        deducted, no more and no less."""
+    def test_submit_moves_draft_to_pending(self):
+        sale = self.make_draft_sale()
+        SaleService.submit_for_approval(sale, self.user)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.PENDING)
+
+    def test_submit_rejects_non_draft(self):
+        sale = self.make_draft_sale()
+        SaleService.submit_for_approval(sale, self.user)
+        with self.assertRaises(ValueError):
+            SaleService.submit_for_approval(sale, self.user)
+
+    def test_approve_deducts_stock_and_completes(self):
         self.give_stock(20)
-        sale = SaleService.create_sale(
-            {}, [{'product_id': self.product.pk, 'quantity': 7, 'unit_price': Decimal('20.00')}],
-            self.user,
-        )
-        record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 13)
+        sale = self.make_draft_sale(quantity=5)
+        SaleService.submit_for_approval(sale, self.user)
+        SaleService.approve_sale(sale, self.supervisor)
 
-        SaleService.cancel_sale(sale, self.user)
-        record.refresh_from_db()
-        self.assertEqual(record.current_stock, 20, "cancellation must restore exactly the sold quantity")
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 15)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.COMPLETED)
+        self.assertEqual(sale.approved_by, self.supervisor)
+        self.assertIsNotNone(sale.approved_at)
+        movement = InventoryMovement.objects.get(movement_type=MovementType.SALE, reference_id=sale.pk)
+        self.assertEqual(movement.quantity_change, -5)
+
+    def test_approve_rejects_non_pending(self):
+        sale = self.make_draft_sale(quantity=1)
+        with self.assertRaises(ValueError):
+            SaleService.approve_sale(sale, self.supervisor)
+
+    def test_approve_fails_cleanly_when_stock_insufficient_leaving_sale_pending_and_stock_untouched(self):
+        """The documented, deliberate consequence of not reserving stock
+        at draft time: two drafts against the same limited stock can each
+        look satisfiable at creation, and only one can actually succeed at
+        approval — set up deliberately here, not incidentally."""
+        self.give_stock(3)
+        sale1 = self.make_draft_sale(quantity=3)
+        sale2 = self.make_draft_sale(quantity=3)
+        SaleService.submit_for_approval(sale1, self.user)
+        SaleService.submit_for_approval(sale2, self.user)
+
+        SaleService.approve_sale(sale1, self.supervisor)  # succeeds, uses all 3 units
+        with self.assertRaises(InsufficientStockError):
+            SaleService.approve_sale(sale2, self.supervisor)
+
+        sale2.refresh_from_db()
+        self.assertEqual(sale2.status, SaleStatus.PENDING, "a failed approval must leave the sale pending, not stuck or terminal")
+        self.assertIsNone(sale2.approved_by)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 0, "sale2's failed approval must not touch stock beyond what sale1 already took")
+        self.assertEqual(InventoryMovement.objects.filter(reference_id=sale2.pk).count(), 0)
+
+    def test_reject_moves_pending_to_rejected_with_reason(self):
+        sale = self.make_draft_sale(quantity=1)
+        SaleService.submit_for_approval(sale, self.user)
+        SaleService.reject_sale(sale, self.supervisor, 'Customer cancelled order')
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.REJECTED)
+        self.assertEqual(sale.rejected_reason, 'Customer cancelled order')
+
+    def test_reject_rejects_non_pending(self):
+        sale = self.make_draft_sale(quantity=1)
+        with self.assertRaises(ValueError):
+            SaleService.reject_sale(sale, self.supervisor, 'reason')
+
+    def test_reject_leaves_stock_untouched(self):
+        self.give_stock(20)
+        sale = self.make_draft_sale(quantity=5)
+        SaleService.submit_for_approval(sale, self.user)
+        SaleService.reject_sale(sale, self.supervisor, 'Out of budget')
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20)
+
+    def test_cancel_draft_leaves_stock_untouched(self):
+        self.give_stock(20)
+        sale = self.make_draft_sale(quantity=5)
+        SaleService.cancel_sale(sale, self.user, 'Customer changed their mind')
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20, "nothing was ever deducted, so there is nothing to restore")
         sale.refresh_from_db()
         self.assertEqual(sale.status, SaleStatus.CANCELLED)
+        self.assertEqual(sale.cancelled_reason, 'Customer changed their mind')
+        self.assertEqual(sale.cancelled_by, self.user)
+        self.assertIsNotNone(sale.cancelled_at)
+        self.assertEqual(InventoryMovement.objects.filter(reference_id=sale.pk).count(), 0)
 
-        return_movement = InventoryMovement.objects.filter(movement_type=MovementType.RETURN).get()
-        self.assertEqual(return_movement.quantity_change, 7)
+    def test_cancel_pending_leaves_stock_untouched(self):
+        self.give_stock(20)
+        sale = self.make_draft_sale(quantity=5)
+        SaleService.submit_for_approval(sale, self.user)
+        SaleService.cancel_sale(sale, self.user, 'Duplicate entry')
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.CANCELLED)
+        self.assertEqual(sale.cancelled_reason, 'Duplicate entry')
+
+    def test_cancel_completed_sale_raises_and_touches_no_stock(self):
+        """The Objective's own explicit rule: once completed, a sale can
+        never be cancelled."""
+        self.give_stock(20)
+        sale = self.make_draft_sale(quantity=5)
+        SaleService.submit_for_approval(sale, self.user)
+        SaleService.approve_sale(sale, self.supervisor)
+        with self.assertRaises(ValueError):
+            SaleService.cancel_sale(sale, self.user, 'reason')
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 15, "a blocked cancel must not touch stock either")
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.COMPLETED)
 
     def test_cancel_already_cancelled_sale_raises(self):
-        self.give_stock(20)
-        sale = SaleService.create_sale(
-            {}, [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00')}],
-            self.user,
-        )
-        SaleService.cancel_sale(sale, self.user)
+        sale = self.make_draft_sale(quantity=1)
+        SaleService.cancel_sale(sale, self.user, 'first cancel')
         with self.assertRaises(ValueError):
-            SaleService.cancel_sale(sale, self.user)
+            SaleService.cancel_sale(sale, self.user, 'second cancel')
 
 
 class AdjustmentServiceTests(ServiceTestCase):
@@ -444,7 +511,9 @@ class AdjustmentServiceTests(ServiceTestCase):
 
 
 class PurchaseCancelTests(ServiceTestCase):
-    """Phase 3.4 / BUG-25: PurchaseService.cancel()."""
+    """Phase 3.4 / BUG-25 introduced PurchaseService.cancel(); Phase 8.99c
+    narrowed it to draft/pending only (see docs/project_memory.md §13) and
+    added a required reason, stored with who/when."""
 
     def make_po(self, ordered_qty=10, status=POStatus.DRAFT):
         po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.user, status=status)
@@ -456,32 +525,38 @@ class PurchaseCancelTests(ServiceTestCase):
 
     def test_cancel_from_draft_leaves_stock_untouched(self):
         po, _ = self.make_po(status=POStatus.DRAFT)
-        PurchaseService.cancel(po, self.user)
+        PurchaseService.cancel(po, self.user, 'Ordered by mistake')
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.CANCELLED)
+        self.assertEqual(po.cancelled_reason, 'Ordered by mistake')
+        self.assertEqual(po.cancelled_by, self.user)
+        self.assertIsNotNone(po.cancelled_at)
         self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
         self.product.refresh_from_db()
         self.assertEqual(self.product.current_stock, 0)
 
     def test_cancel_from_pending_leaves_stock_untouched(self):
         po, _ = self.make_po(status=POStatus.PENDING)
-        PurchaseService.cancel(po, self.user)
+        PurchaseService.cancel(po, self.user, 'Supplier no longer needed')
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.CANCELLED)
+        self.assertEqual(po.cancelled_reason, 'Supplier no longer needed')
         self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
 
-    def test_cancel_from_approved_leaves_stock_untouched(self):
+    def test_cancel_rejects_approved(self):
+        """Phase 8.99c: an approved PO is a commitment already made to the
+        supplier — cancel() must refuse it, not just hide the button."""
         po, _ = self.make_po(status=POStatus.APPROVED)
-        PurchaseService.cancel(po, self.user)
+        with self.assertRaises(ValueError):
+            PurchaseService.cancel(po, self.user, 'reason')
         po.refresh_from_db()
-        self.assertEqual(po.status, POStatus.CANCELLED)
-        self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
+        self.assertEqual(po.status, POStatus.APPROVED)
 
-    def test_cancel_from_partially_received_leaves_already_received_stock_untouched(self):
-        """Proves: cancelling a PARTIAL PO does not reverse the quantity
-        already received (05_PURCHASES.md: "Cancelled PO does NOT affect
-        inventory") — current_stock stays exactly at whatever the partial
-        receipt already set it to, no more, no less."""
+    def test_cancel_rejects_partially_received(self):
+        """Phase 8.99c: PARTIAL was cancellable before this phase; now it
+        isn't — proves the already-received stock stays untouched because
+        cancel() is refused outright, not because of any special-casing
+        inside cancel() itself anymore."""
         po, item = self.make_po(ordered_qty=10, status=POStatus.APPROVED)
         PurchaseService.receive_items(po, [{'item_id': item.pk, 'received_qty': 4}], self.user)
         po.refresh_from_db()
@@ -490,17 +565,16 @@ class PurchaseCancelTests(ServiceTestCase):
         self.assertEqual(record.current_stock, 4)
         movement_count_before = InventoryMovement.objects.filter(product=self.product).count()
 
-        PurchaseService.cancel(po, self.user)
+        with self.assertRaises(ValueError):
+            PurchaseService.cancel(po, self.user, 'reason')
 
         po.refresh_from_db()
-        self.assertEqual(po.status, POStatus.CANCELLED)
+        self.assertEqual(po.status, POStatus.PARTIAL, "a blocked cancel must not change status")
         record.refresh_from_db()
-        self.assertEqual(record.current_stock, 4, "stock already received must be untouched by cancel")
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.current_stock, 4)
+        self.assertEqual(record.current_stock, 4, "stock already received must be untouched by a blocked cancel")
         self.assertEqual(
             InventoryMovement.objects.filter(product=self.product).count(), movement_count_before,
-            "cancel() must not write any new InventoryMovement row",
+            "a blocked cancel must not write any new InventoryMovement row",
         )
 
     def test_cancel_rejects_already_received(self):
@@ -509,13 +583,13 @@ class PurchaseCancelTests(ServiceTestCase):
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.RECEIVED)
         with self.assertRaises(ValueError):
-            PurchaseService.cancel(po, self.user)
+            PurchaseService.cancel(po, self.user, 'reason')
 
     def test_cancel_rejects_already_cancelled(self):
         po, _ = self.make_po(status=POStatus.DRAFT)
-        PurchaseService.cancel(po, self.user)
+        PurchaseService.cancel(po, self.user, 'first cancel')
         with self.assertRaises(ValueError):
-            PurchaseService.cancel(po, self.user)
+            PurchaseService.cancel(po, self.user, 'second cancel')
 
 
 class InventoryMovementImmutabilityTests(ServiceTestCase):
@@ -638,7 +712,7 @@ class PurchaseAuditNotificationTests(ServiceTestCase):
         po, _ = self.make_po(status=POStatus.DRAFT)
         notif_count_before = Notification.objects.count()
 
-        PurchaseService.cancel(po, self.user)
+        PurchaseService.cancel(po, self.user, 'reason')
 
         entry = AuditLog.objects.get(action=audit.PO_CANCELLED)
         self.assertEqual(entry.user, self.user)
@@ -672,7 +746,7 @@ class SaleAuditTests(ServiceTestCase):
         )
         notif_count_before = Notification.objects.count()
 
-        SaleService.cancel_sale(sale, self.user)
+        SaleService.cancel_sale(sale, self.user, 'reason')
 
         entry = AuditLog.objects.get(action=audit.SALE_CANCELLED)
         self.assertEqual(entry.user, self.user)
@@ -718,7 +792,19 @@ class AdjustmentAuditNotificationTests(ServiceTestCase):
 
 class LowStockNotificationTests(ServiceTestCase):
     """Phase 3.5 / REQ 7.7: InventoryService.decrease_stock()'s
-    notify_supervisors() retrofit, exercised via a realistic sale."""
+    notify_supervisors() retrofit, exercised via a realistic sale. Phase
+    8.99b: stock only actually moves at approve_sale() now, so every test
+    here drives the sale through create -> submit -> approve to reach the
+    same real deduction the old single-step create_sale() used to trigger
+    directly."""
+
+    def approve_new_sale(self, quantity):
+        sale = SaleService.create_sale(
+            {}, [{'product_id': self.product.pk, 'quantity': quantity, 'unit_price': Decimal('20.00')}],
+            self.user,
+        )
+        SaleService.submit_for_approval(sale, self.user)
+        return SaleService.approve_sale(sale, self.supervisor)
 
     def test_sale_dropping_stock_to_reorder_level_notifies_all_supervisors(self):
         second_supervisor = User.objects.create_user(
@@ -732,10 +818,7 @@ class LowStockNotificationTests(ServiceTestCase):
         self.give_stock(10)  # reorder_level=5 on this fixture's Product
 
         # Sell down to exactly the reorder level (5) -> LOW_STOCK.
-        SaleService.create_sale(
-            {}, [{'product_id': self.product.pk, 'quantity': 5, 'unit_price': Decimal('20.00')}],
-            self.user,
-        )
+        self.approve_new_sale(quantity=5)
 
         low_stock_notifs = Notification.objects.filter(type=NotificationType.LOW_STOCK)
         recipients = set(low_stock_notifs.values_list('recipient_id', flat=True))
@@ -746,22 +829,18 @@ class LowStockNotificationTests(ServiceTestCase):
 
     def test_sale_dropping_stock_to_zero_sends_out_of_stock_not_low_stock(self):
         self.give_stock(5)
-        SaleService.create_sale(
-            {}, [{'product_id': self.product.pk, 'quantity': 5, 'unit_price': Decimal('20.00')}],
-            self.user,
-        )
+        self.approve_new_sale(quantity=5)
         self.assertTrue(Notification.objects.filter(
             recipient=self.supervisor, type=NotificationType.OUT_OF_STOCK,
         ).exists())
         self.assertFalse(Notification.objects.filter(type=NotificationType.LOW_STOCK).exists())
 
-    def test_sale_leaving_stock_above_reorder_level_sends_no_notification(self):
+    def test_sale_leaving_stock_above_reorder_level_sends_no_low_or_out_of_stock_notification(self):
         self.give_stock(20)
-        SaleService.create_sale(
-            {}, [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00')}],
-            self.user,
-        )
-        self.assertFalse(Notification.objects.exists())
+        self.approve_new_sale(quantity=1)
+        self.assertFalse(Notification.objects.filter(
+            type__in=[NotificationType.LOW_STOCK, NotificationType.OUT_OF_STOCK],
+        ).exists())
 
 
 class EmailNotificationTests(ServiceTestCase):
@@ -927,38 +1006,303 @@ class ProfileUpdateTests(AuthTestCase):
         self.assertEqual(self.user.contact_number, '555-0199')
         self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.PROFILE_UPDATED, status='success').exists())
 
-    def test_password_change_hashes_new_password_logs_and_notifies(self):
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class ProfileImageValidationTests(AuthTestCase):
+    """Phase 8.98e — profile_view() now runs User.profile_image through
+    validate_product_image() (frontend/validators.py), reused unchanged
+    from Product.image/SystemSettings.company_logo rather than duplicated
+    — previously this field had zero validation at all. MEDIA_ROOT is
+    overridden to a throwaway temp dir so these uploads never touch the
+    real project media/ folder."""
+
+    def test_invalid_extension_rejected(self):
         self.client.login(username='jdoe', password='Correct-Horse1!')
-        self.client.post(reverse('frontend:profile'), {
-            'full_name': self.user.full_name, 'new_password': 'New-Password9!',
+        bad_file = SimpleUploadedFile('malware.txt', b'not-an-image', content_type='text/plain')
+        response = self.client.post(reverse('frontend:profile'), {
+            'full_name': 'Jane Doe', 'contact_number': '', 'profile_image': bad_file,
+        })
+        self.assertRedirects(response, reverse('frontend:profile'))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.profile_image)
+
+    def test_oversized_image_rejected(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        big_file = SimpleUploadedFile('big.png', b'\x00' * (5 * 1024 * 1024 + 1), content_type='image/png')
+        response = self.client.post(reverse('frontend:profile'), {
+            'full_name': 'Jane Doe', 'contact_number': '', 'profile_image': big_file,
+        })
+        self.assertRedirects(response, reverse('frontend:profile'))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.profile_image)
+
+    def test_valid_image_accepted_and_displayed(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        good_file = SimpleUploadedFile('avatar.png', b'\x89PNG\r\n\x1a\n' + b'\x00' * 100, content_type='image/png')
+        response = self.client.post(reverse('frontend:profile'), {
+            'full_name': 'Jane Doe', 'contact_number': '', 'profile_image': good_file,
+        })
+        self.assertRedirects(response, reverse('frontend:profile'))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.profile_image)
+
+        page = self.client.get(reverse('frontend:profile'))
+        self.assertContains(page, self.user.profile_image.url)
+
+    def test_no_image_uploaded_leaves_existing_field_untouched(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.post(reverse('frontend:profile'), {'full_name': 'Jane Doe', 'contact_number': ''})
+        self.assertRedirects(response, reverse('frontend:profile'))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.profile_image)
+
+
+class ChangePasswordViewTests(AuthTestCase):
+    """Phase 8.98a — password change moved off profile_view's old inline
+    "new password" field (no current-password check, no confirm field)
+    into its own real modal + dedicated endpoint. Same
+    validate_password()/StrongPasswordValidator enforcement as before,
+    reused not rewritten; the new, real checks are current-password
+    correctness and new/confirm matching."""
+
+    def test_valid_change_hashes_new_password_logs_and_notifies(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.post(reverse('frontend:change_password'), {
+            'current_password': 'Correct-Horse1!',
+            'new_password': 'New-Password9!',
+            'confirm_password': 'New-Password9!',
         })
 
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'success': True})
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password('New-Password9!'))
         self.assertTrue(AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED, status='success').exists())
         self.assertTrue(Notification.objects.filter(recipient=self.user, type=NotificationType.PASSWORD_CHANGED).exists())
         self.assertEqual(len(mail.outbox), 1)
 
-    def test_weak_new_password_rejected_by_strong_password_validator(self):
+    def test_wrong_current_password_rejected(self):
         self.client.login(username='jdoe', password='Correct-Horse1!')
-        response = self.client.post(reverse('frontend:profile'), {
-            'full_name': self.user.full_name, 'new_password': 'alllowercase1',
+        response = self.client.post(reverse('frontend:change_password'), {
+            'current_password': 'totally-wrong-password',
+            'new_password': 'New-Password9!',
+            'confirm_password': 'New-Password9!',
         })
 
-        self.assertContains(response, 'uppercase')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('current_password', response.json()['errors'])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Correct-Horse1!'), "password must be unchanged")
+        self.assertFalse(AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED).exists())
+
+    def test_mismatched_confirmation_rejected(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.post(reverse('frontend:change_password'), {
+            'current_password': 'Correct-Horse1!',
+            'new_password': 'New-Password9!',
+            'confirm_password': 'Different-Password9!',
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('confirm_password', response.json()['errors'])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Correct-Horse1!'), "password must be unchanged")
+
+    def test_weak_new_password_rejected_by_strong_password_validator(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.post(reverse('frontend:change_password'), {
+            'current_password': 'Correct-Horse1!',
+            'new_password': 'alllowercase1',
+            'confirm_password': 'alllowercase1',
+        })
+
+        self.assertEqual(response.status_code, 400)
+        errors = response.json()['errors']
+        self.assertIn('new_password', errors)
+        self.assertIn('uppercase', errors['new_password'][0]['message'])
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password('Correct-Horse1!'), "password must be unchanged")
         self.assertFalse(AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED).exists())
 
     def test_session_stays_alive_after_password_change(self):
         self.client.login(username='jdoe', password='Correct-Horse1!')
-        self.client.post(reverse('frontend:profile'), {
-            'full_name': self.user.full_name, 'new_password': 'Another-One2!',
+        self.client.post(reverse('frontend:change_password'), {
+            'current_password': 'Correct-Horse1!',
+            'new_password': 'Another-One2!',
+            'confirm_password': 'Another-One2!',
         })
         # update_session_auth_hash() should have kept this session valid —
         # a follow-up authenticated request must not be bounced to login.
         dash = self.client.get(reverse('frontend:dashboard'))
         self.assertTrue(dash.wsgi_request.user.is_authenticated)
+
+    def test_requires_login(self):
+        response = self.client.post(reverse('frontend:change_password'), {})
+        self.assertRedirects(
+            response, f"{reverse('frontend:login')}?next={reverse('frontend:change_password')}"
+        )
+
+    def test_get_not_allowed(self):
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.get(reverse('frontend:change_password'))
+        self.assertEqual(response.status_code, 405)
+
+    def test_admin_notified_on_password_change_without_leaking_new_password(self):
+        """Phase 8.98e: every active Admin is told a password changed
+        (frontend.notifications.notify_admins(), reusing the documented
+        PASSWORD_CHANGED type for a second recipient), but never the new
+        password itself — confirmed by checking the actual notification
+        content and every email sent, not just that a notify call fired."""
+        admin = User.objects.create_user(
+            username='cpadmin', email='cpadmin@example.com', password='x',
+            employee_id='EMP-2099', full_name='CP Admin', role=UserRole.ADMIN,
+        )
+        self.client.login(username='jdoe', password='Correct-Horse1!')
+        response = self.client.post(reverse('frontend:change_password'), {
+            'current_password': 'Correct-Horse1!',
+            'new_password': 'New-Password9!',
+            'confirm_password': 'New-Password9!',
+        })
+        self.assertEqual(response.status_code, 200)
+
+        admin_notif = Notification.objects.get(recipient=admin, type=NotificationType.PASSWORD_CHANGED)
+        self.assertNotIn('New-Password9!', admin_notif.title)
+        self.assertNotIn('New-Password9!', admin_notif.message)
+        self.assertIn('Jane Doe', admin_notif.message)
+
+        # jdoe's own confirmation email + the admin's alert email — neither
+        # carries the new password anywhere in its body.
+        self.assertEqual(len(mail.outbox), 2)
+        for sent in mail.outbox:
+            self.assertNotIn('New-Password9!', sent.body)
+
+
+class PasswordResetFlowTests(AuthTestCase):
+    """Phase 8.99a — the forgot-password flow, finished: real Stockwell-
+    styled templates (registration/password_reset_*.html) instead of
+    django.contrib.admin's fallback ones, and the audit/notify gap this
+    phase's own investigation confirmed: Django's PasswordResetConfirmView
+    never goes through change_password_view, so without
+    StockwellPasswordResetConfirmView's override, a password reset via the
+    emailed link would be invisible to both the audit log and every Admin
+    — unlike the identical change made through the profile modal, which
+    ChangePasswordViewTests above already covers. This class exists
+    specifically because that asymmetry had no coverage at all before this
+    phase."""
+
+    def start_reset(self, email='jdoe@example.com'):
+        """POSTs the reset-request form, extracts the real confirm link
+        from the actually-sent email (not assumed/hand-built), and GETs it
+        — returning the session-bound `.../set-password/` path Django
+        redirects a first visit to. Mirrors exactly what a real user
+        clicking the emailed link would do."""
+        self.client.post(reverse('frontend:password_reset'), {'email': email})
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        match = re.search(r'https?://[^/]+(/password-reset/confirm/\S+/)', body)
+        self.assertIsNotNone(match, "reset email must contain a real confirm link")
+        response = self.client.get(match.group(1), follow=True)
+        return response.request['PATH_INFO'], body
+
+    def test_reset_email_arrives_with_a_working_link(self):
+        set_password_path, body = self.start_reset()
+        self.assertIn('Jane Doe', body)
+        self.assertIn('/password-reset/confirm/', set_password_path)
+
+    def test_reset_request_page_is_stockwell_styled_not_admin(self):
+        response = self.client.get(reverse('frontend:password_reset'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'auth-page')  # this project's own auth.css class, not admin's
+        self.assertContains(response, 'Stockwell')
+
+    def test_valid_reset_succeeds_and_user_can_log_in_with_new_password(self):
+        set_password_path, _ = self.start_reset()
+        response = self.client.post(set_password_path, {
+            'new_password1': 'Brand-New-Passw0rd2!',
+            'new_password2': 'Brand-New-Passw0rd2!',
+        })
+        self.assertRedirects(response, reverse('frontend:password_reset_complete'))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Brand-New-Passw0rd2!'))
+
+        login_response = self.client.post(self.login_url(), {
+            'username': 'jdoe', 'password': 'Brand-New-Passw0rd2!',
+        })
+        self.assertRedirects(login_response, reverse('frontend:dashboard'))
+
+    def test_weak_new_password_rejected_by_strong_password_validator(self):
+        set_password_path, _ = self.start_reset()
+        response = self.client.post(set_password_path, {
+            'new_password1': 'alllowercase', 'new_password2': 'alllowercase',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Correct-Horse1!'), "password must be unchanged")
+        self.assertFalse(AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED).exists())
+
+    def test_mismatched_confirmation_rejected(self):
+        set_password_path, _ = self.start_reset()
+        response = self.client.post(set_password_path, {
+            'new_password1': 'Good-Passw0rd3!', 'new_password2': 'Different-Passw0rd4!',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Correct-Horse1!'), "password must be unchanged")
+
+    def test_invalid_token_shows_stockwell_styled_error_not_admin(self):
+        response = self.client.get('/password-reset/confirm/MTM/bad-token-xyz/', follow=True)
+        self.assertContains(response, 'no longer works')
+        self.assertContains(response, 'auth-page')
+
+    def test_reset_writes_audit_log_row(self):
+        """The real audit gap this phase closes: unlike a bare Django
+        PasswordResetConfirmView (which never calls audit.log_action() at
+        all), the Stockwell subclass must write a PASSWORD_CHANGED row for
+        the reset path exactly like the profile-modal path already does."""
+        set_password_path, _ = self.start_reset()
+        self.client.post(set_password_path, {
+            'new_password1': 'Brand-New-Passw0rd2!',
+            'new_password2': 'Brand-New-Passw0rd2!',
+        })
+        self.assertTrue(
+            AuditLog.objects.filter(user=self.user, action=audit.PASSWORD_CHANGED, status='success').exists()
+        )
+
+    def test_reset_notifies_admin_without_leaking_new_password(self):
+        admin = User.objects.create_user(
+            username='prfadmin', email='prfadmin@example.com', password='x',
+            employee_id='EMP-2199', full_name='PRF Admin', role=UserRole.ADMIN,
+        )
+        set_password_path, _ = self.start_reset()
+        mail.outbox = []  # isolate from the request email above
+        self.client.post(set_password_path, {
+            'new_password1': 'Brand-New-Passw0rd2!',
+            'new_password2': 'Brand-New-Passw0rd2!',
+        })
+
+        notif = Notification.objects.get(recipient=admin, type=NotificationType.PASSWORD_CHANGED)
+        self.assertNotIn('Brand-New-Passw0rd2!', notif.title)
+        self.assertNotIn('Brand-New-Passw0rd2!', notif.message)
+        self.assertIn('Jane Doe', notif.message)
+        for sent in mail.outbox:
+            self.assertNotIn('Brand-New-Passw0rd2!', sent.body)
+
+    def test_reset_also_notifies_the_user_themself(self):
+        """Same PASSWORD_CHANGED notification the profile-modal path sends
+        — the reset path must not be a second, inconsistent shape."""
+        set_password_path, _ = self.start_reset()
+        self.client.post(set_password_path, {
+            'new_password1': 'Brand-New-Passw0rd2!',
+            'new_password2': 'Brand-New-Passw0rd2!',
+        })
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.user, type=NotificationType.PASSWORD_CHANGED).exists()
+        )
+
+    def test_login_page_link_is_real_not_disabled(self):
+        response = self.client.get(self.login_url())
+        self.assertContains(response, reverse('frontend:password_reset'))
+        self.assertNotContains(response, 'auth-link-disabled')
 
 
 # ------------------------------------------------------ RBAC decorator/mixin
@@ -1136,6 +1480,696 @@ class ProductCreateViewTests(TestCase):
         self.assertEqual(product.current_stock, 0)
 
 
+class ProductUpdateDeactivateViewTests(TestCase):
+    """Phase 8.99e — this project's first per-entity update route.
+    ProductUpdateView (AnyStaffMixin) reuses ProductForm unchanged via
+    instance=; ProductDeactivateView (SupervisorRequiredMixin) is the
+    real soft-delete 03_PRODUCTS.md requires. Proves the RBAC asymmetry
+    (02_RBAC.md: edit is all 3 roles, deactivate is Admin/Supervisor
+    only), that neither writes an InventoryMovement, and that
+    reorder_level edits sync to InventoryRecord."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='pedstaff', email='pedstaff@example.com', password='x',
+            employee_id='EMP-4101', full_name='Product Edit Staffer', role=UserRole.STAFF,
+        )
+        self.supervisor = User.objects.create_user(
+            username='pedsuper', email='pedsuper@example.com', password='x',
+            employee_id='EMP-4102', full_name='Product Edit Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Edit Gadgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='Edit Gadget Supply', company_name='Edit Gadget Supply Co',
+            contact_person='Sam', email='editgadget@example.com', phone='555-0112',
+            address='1 Edit Gadget Way', is_active=True,
+        )
+        self.other_category = Category.objects.create(name='Inactive Gadgets', is_active=False)
+        self.product = Product.objects.create(
+            sku='EDIT-SKU-001', name='Editable Gadget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(self.product)
+        self.other_product = Product.objects.create(
+            sku='EDIT-SKU-002', barcode='1111111111111', name='Other Gadget',
+            category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+        )
+        InventoryService.initialize_for_product(self.other_product)
+
+    def valid_edit_payload(self, **overrides):
+        payload = {
+            'name': 'Editable Gadget (Updated)',
+            'category': self.category.pk,
+            'supplier': self.supplier.pk,
+            'purchase_price': '11.00',
+            'selling_price': '22.00',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_update_requires_login(self):
+        response = self.client.post(reverse('frontend:product_update', args=[self.product.pk]), self.valid_edit_payload())
+        self.assertRedirects(
+            response, f"{reverse('frontend:login')}?next={reverse('frontend:product_update', args=[self.product.pk])}"
+        )
+
+    def test_staff_can_edit_and_it_persists(self):
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(reverse('frontend:product_update', args=[self.product.pk]), self.valid_edit_payload())
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json().get('success'))
+
+        # Re-fetch from the DB (not the in-memory instance) — proves it genuinely persisted.
+        saved = Product.objects.get(pk=self.product.pk)
+        self.assertEqual(saved.name, 'Editable Gadget (Updated)')
+        self.assertEqual(saved.purchase_price, Decimal('11.00'))
+        self.assertEqual(saved.selling_price, Decimal('22.00'))
+        self.assertTrue(AuditLog.objects.filter(action='PRODUCT_UPDATED', affected_id=saved.pk).exists())
+
+    def test_edit_writes_no_inventory_movement(self):
+        self.client.login(username='pedstaff', password='x')
+        before = InventoryMovement.objects.count()
+        self.client.post(reverse('frontend:product_update', args=[self.product.pk]), self.valid_edit_payload())
+        self.assertEqual(InventoryMovement.objects.count(), before, "editing a catalogue entry must never move stock")
+
+    def test_edit_rejects_negative_price(self):
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:product_update', args=[self.product.pk]),
+            self.valid_edit_payload(purchase_price='-5.00'),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('purchase_price', response.json().get('errors', {}))
+        self.assertEqual(Product.objects.get(pk=self.product.pk).purchase_price, Decimal('10.00'))
+
+    def test_edit_rejects_inactive_category(self):
+        """ProductForm restricts category/supplier to is_active=True in
+        __init__ — proves that restriction genuinely re-applies on edit,
+        not just create, since ProductForm is reused unchanged."""
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:product_update', args=[self.product.pk]),
+            self.valid_edit_payload(category=self.other_category.pk),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('category', response.json().get('errors', {}))
+
+    def test_edit_reruns_uniqueness_validation_via_barcode(self):
+        """Verification's own ask was "test a duplicate SKU on edit" — SKU
+        is deliberately immutable on edit (see next test), which makes a
+        literal duplicate-SKU-on-edit scenario structurally impossible by
+        design, not merely untested. Barcode is the field that's actually
+        still editable and unique, so it's the one that can genuinely
+        prove ProductForm's uniqueness validation (ModelForm.validate_unique)
+        still runs end-to-end on an edit, not just on create."""
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:product_update', args=[self.product.pk]),
+            self.valid_edit_payload(barcode=self.other_product.barcode),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('barcode', response.json().get('errors', {}))
+
+    def test_sku_is_immutable_on_edit_even_if_tampered(self):
+        """SKU is read-only on edit (disclosed decision, ProductUpdateView's
+        own docstring): the view always overwrites the posted `sku` with
+        the instance's current value before ProductForm ever sees it. A
+        tampered POST attempting to steal another product's SKU must
+        succeed (the rest of the edit is valid) while silently leaving
+        the SKU exactly as it was — not erroring, and not adopting the
+        attacker-supplied value."""
+        original_sku = self.product.sku
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:product_update', args=[self.product.pk]),
+            self.valid_edit_payload(sku=self.other_product.sku),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        saved = Product.objects.get(pk=self.product.pk)
+        self.assertEqual(saved.sku, original_sku)
+        self.assertNotEqual(saved.sku, self.other_product.sku)
+
+    def test_edit_reorder_level_syncs_to_inventory_record_without_ledger_write(self):
+        # Give it real stock first (20, via the real service, a real
+        # movement) so raising reorder_level above it can actually flip
+        # AVAILABLE -> LOW_STOCK — with current_stock still at 0 (never
+        # received), update_status() would report OUT_OF_STOCK regardless
+        # of reorder_level, which wouldn't prove the sync actually ran.
+        InventoryService.increase_stock(
+            product=self.product, quantity=20, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.status, InventoryStatus.AVAILABLE, "20 in stock, reorder_level 5 -> AVAILABLE before the edit")
+
+        self.client.login(username='pedstaff', password='x')
+        before_movements = InventoryMovement.objects.count()
+        response = self.client.post(
+            reverse('frontend:product_update', args=[self.product.pk]),
+            self.valid_edit_payload(reorder_level='50'),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        record.refresh_from_db()
+        self.assertEqual(record.reorder_level, 50)
+        self.assertEqual(record.status, InventoryStatus.LOW_STOCK, "20 in stock <= new reorder_level 50 -> LOW_STOCK")
+        self.assertEqual(InventoryMovement.objects.count(), before_movements, "the reorder_level sync must never write a ledger row")
+
+    def test_deactivate_requires_login(self):
+        response = self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.assertRedirects(
+            response, f"{reverse('frontend:login')}?next={reverse('frontend:product_deactivate', args=[self.product.pk])}"
+        )
+
+    def test_staff_can_edit_but_deactivate_is_refused_server_side(self):
+        self.client.login(username='pedstaff', password='x')
+        edit_response = self.client.post(reverse('frontend:product_update', args=[self.product.pk]), self.valid_edit_payload())
+        self.assertEqual(edit_response.status_code, 200, "staff must be able to edit — 02_RBAC.md: all 3 roles")
+
+        deactivate_response = self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.assertEqual(deactivate_response.status_code, 302, "staff must be blocked from deactivating — 02_RBAC.md: Admin/Supervisor only")
+        self.assertTrue(Product.objects.get(pk=self.product.pk).is_active, "a blocked deactivate must not take effect")
+
+    def test_supervisor_can_deactivate(self):
+        self.client.login(username='pedsuper', password='x')
+        before_movements = InventoryMovement.objects.count()
+        response = self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+
+        saved = Product.objects.get(pk=self.product.pk)
+        self.assertFalse(saved.is_active)
+        self.assertTrue(AuditLog.objects.filter(action='PRODUCT_DEACTIVATED', affected_id=saved.pk).exists())
+        self.assertEqual(InventoryMovement.objects.count(), before_movements, "deactivating must never move stock")
+
+    def test_deactivated_product_excluded_from_purchase_and_sale_forms(self):
+        self.client.login(username='pedsuper', password='x')
+        self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+
+        purchases_response = self.client.get(reverse('frontend:purchases'))
+        sales_response = self.client.get(reverse('frontend:sales'))
+        purchase_product_ids = {p.pk for p in purchases_response.context['products']}
+        sale_product_ids = {p.pk for p in sales_response.context['products']}
+        self.assertNotIn(self.product.pk, purchase_product_ids)
+        self.assertNotIn(self.product.pk, sale_product_ids)
+        # The still-active product must still be offered.
+        self.assertIn(self.other_product.pk, purchase_product_ids)
+        self.assertIn(self.other_product.pk, sale_product_ids)
+
+    def test_deactivate_control_hidden_from_staff_shown_to_supervisor(self):
+        self.client.login(username='pedstaff', password='x')
+        staff_response = self.client.get(reverse('frontend:products'))
+        self.assertNotContains(staff_response, 'aria-label="Deactivate product"')
+        self.assertContains(staff_response, 'aria-label="Edit product"')
+        self.client.logout()
+
+        self.client.login(username='pedsuper', password='x')
+        super_response = self.client.get(reverse('frontend:products'))
+        self.assertContains(super_response, 'aria-label="Deactivate product"')
+        self.assertContains(super_response, 'aria-label="Edit product"')
+
+    def test_reactivate_restores_a_deactivated_product(self):
+        self.client.login(username='pedsuper', password='x')
+        self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.assertFalse(Product.objects.get(pk=self.product.pk).is_active)
+
+        response = self.client.post(reverse('frontend:product_reactivate', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(Product.objects.get(pk=self.product.pk).is_active)
+        self.assertTrue(AuditLog.objects.filter(action='PRODUCT_REACTIVATED', affected_id=self.product.pk).exists())
+
+    def test_staff_cannot_reactivate(self):
+        self.client.login(username='pedsuper', password='x')
+        self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.client.logout()
+
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(reverse('frontend:product_reactivate', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Product.objects.get(pk=self.product.pk).is_active)
+
+    def test_reactivated_product_reappears_in_purchase_and_sale_forms(self):
+        self.client.login(username='pedsuper', password='x')
+        self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.client.post(reverse('frontend:product_reactivate', args=[self.product.pk]))
+
+        purchases_response = self.client.get(reverse('frontend:purchases'))
+        purchase_product_ids = {p.pk for p in purchases_response.context['products']}
+        self.assertIn(self.product.pk, purchase_product_ids)
+
+    def test_unreferenced_product_can_be_hard_deleted(self):
+        """A product that has never appeared in a PO/sale/adjustment/
+        movement — self.other_product here never had stock received or
+        sold against it — is safe to hard-delete, InventoryRecord and all."""
+        self.client.login(username='pedsuper', password='x')
+        response = self.client.post(reverse('frontend:product_delete', args=[self.other_product.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(Product.objects.filter(pk=self.other_product.pk).exists())
+        self.assertFalse(InventoryRecord.objects.filter(product_id=self.other_product.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(action='PRODUCT_DELETED', affected_id=self.other_product.pk).exists())
+
+    def test_product_with_movement_history_cannot_be_hard_deleted(self):
+        InventoryService.increase_stock(
+            product=self.product, quantity=10, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+        self.client.login(username='pedsuper', password='x')
+        response = self.client.post(reverse('frontend:product_delete', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('deactivate instead', response.json()['error'].lower())
+        self.assertTrue(Product.objects.filter(pk=self.product.pk).exists())
+
+    def test_staff_cannot_delete_a_product(self):
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(reverse('frontend:product_delete', args=[self.other_product.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Product.objects.filter(pk=self.other_product.pk).exists())
+
+    def test_deletable_flag_reflects_history(self):
+        InventoryService.increase_stock(
+            product=self.product, quantity=10, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+        self.client.login(username='pedsuper', password='x')
+        response = self.client.get(reverse('frontend:products'))
+        by_pk = {p.pk: p.deletable for p in response.context['products']}
+        self.assertFalse(by_pk[self.product.pk], "a product with real movement history must not be deletable")
+        self.assertTrue(by_pk[self.other_product.pk], "a never-used product must be deletable")
+
+    def test_editing_tax_rate_does_not_alter_a_completed_transactions_stored_tax(self):
+        """Phase 8.98c made PurchaseOrderItem.tax/SaleItem.tax a historical
+        snapshot, set once at line-creation time from Product.tax_rate.
+        This locks that guarantee against ProductUpdateView specifically:
+        editing the product's tax_rate afterward must never reach back
+        into an already-created line."""
+        self.product.tax_rate = Decimal('10.00')
+        self.product.save(update_fields=['tax_rate'])
+        po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.staff)
+        item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, ordered_qty=5,
+            unit_price=self.product.purchase_price, tax=self.product.tax_rate,
+        )
+        self.assertEqual(item.tax, Decimal('10.00'))
+
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:product_update', args=[self.product.pk]),
+            self.valid_edit_payload(tax_rate='25.00'),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(Product.objects.get(pk=self.product.pk).tax_rate, Decimal('25.00'), "the product's own tax_rate must change")
+
+        item.refresh_from_db()
+        self.assertEqual(item.tax, Decimal('10.00'), "the already-created line's snapshotted tax must never change retroactively")
+
+
+class CategoryUpdateDeactivateViewTests(TestCase):
+    """Phase 8.99i — Categories' Edit/Deactivate/Reactivate/Delete were
+    dead buttons before this phase (no class, no handler, no view at
+    all). Mirrors ProductUpdateDeactivateViewTests' own coverage shape."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='catedstaff', email='catedstaff@example.com', password='x',
+            employee_id='EMP-4201', full_name='Category Edit Staffer', role=UserRole.STAFF,
+        )
+        self.supervisor = User.objects.create_user(
+            username='catedsuper', email='catedsuper@example.com', password='x',
+            employee_id='EMP-4202', full_name='Category Edit Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Edit Category', description='Original')
+        self.other_category = Category.objects.create(name='Other Category')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Cat Edit Supply', company_name='Cat Edit Supply Co', contact_person='Sam',
+            email='catedsupply@example.com', phone='555-0113', address='1 Cat Edit Way',
+        )
+
+    def test_staff_can_edit_and_it_persists(self):
+        self.client.login(username='catedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:category_update', args=[self.category.pk]),
+            {'name': 'Renamed Category', 'description': 'Updated'},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        saved = Category.objects.get(pk=self.category.pk)
+        self.assertEqual(saved.name, 'Renamed Category')
+        self.assertEqual(saved.description, 'Updated')
+        self.assertTrue(AuditLog.objects.filter(action='CATEGORY_UPDATED', affected_id=saved.pk).exists())
+
+    def test_edit_rejects_duplicate_name(self):
+        self.client.login(username='catedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:category_update', args=[self.category.pk]),
+            {'name': self.other_category.name, 'description': ''},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('name', response.json().get('errors', {}))
+
+    def test_edit_does_not_change_is_active(self):
+        """No status field on the edit form — is_active only ever changes
+        through Deactivate/Reactivate, never through edit."""
+        self.category.is_active = False
+        self.category.save(update_fields=['is_active'])
+        self.client.login(username='catedstaff', password='x')
+        self.client.post(
+            reverse('frontend:category_update', args=[self.category.pk]),
+            {'name': 'Still Inactive Category', 'description': ''},
+        )
+        self.assertFalse(Category.objects.get(pk=self.category.pk).is_active)
+
+    def test_staff_can_edit_but_deactivate_is_refused_server_side(self):
+        self.client.login(username='catedstaff', password='x')
+        edit_response = self.client.post(
+            reverse('frontend:category_update', args=[self.category.pk]),
+            {'name': 'Renamed Category', 'description': ''},
+        )
+        self.assertEqual(edit_response.status_code, 200)
+
+        deactivate_response = self.client.post(reverse('frontend:category_deactivate', args=[self.category.pk]))
+        self.assertEqual(deactivate_response.status_code, 302)
+        self.assertTrue(Category.objects.get(pk=self.category.pk).is_active)
+
+    def test_supervisor_can_deactivate_and_reactivate(self):
+        self.client.login(username='catedsuper', password='x')
+        response = self.client.post(reverse('frontend:category_deactivate', args=[self.category.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(Category.objects.get(pk=self.category.pk).is_active)
+        self.assertTrue(AuditLog.objects.filter(action='CATEGORY_DEACTIVATED', affected_id=self.category.pk).exists())
+
+        response = self.client.post(reverse('frontend:category_reactivate', args=[self.category.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(Category.objects.get(pk=self.category.pk).is_active)
+        self.assertTrue(AuditLog.objects.filter(action='CATEGORY_REACTIVATED', affected_id=self.category.pk).exists())
+
+    def test_deactivated_category_excluded_from_product_form(self):
+        self.client.login(username='catedsuper', password='x')
+        self.client.post(reverse('frontend:category_deactivate', args=[self.category.pk]))
+        response = self.client.get(reverse('frontend:products'))
+        category_ids = {c.pk for c in response.context['categories']}
+        self.assertNotIn(self.category.pk, category_ids)
+        self.assertIn(self.other_category.pk, category_ids)
+
+    def test_unreferenced_category_can_be_hard_deleted(self):
+        self.client.login(username='catedsuper', password='x')
+        response = self.client.post(reverse('frontend:category_delete', args=[self.other_category.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(Category.objects.filter(pk=self.other_category.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(action='CATEGORY_DELETED', affected_id=self.other_category.pk).exists())
+
+    def test_category_with_products_cannot_be_hard_deleted(self):
+        Product.objects.create(
+            sku='CATDEL-SKU-001', name='Category Delete Product', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+        )
+        self.client.login(username='catedsuper', password='x')
+        response = self.client.post(reverse('frontend:category_delete', args=[self.category.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('deactivate instead', response.json()['error'].lower())
+        self.assertTrue(Category.objects.filter(pk=self.category.pk).exists())
+
+    def test_staff_cannot_delete_a_category(self):
+        self.client.login(username='catedstaff', password='x')
+        response = self.client.post(reverse('frontend:category_delete', args=[self.other_category.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Category.objects.filter(pk=self.other_category.pk).exists())
+
+
+class SupplierUpdateDeactivateViewTests(TestCase):
+    """Phase 8.99i — same coverage shape as
+    CategoryUpdateDeactivateViewTests/ProductUpdateDeactivateViewTests."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='supedstaff', email='supedstaff@example.com', password='x',
+            employee_id='EMP-4301', full_name='Supplier Edit Staffer', role=UserRole.STAFF,
+        )
+        self.supervisor = User.objects.create_user(
+            username='supedsuper', email='supedsuper@example.com', password='x',
+            employee_id='EMP-4302', full_name='Supplier Edit Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Supplier Edit Category')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Edit Supply', company_name='Edit Supply Co', contact_person='Sam',
+            email='editsupply@example.com', phone='555-0114', address='1 Edit Supply Way',
+        )
+        self.other_supplier = Supplier.objects.create(
+            supplier_name='Other Supply', company_name='Other Supply Co', contact_person='Alex',
+            email='othersupply@example.com', phone='555-0115', address='2 Other Supply Way',
+        )
+
+    def valid_edit_payload(self, **overrides):
+        payload = {
+            'supplier_name': 'Edit Supply (Updated)', 'company_name': 'Edit Supply Co Updated',
+            'contact_person': 'Sam Updated', 'email': self.supplier.email,
+            'phone': '555-9999', 'address': 'Updated Address',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_staff_can_edit_and_it_persists(self):
+        self.client.login(username='supedstaff', password='x')
+        response = self.client.post(reverse('frontend:supplier_update', args=[self.supplier.pk]), self.valid_edit_payload())
+        self.assertEqual(response.status_code, 200, response.content)
+        saved = Supplier.objects.get(pk=self.supplier.pk)
+        self.assertEqual(saved.company_name, 'Edit Supply Co Updated')
+        self.assertTrue(AuditLog.objects.filter(action='SUPPLIER_UPDATED', affected_id=saved.pk).exists())
+
+    def test_edit_rejects_duplicate_email(self):
+        self.client.login(username='supedstaff', password='x')
+        response = self.client.post(
+            reverse('frontend:supplier_update', args=[self.supplier.pk]),
+            self.valid_edit_payload(email=self.other_supplier.email),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('email', response.json().get('errors', {}))
+
+    def test_edit_does_not_change_is_active(self):
+        self.supplier.is_active = False
+        self.supplier.save(update_fields=['is_active'])
+        self.client.login(username='supedstaff', password='x')
+        self.client.post(reverse('frontend:supplier_update', args=[self.supplier.pk]), self.valid_edit_payload())
+        self.assertFalse(Supplier.objects.get(pk=self.supplier.pk).is_active)
+
+    def test_staff_can_edit_but_deactivate_is_refused_server_side(self):
+        self.client.login(username='supedstaff', password='x')
+        edit_response = self.client.post(reverse('frontend:supplier_update', args=[self.supplier.pk]), self.valid_edit_payload())
+        self.assertEqual(edit_response.status_code, 200)
+
+        deactivate_response = self.client.post(reverse('frontend:supplier_deactivate', args=[self.supplier.pk]))
+        self.assertEqual(deactivate_response.status_code, 302)
+        self.assertTrue(Supplier.objects.get(pk=self.supplier.pk).is_active)
+
+    def test_supervisor_can_deactivate_and_reactivate(self):
+        self.client.login(username='supedsuper', password='x')
+        response = self.client.post(reverse('frontend:supplier_deactivate', args=[self.supplier.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(Supplier.objects.get(pk=self.supplier.pk).is_active)
+        self.assertTrue(AuditLog.objects.filter(action='SUPPLIER_DEACTIVATED', affected_id=self.supplier.pk).exists())
+
+        response = self.client.post(reverse('frontend:supplier_reactivate', args=[self.supplier.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(Supplier.objects.get(pk=self.supplier.pk).is_active)
+        self.assertTrue(AuditLog.objects.filter(action='SUPPLIER_REACTIVATED', affected_id=self.supplier.pk).exists())
+
+    def test_deactivated_supplier_excluded_from_product_form(self):
+        self.client.login(username='supedsuper', password='x')
+        self.client.post(reverse('frontend:supplier_deactivate', args=[self.supplier.pk]))
+        response = self.client.get(reverse('frontend:products'))
+        supplier_ids = {s.pk for s in response.context['suppliers']}
+        self.assertNotIn(self.supplier.pk, supplier_ids)
+        self.assertIn(self.other_supplier.pk, supplier_ids)
+
+    def test_unreferenced_supplier_can_be_hard_deleted(self):
+        self.client.login(username='supedsuper', password='x')
+        response = self.client.post(reverse('frontend:supplier_delete', args=[self.other_supplier.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(Supplier.objects.filter(pk=self.other_supplier.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(action='SUPPLIER_DELETED', affected_id=self.other_supplier.pk).exists())
+
+    def test_supplier_with_products_cannot_be_hard_deleted(self):
+        Product.objects.create(
+            sku='SUPDEL-SKU-001', name='Supplier Delete Product', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+        )
+        self.client.login(username='supedsuper', password='x')
+        response = self.client.post(reverse('frontend:supplier_delete', args=[self.supplier.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('deactivate instead', response.json()['error'].lower())
+        self.assertTrue(Supplier.objects.filter(pk=self.supplier.pk).exists())
+
+    def test_supplier_with_purchase_orders_cannot_be_hard_deleted(self):
+        PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.staff)
+        self.client.login(username='supedsuper', password='x')
+        response = self.client.post(reverse('frontend:supplier_delete', args=[self.supplier.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Supplier.objects.filter(pk=self.supplier.pk).exists())
+
+    def test_staff_cannot_delete_a_supplier(self):
+        self.client.login(username='supedstaff', password='x')
+        response = self.client.post(reverse('frontend:supplier_delete', args=[self.other_supplier.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Supplier.objects.filter(pk=self.other_supplier.pk).exists())
+
+
+class ProductTaxRateTests(TestCase):
+    """Phase 8.98c: tax_rate lives on Product, not on any transaction
+    form. ProductForm.clean_tax_rate() mirrors clean_purchase_price()/
+    clean_selling_price()'s non-negative check, with a 0-default fallback
+    like clean_reorder_level()."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='taxstaff', email='taxstaff@example.com', password='x',
+            employee_id='EMP-6001', full_name='Tax Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Taxable Widgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='Tax Supply', company_name='Tax Supply Co', contact_person='Sam',
+            email='taxsupply@example.com', phone='555-0199', address='1 Tax Way', is_active=True,
+        )
+
+    def valid_payload(self, **overrides):
+        payload = {
+            'name': 'Taxed Gadget', 'category': self.category.pk, 'supplier': self.supplier.pk,
+            'purchase_price': '10.00', 'selling_price': '20.00',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_tax_rate_persists_from_product_form(self):
+        self.client.login(username='taxstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(tax_rate='7.50'))
+        self.assertEqual(response.status_code, 200, response.content)
+        product = Product.objects.get(name='Taxed Gadget')
+        self.assertEqual(product.tax_rate, Decimal('7.50'))
+
+    def test_tax_rate_defaults_to_zero_when_omitted(self):
+        self.client.login(username='taxstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload())
+        self.assertEqual(response.status_code, 200, response.content)
+        product = Product.objects.get(name='Taxed Gadget')
+        self.assertEqual(product.tax_rate, 0)
+
+    def test_negative_tax_rate_rejected(self):
+        self.client.login(username='taxstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(tax_rate='-5'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('tax_rate', response.json().get('errors', {}))
+        self.assertEqual(Product.objects.filter(name='Taxed Gadget').count(), 0)
+
+
+class TaxAutoCalculationTests(TestCase):
+    """Phase 8.98c: tax on a Purchase/Sale line is always sourced from
+    Product.tax_rate — never a client-submitted 'tax' value, even if one
+    is present in the POST/items payload (parse_line_items() in
+    frontend/forms.py overwrites it unconditionally; SaleService.create_sale()
+    independently re-derives it from the product too, as defense in depth)."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='taxflowstaff', email='taxflowstaff@example.com', password='x',
+            employee_id='EMP-6101', full_name='Tax Flow Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Tax Flow Widgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='Tax Flow Supply', company_name='Tax Flow Supply Co', contact_person='Jo',
+            email='taxflow@example.com', phone='555-0198', address='1 Tax Flow Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='TAX-SKU-001', name='Taxed Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'), tax_rate=Decimal('10.00'),
+        )
+
+    def test_purchase_line_tax_sourced_from_product_ignoring_client_value(self):
+        """Client sends 'tax': 999 (as if a stale/malicious client still
+        POSTed one) — the server must still use the product's real 10%."""
+        self.client.login(username='taxflowstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0,
+                 'discount': 0, 'tax': 999},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        item = po.items.get()
+        self.assertEqual(item.tax, Decimal('10.00'))
+        # (10 * 5) * (1 - 0) * (1 + 0.10) = 55.00
+        self.assertEqual(item.line_total, Decimal('55.00'))
+        self.assertEqual(po.total_cost, Decimal('55.00'))
+
+    def test_purchase_line_tax_omitted_by_client_still_uses_product_rate(self):
+        """The real line-items.js (Phase 8.98c) no longer sends a 'tax'
+        key at all — confirms that case works too, not just the
+        malicious-override case above."""
+        self.client.login(username='taxflowstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 2, 'unitPrice': 10.0, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        self.assertEqual(po.items.get().tax, Decimal('10.00'))
+
+    def test_sale_line_tax_sourced_from_product_ignoring_client_value(self):
+        InventoryService.increase_stock(
+            product=self.product, quantity=20, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+        sale = SaleService.create_sale(
+            {'customer_name': 'Acme Corp'},
+            [{'product_id': self.product.pk, 'quantity': 5, 'unit_price': Decimal('20.00'),
+              'discount': 0, 'tax': 999}],
+            self.staff,
+        )
+        item = sale.items.get()
+        self.assertEqual(item.tax, Decimal('10.00'))
+        # (20 * 5) * (1 - 0) * (1 + 0.10) = 110.00
+        self.assertEqual(item.line_total, Decimal('110.00'))
+        self.assertEqual(sale.total_amount, Decimal('110.00'))
+
+    def test_purchase_item_tax_is_a_historical_snapshot_not_retroactive(self):
+        """Confirms the explicit verification requirement: changing a
+        product's tax_rate must affect only NEW transactions, not
+        existing ones already created under the old rate."""
+        self.client.login(username='taxflowstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 1, 'unitPrice': 10.0, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        old_po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        old_item = old_po.items.get()
+        self.assertEqual(old_item.tax, Decimal('10.00'))
+
+        self.product.tax_rate = Decimal('25.00')
+        self.product.save()
+
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        new_po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        new_item = new_po.items.get()
+        self.assertEqual(new_item.tax, Decimal('25.00'))
+
+        old_item.refresh_from_db()
+        self.assertEqual(old_item.tax, Decimal('10.00'), "an existing line's tax must not change retroactively")
+
+    def test_adjustment_has_no_tax_concept(self):
+        """InventoryAdjustment (frontend/models.py) has no monetary/tax
+        field at all — tax is a purchase/sale concern only, confirmed
+        here so a future change can't silently assume otherwise."""
+        self.assertFalse(hasattr(InventoryAdjustment, 'tax'))
+        field_names = [f.name for f in InventoryAdjustment._meta.get_fields()]
+        self.assertNotIn('tax', field_names)
+
+
 # ------------------------------------------------------------- Purchases
 # Phase 7. Real HTTP round-trips through frontend/urls.py, per this
 # task's own instruction: "one test per approval-workflow transition...
@@ -1288,13 +2322,20 @@ class PurchaseWorkflowViewTests(TestCase):
         self.assertFalse(InventoryMovement.objects.filter(reference_type='PurchaseOrder', reference_id=po.pk).exists())
 
     def test_cancel_from_every_cancellable_state(self):
+        # Phase 8.99c: cancellable states narrowed to DRAFT/PENDING only
+        # (see docs/project_memory.md §13) — APPROVED/PARTIAL/RECEIVED are
+        # now covered separately below, as refused-not-cancelled cases.
+
         # DRAFT
         po = self.create_draft_po(quantity=5)
         self.client.login(username='pobsuper', password='x')
-        response = self.client.post(reverse('frontend:purchase_cancel', args=[po.pk]))
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po.pk]), {'reason': 'Ordered by mistake'})
         self.assertEqual(response.status_code, 200, response.content)
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.CANCELLED)
+        self.assertEqual(po.cancelled_reason, 'Ordered by mistake')
+        self.assertEqual(po.cancelled_by, self.supervisor)
+        self.assertIsNotNone(po.cancelled_at)
         self.client.logout()
 
         # PENDING
@@ -1303,46 +2344,82 @@ class PurchaseWorkflowViewTests(TestCase):
         self.client.post(reverse('frontend:purchase_submit', args=[po2.pk]))
         self.client.logout()
         self.client.login(username='pobsuper', password='x')
-        self.client.post(reverse('frontend:purchase_cancel', args=[po2.pk]))
+        self.client.post(reverse('frontend:purchase_cancel', args=[po2.pk]), {'reason': 'Supplier unavailable'})
         po2.refresh_from_db()
         self.assertEqual(po2.status, POStatus.CANCELLED)
+        self.assertEqual(po2.cancelled_reason, 'Supplier unavailable')
         self.client.logout()
 
+    def test_cancel_refused_from_approved_partial_received(self):
+        """Phase 8.99c: approved/partial/received all reject cancellation
+        server-side — a direct POST past the hidden button must be refused
+        the same as any other invalid transition (05_PURCHASES.md's own
+        "any state -> CANCELLED" no longer holds; see §13)."""
         # APPROVED
-        po3 = self.create_draft_po(quantity=5)
+        po = self.create_draft_po(quantity=5)
         self.client.login(username='pobstaff', password='x')
-        self.client.post(reverse('frontend:purchase_submit', args=[po3.pk]))
+        self.client.post(reverse('frontend:purchase_submit', args=[po.pk]))
         self.client.logout()
         self.client.login(username='pobsuper', password='x')
-        self.client.post(reverse('frontend:purchase_approve', args=[po3.pk]))
-        self.client.post(reverse('frontend:purchase_cancel', args=[po3.pk]))
-        po3.refresh_from_db()
-        self.assertEqual(po3.status, POStatus.CANCELLED)
+        self.client.post(reverse('frontend:purchase_approve', args=[po.pk]))
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po.pk]), {'reason': 'reason'})
+        self.assertEqual(response.status_code, 400, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.APPROVED)
         self.client.logout()
 
-        # PARTIAL — cancelling must NOT reverse the stock already received
-        # (05_PURCHASES.md: "Cancelled PO | Does NOT affect inventory").
-        po4 = self.create_draft_po(quantity=10)
+        # PARTIAL — must also refuse, and must not reverse the stock
+        # already received (05_PURCHASES.md: "Cancelled PO | Does NOT
+        # affect inventory" — moot now since cancel never even applies,
+        # but the invariant must still hold).
+        po2 = self.create_draft_po(quantity=10)
         self.client.login(username='pobstaff', password='x')
-        self.client.post(reverse('frontend:purchase_submit', args=[po4.pk]))
+        self.client.post(reverse('frontend:purchase_submit', args=[po2.pk]))
         self.client.logout()
         self.client.login(username='pobsuper', password='x')
-        self.client.post(reverse('frontend:purchase_approve', args=[po4.pk]))
+        self.client.post(reverse('frontend:purchase_approve', args=[po2.pk]))
         self.client.logout()
         self.client.login(username='pobstaff', password='x')
-        item4 = po4.items.get()
+        item2 = po2.items.get()
         self.client.post(
-            reverse('frontend:purchase_receive', args=[po4.pk]),
-            {'receive_json': json.dumps([{'item_id': item4.pk, 'received_qty': 4}])},
+            reverse('frontend:purchase_receive', args=[po2.pk]),
+            {'receive_json': json.dumps([{'item_id': item2.pk, 'received_qty': 4}])},
         )
         self.client.logout()
         self.client.login(username='pobsuper', password='x')
-        response = self.client.post(reverse('frontend:purchase_cancel', args=[po4.pk]))
-        self.assertEqual(response.status_code, 200, response.content)
-        po4.refresh_from_db()
-        self.assertEqual(po4.status, POStatus.CANCELLED)
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po2.pk]), {'reason': 'reason'})
+        self.assertEqual(response.status_code, 400, response.content)
+        po2.refresh_from_db()
+        self.assertEqual(po2.status, POStatus.PARTIAL)
         record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 4, "stock already received before cancellation must not be reversed")
+        self.assertEqual(record.current_stock, 4, "a refused cancel must not touch stock already received")
+        self.client.logout()
+
+        # RECEIVED
+        self.client.login(username='pobstaff', password='x')
+        self.client.post(
+            reverse('frontend:purchase_receive', args=[po2.pk]),
+            {'receive_json': json.dumps([{'item_id': item2.pk, 'received_qty': 6}])},
+        )
+        self.client.logout()
+        self.client.login(username='pobsuper', password='x')
+        po2.refresh_from_db()
+        self.assertEqual(po2.status, POStatus.RECEIVED)
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po2.pk]), {'reason': 'reason'})
+        self.assertEqual(response.status_code, 400, response.content)
+        po2.refresh_from_db()
+        self.assertEqual(po2.status, POStatus.RECEIVED)
+
+    def test_cancel_rejects_blank_reason(self):
+        """Server-side, not just client-side: a direct POST with no
+        reason must be refused even though the button/prompt() pair would
+        normally never let it happen."""
+        po = self.create_draft_po(quantity=5)
+        self.client.login(username='pobsuper', password='x')
+        response = self.client.post(reverse('frontend:purchase_cancel', args=[po.pk]), {'reason': ''})
+        self.assertEqual(response.status_code, 400, response.content)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.DRAFT)
 
     def test_staff_cannot_approve_reject_or_cancel(self):
         po = self.create_draft_po(quantity=5)
@@ -1392,10 +2469,159 @@ class PurchaseWorkflowViewTests(TestCase):
         self.assertIn('items', errors)
 
 
+class TimezoneAwareDateGenerationTests(TestCase):
+    """Phase 8.99 — regression test for the auto_now_add/OS-clock gap
+    flagged (not fixed) back in Phase 8.6: `PurchaseOrder.order_date`/
+    `SaleTransaction.transaction_date` (previously
+    `DateField(auto_now_add=True)`) and their PO-number/invoice-number
+    date components (previously `timezone.now().strftime(...)`, which
+    formats in UTC) must reflect the Asia/Dhaka calendar day, not the OS
+    clock's raw local date or the UTC date — the two only ever diverge in
+    the ~6-hour window either side of midnight, which is exactly why this
+    was invisible in normal day-to-day dev use on a machine whose OS
+    clock already happens to be set to Bangladesh time, and would only
+    have surfaced for real on a UTC production server.
+
+    Mocks `django.utils.timezone.now()` to a UTC instant that falls on a
+    genuinely different Dhaka calendar day (2026-01-01 20:00 UTC =
+    2026-01-02 02:00 Dhaka) — this deliberately does NOT touch the real
+    OS clock, so it also proves the fix no longer depends on
+    `datetime.date.today()` at all: a regression back to
+    `auto_now_add=True` would still read the real, unmocked OS date here
+    (this test's actual run date) and fail, while a regression back to
+    `timezone.now().strftime(...)` would produce '20260101' (the UTC day)
+    instead of the expected '20260102' (the Dhaka day)."""
+
+    UTC_INSTANT = datetime(2026, 1, 1, 20, 0, 0, tzinfo=dt_timezone.utc)  # -> 2026-01-02 in Asia/Dhaka
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='tzuser', email='tzuser@example.com', password='x',
+            employee_id='EMP-9500', full_name='TZ User', role=UserRole.STAFF,
+        )
+        self.supplier = Supplier.objects.create(
+            supplier_name='TZ Supply', company_name='TZ Supply Co', contact_person='Jo',
+            email='tzsupply@example.com', phone='555-0500', address='1 TZ Way',
+        )
+
+    @patch('django.utils.timezone.now')
+    def test_purchase_order_date_and_number_use_dhaka_day_not_utc(self, mock_now):
+        mock_now.return_value = self.UTC_INSTANT
+        po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.user)
+        self.assertEqual(po.order_date, datetime(2026, 1, 2).date())
+        self.assertTrue(po.po_number.startswith('PO-20260102-'), po.po_number)
+
+    @patch('django.utils.timezone.now')
+    def test_sale_transaction_date_and_number_use_dhaka_day_not_utc(self, mock_now):
+        mock_now.return_value = self.UTC_INSTANT
+        sale = SaleTransaction.objects.create(created_by=self.user)
+        self.assertEqual(sale.transaction_date, datetime(2026, 1, 2).date())
+        self.assertTrue(sale.invoice_number.startswith('INV-20260102-'), sale.invoice_number)
+
+
+class PurchaseOrderExpectedDeliveryTests(TestCase):
+    """Phase 8.98b: `expected_delivery` already existed on `PurchaseOrder`
+    (SCHEMA.md, already in `PurchaseOrderForm.Meta.fields`) — the gap was
+    display (no table column) and validation (no past-date guard). Proves
+    both real, server-side, timezone-correct (Asia/Dhaka, not the OS
+    clock) — not just client-side, which a raw POST bypasses entirely.
+
+    `order_date` is set explicitly in `PurchaseOrder.save()` via
+    `timezone.localdate()` (Phase 8.99 — was `auto_now_add=True`, fixed
+    since that silently used the OS clock's raw date, not TIME_ZONE's) —
+    never user-submitted, always exactly "today" (Asia/Dhaka) at save
+    time. So "expected_delivery can't be in the past" and "expected_
+    delivery can't be before order_date" are the same real-world check;
+    there's no separate order_date value to compare against during form
+    validation (the instance isn't saved yet), and no way for a client to
+    submit a past order_date in the first place — it isn't in this form's
+    `fields` at all."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='podatestaff', email='podatestaff@example.com', password='x',
+            employee_id='EMP-5101', full_name='PO Date Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='PO Date Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='PO Date Supply', company_name='PO Date Supply Co', contact_person='Jo',
+            email='podatesupply@example.com', phone='555-0201', address='1 PO Date Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='PO-DATE-001', name='PO Date Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+        self.client.login(username='podatestaff', password='x')
+
+    def payload(self, **overrides):
+        data = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 5.0, 'discount': 0, 'tax': 0},
+            ]),
+        }
+        data.update(overrides)
+        return data
+
+    def test_expected_delivery_in_the_past_rejected_server_side(self):
+        past_date = (timezone.localdate() - timedelta(days=1)).isoformat()
+        response = self.client.post(
+            reverse('frontend:purchases'), self.payload(expected_delivery=past_date)
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('expected_delivery', response.json()['errors'])
+        self.assertFalse(
+            PurchaseOrder.objects.filter(supplier=self.supplier).exists(),
+            "a rejected PO must not be created at all",
+        )
+
+    def test_expected_delivery_today_is_accepted(self):
+        today = timezone.localdate()
+        response = self.client.post(
+            reverse('frontend:purchases'), self.payload(expected_delivery=today.isoformat())
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.get(supplier=self.supplier)
+        self.assertEqual(po.expected_delivery, today)
+        self.assertEqual(po.order_date, today)
+
+    def test_expected_delivery_in_the_future_is_accepted(self):
+        future_date = timezone.localdate() + timedelta(days=14)
+        response = self.client.post(
+            reverse('frontend:purchases'), self.payload(expected_delivery=future_date.isoformat())
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.get(supplier=self.supplier)
+        self.assertEqual(po.expected_delivery, future_date)
+
+    def test_expected_delivery_still_genuinely_optional(self):
+        response = self.client.post(reverse('frontend:purchases'), self.payload(expected_delivery=''))
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.get(supplier=self.supplier)
+        self.assertIsNone(po.expected_delivery)
+
+    def test_expected_delivery_column_and_date_input_render_real_data(self):
+        future_date = timezone.localdate() + timedelta(days=7)
+        self.client.post(reverse('frontend:purchases'), self.payload(expected_delivery=future_date.isoformat()))
+
+        response = self.client.get(reverse('frontend:purchases'))
+        self.assertContains(response, 'Expected delivery')
+        self.assertContains(response, future_date.strftime('%d %b %Y'))
+        # The date input's min= is server-computed Asia/Dhaka "today", not
+        # left for the browser's local clock to guess.
+        self.assertContains(response, f'min="{timezone.localdate().isoformat()}"')
+
+
 # ----------------------------------------------------------------- Sales
 # Phase 7. Real HTTP round-trips, same discipline as PurchaseWorkflowViewTests.
 
 class SaleWorkflowViewTests(TestCase):
+    """Phase 8.99b: Sale now goes through the same real approval workflow
+    as Purchases — create (DRAFT) -> submit (PENDING) -> approve
+    (COMPLETED, stock moves) / reject (REJECTED). One test per documented
+    transition, written alongside the views per this phase's own
+    instruction, matching Phase 7's own precedent for exactly this
+    reasoning."""
 
     def setUp(self):
         self.staff = User.objects.create_user(
@@ -1405,6 +2631,10 @@ class SaleWorkflowViewTests(TestCase):
         self.supervisor = User.objects.create_user(
             username='salesuper', email='salesuper@example.com', password='x',
             employee_id='EMP-6002', full_name='Sale Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.admin = User.objects.create_user(
+            username='saleadmin', email='saleadmin@example.com', password='x',
+            employee_id='EMP-6003', full_name='Sale Admin', role=UserRole.ADMIN,
         )
         self.category = Category.objects.create(name='Sale Widgets')
         self.supplier = Supplier.objects.create(
@@ -1421,19 +2651,48 @@ class SaleWorkflowViewTests(TestCase):
             reference_type='TestSetup', reference_id=0, performed_by=self.staff,
         )
 
-    def test_create_sale_deducts_stock_via_movement(self):
+    def create_draft_sale(self, quantity=5, customer_name='Walk-in customer'):
         self.client.login(username='salestaff', password='x')
-        response = self.client.post(reverse('frontend:sales'), {
-            'customer_name': 'Walk-in customer',
+        payload = {
+            'customer_name': customer_name,
             'items_json': json.dumps([
-                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
+                {'productLabel': str(self.product.pk), 'quantity': quantity, 'unitPrice': 10.0, 'discount': 0},
             ]),
-        })
+        }
+        response = self.client.post(reverse('frontend:sales'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.client.logout()
+        return SaleTransaction.objects.filter(created_by=self.staff).order_by('-pk').first()
+
+    def test_create_sale_is_draft_with_no_stock_change(self):
+        sale = self.create_draft_sale(quantity=5)
+        self.assertEqual(sale.status, SaleStatus.DRAFT)
+        self.assertEqual(sale.total_amount, Decimal('50.00'))
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20, "creating a sale must not touch stock")
+        self.assertEqual(
+            InventoryMovement.objects.filter(reference_type='SaleTransaction', reference_id=sale.pk).count(), 0,
+            "creating a draft sale must not touch stock",
+        )
+        self.assertTrue(AuditLog.objects.filter(action='SALE_CREATED', affected_id=sale.pk).exists())
+
+    def test_submit_approve_by_supervisor_deducts_stock_and_completes(self):
+        sale = self.create_draft_sale(quantity=5)
+
+        self.client.login(username='salestaff', password='x')
+        self.client.post(reverse('frontend:sale_submit', args=[sale.pk]))
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.PENDING)
+        self.client.logout()
+
+        self.client.login(username='salesuper', password='x')
+        response = self.client.post(reverse('frontend:sale_approve', args=[sale.pk]))
         self.assertEqual(response.status_code, 200, response.content)
 
-        sale = SaleTransaction.objects.get(created_by=self.staff)
+        sale.refresh_from_db()
         self.assertEqual(sale.status, SaleStatus.COMPLETED)
-        self.assertEqual(sale.total_amount, Decimal('50.00'))
+        self.assertEqual(sale.approved_by, self.supervisor)
+        self.assertIsNotNone(sale.approved_at)
 
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 15, "20 in stock minus 5 sold")
@@ -1441,58 +2700,132 @@ class SaleWorkflowViewTests(TestCase):
         movement = InventoryMovement.objects.get(reference_type='SaleTransaction', reference_id=sale.pk)
         self.assertEqual(movement.movement_type, MovementType.SALE)
         self.assertEqual(movement.quantity_change, -5)
-        self.assertTrue(AuditLog.objects.filter(action='SALE_CREATED', affected_id=sale.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(action='SALE_SUBMITTED', affected_id=sale.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(action='SALE_APPROVED', affected_id=sale.pk).exists())
 
-    def test_insufficient_stock_rejected_with_no_partial_deduction(self):
+    def test_admin_can_also_approve_confirming_supervisor_mixin_hierarchy(self):
+        sale = self.create_draft_sale(quantity=2)
         self.client.login(username='salestaff', password='x')
-        response = self.client.post(reverse('frontend:sales'), {
-            'items_json': json.dumps([
-                {'productLabel': str(self.product.pk), 'quantity': 999, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
-            ]),
-        })
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(SaleTransaction.objects.filter(created_by=self.staff).exists())
+        self.client.post(reverse('frontend:sale_submit', args=[sale.pk]))
+        self.client.logout()
+
+        self.client.login(username='saleadmin', password='x')
+        response = self.client.post(reverse('frontend:sale_approve', args=[sale.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.COMPLETED)
+        self.assertEqual(sale.approved_by, self.admin)
+
+    def test_staff_cannot_approve_directly(self):
+        """Server-side enforcement, not just button visibility — a direct
+        POST past the hidden button must still be blocked."""
+        sale = self.create_draft_sale(quantity=1)
+        self.client.login(username='salestaff', password='x')
+        self.client.post(reverse('frontend:sale_submit', args=[sale.pk]))
+        response = self.client.post(reverse('frontend:sale_approve', args=[sale.pk]))
+        self.assertEqual(response.status_code, 302, "staff should be blocked, matching SupervisorRequiredMixin")
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.PENDING)
         record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 20, "a rejected sale must not touch stock at all")
+        self.assertEqual(record.current_stock, 20)
 
-    def test_cancel_restores_stock_via_return_movement(self):
+    def test_staff_cannot_reject_directly(self):
+        sale = self.create_draft_sale(quantity=1)
         self.client.login(username='salestaff', password='x')
-        self.client.post(reverse('frontend:sales'), {
-            'items_json': json.dumps([
-                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
-            ]),
-        })
-        sale = SaleTransaction.objects.get(created_by=self.staff)
+        self.client.post(reverse('frontend:sale_submit', args=[sale.pk]))
+        response = self.client.post(reverse('frontend:sale_reject', args=[sale.pk]), {'reason': 'no budget'})
+        self.assertEqual(response.status_code, 302)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.PENDING)
+
+    def test_supervisor_rejects_with_reason_stock_unchanged(self):
+        sale = self.create_draft_sale(quantity=5)
+        self.client.login(username='salestaff', password='x')
+        self.client.post(reverse('frontend:sale_submit', args=[sale.pk]))
         self.client.logout()
 
         self.client.login(username='salesuper', password='x')
-        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]))
+        response = self.client.post(
+            reverse('frontend:sale_reject', args=[sale.pk]), {'reason': 'Customer changed their mind'},
+        )
         self.assertEqual(response.status_code, 200, response.content)
 
         sale.refresh_from_db()
-        self.assertEqual(sale.status, SaleStatus.CANCELLED)
+        self.assertEqual(sale.status, SaleStatus.REJECTED)
+        self.assertEqual(sale.rejected_reason, 'Customer changed their mind')
         record = InventoryRecord.objects.get(product=self.product)
-        self.assertEqual(record.current_stock, 20, "stock must be fully restored on cancellation")
+        self.assertEqual(record.current_stock, 20)
+        self.assertTrue(AuditLog.objects.filter(action='SALE_REJECTED', affected_id=sale.pk).exists())
 
-        return_movement = InventoryMovement.objects.get(
-            reference_type='SaleTransaction', reference_id=sale.pk, movement_type=MovementType.RETURN,
-        )
-        self.assertEqual(return_movement.quantity_change, 5)
-        self.assertTrue(AuditLog.objects.filter(action='SALE_CANCELLED', affected_id=sale.pk).exists())
-
-    def test_staff_cannot_cancel(self):
+    def test_approval_fails_cleanly_when_stock_insufficient_at_approval_time(self):
+        """Deliberately set up two drafts against the same limited stock
+        (20 units, from setUp) so only one approval can succeed —
+        confirms the documented, deliberate consequence of not reserving
+        stock at draft time."""
+        sale1 = self.create_draft_sale(quantity=15)
+        sale2 = self.create_draft_sale(quantity=15)
         self.client.login(username='salestaff', password='x')
-        self.client.post(reverse('frontend:sales'), {
-            'items_json': json.dumps([
-                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 10.0, 'discount': 0, 'tax': 0},
-            ]),
-        })
-        sale = SaleTransaction.objects.get(created_by=self.staff)
+        self.client.post(reverse('frontend:sale_submit', args=[sale1.pk]))
+        self.client.post(reverse('frontend:sale_submit', args=[sale2.pk]))
+        self.client.logout()
 
-        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]))
-        self.assertEqual(response.status_code, 302, "Staff should be blocked (redirected), matching 06_SALES.md's @supervisor_required")
+        self.client.login(username='salesuper', password='x')
+        r1 = self.client.post(reverse('frontend:sale_approve', args=[sale1.pk]))
+        self.assertEqual(r1.status_code, 200, r1.content)
+
+        r2 = self.client.post(reverse('frontend:sale_approve', args=[sale2.pk]))
+        self.assertEqual(r2.status_code, 400)
+        self.assertIn('Insufficient stock', r2.json().get('error', ''))
+
+        sale2.refresh_from_db()
+        self.assertEqual(sale2.status, SaleStatus.PENDING, "a failed approval must leave the sale pending")
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 5, "only sale1's 15 units were ever actually deducted")
+
+    def test_completed_sale_cannot_be_cancelled(self):
+        sale = self.create_draft_sale(quantity=5)
+        self.client.login(username='salestaff', password='x')
+        self.client.post(reverse('frontend:sale_submit', args=[sale.pk]))
+        self.client.logout()
+        self.client.login(username='salesuper', password='x')
+        self.client.post(reverse('frontend:sale_approve', args=[sale.pk]))
+
+        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]), {'reason': 'reason'})
+        self.assertEqual(response.status_code, 400)
         sale.refresh_from_db()
         self.assertEqual(sale.status, SaleStatus.COMPLETED)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 15, "a blocked cancel must not restore stock either")
+
+    def test_draft_and_pending_sale_can_be_cancelled_by_supervisor(self):
+        sale = self.create_draft_sale(quantity=5)
+        self.client.login(username='salesuper', password='x')
+        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]), {'reason': 'Customer changed their mind'})
+        self.assertEqual(response.status_code, 200, response.content)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.CANCELLED)
+        self.assertEqual(sale.cancelled_reason, 'Customer changed their mind')
+        self.assertEqual(sale.cancelled_by, self.supervisor)
+        self.assertIsNotNone(sale.cancelled_at)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 20)
+
+    def test_staff_cannot_cancel(self):
+        sale = self.create_draft_sale(quantity=5)
+        self.client.login(username='salestaff', password='x')
+        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]), {'reason': 'reason'})
+        self.assertEqual(response.status_code, 302, "Staff should be blocked (redirected), matching 06_SALES.md's @supervisor_required")
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.DRAFT)
+
+    def test_cancel_sale_rejects_blank_reason(self):
+        """Server-side, not just client-side."""
+        sale = self.create_draft_sale(quantity=5)
+        self.client.login(username='salesuper', password='x')
+        response = self.client.post(reverse('frontend:sale_cancel', args=[sale.pk]), {'reason': ''})
+        self.assertEqual(response.status_code, 400, response.content)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.DRAFT)
 
     def test_inactive_product_rejected_in_line_items(self):
         inactive_product = Product.objects.create(
@@ -1618,6 +2951,85 @@ class AdjustmentWorkflowViewTests(TestCase):
         self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
 
 
+class PerRecordPDFViewTests(TestCase):
+    """Phase 8.98d — individual Purchase Order / Sale Transaction PDF
+    downloads, distinct from Reports' 9 whole-report exports (untouched by
+    this phase). Same `AnyStaffMixin` gate as the list pages themselves."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='pdfstaff', email='pdfstaff@example.com', password='x',
+            employee_id='EMP-7001', full_name='PDF Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='PDF Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='PDF Supply', company_name='PDF Supply Co', contact_person='Jo',
+            email='pdfsupply@example.com', phone='555-0400', address='1 PDF Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='PDF-SKU-001', name='PDF Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'), tax_rate=Decimal('10.00'),
+        )
+        self.po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.staff)
+        PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, ordered_qty=5,
+            unit_price=Decimal('10.00'), tax=self.product.tax_rate,
+        )
+        self.po.total_cost = self.po.items.get().line_total
+        self.po.save(update_fields=['total_cost'])
+
+        InventoryService.initialize_for_product(self.product)
+        InventoryService.increase_stock(
+            product=self.product, quantity=20, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+        self.sale = SaleService.create_sale(
+            {'customer_name': 'Walk-in Customer'},
+            [{'product_id': self.product.pk, 'quantity': 3, 'unit_price': Decimal('20.00'), 'discount': 0}],
+            self.staff,
+        )
+
+    def test_purchase_pdf_requires_login(self):
+        response = self.client.get(reverse('frontend:purchase_pdf', args=[self.po.pk]))
+        self.assertRedirects(
+            response,
+            f"{reverse('frontend:login')}?next={reverse('frontend:purchase_pdf', args=[self.po.pk])}",
+        )
+
+    def test_staff_can_download_purchase_pdf(self):
+        self.client.login(username='pdfstaff', password='x')
+        response = self.client.get(reverse('frontend:purchase_pdf', args=[self.po.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(self.po.po_number, response['Content-Disposition'])
+        self.assertTrue(response.content.startswith(b'%PDF'))
+
+    def test_purchase_pdf_404_for_unknown_pk(self):
+        self.client.login(username='pdfstaff', password='x')
+        response = self.client.get(reverse('frontend:purchase_pdf', args=[999999]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_sale_pdf_requires_login(self):
+        response = self.client.get(reverse('frontend:sale_pdf', args=[self.sale.pk]))
+        self.assertRedirects(
+            response,
+            f"{reverse('frontend:login')}?next={reverse('frontend:sale_pdf', args=[self.sale.pk])}",
+        )
+
+    def test_staff_can_download_sale_pdf(self):
+        self.client.login(username='pdfstaff', password='x')
+        response = self.client.get(reverse('frontend:sale_pdf', args=[self.sale.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(self.sale.invoice_number, response['Content-Disposition'])
+        self.assertTrue(response.content.startswith(b'%PDF'))
+
+    def test_sale_pdf_404_for_unknown_pk(self):
+        self.client.login(username='pdfstaff', password='x')
+        response = self.client.get(reverse('frontend:sale_pdf', args=[999999]))
+        self.assertEqual(response.status_code, 404)
+
+
 # --------------------------------------------------------------- Phase 8
 # Audit Log, Notifications, Users & Roles, Settings, Reports. Real HTTP
 # round-trips through frontend/urls.py, same style as Phase 7's workflow
@@ -1677,16 +3089,24 @@ class NotificationViewTests(TestCase):
             username='notifother', email='notifother@example.com', password='x',
             employee_id='EMP-8011', full_name='Notif Other', role=UserRole.STAFF,
         )
-        self.n1 = Notification.objects.create(recipient=self.user, type=NotificationType.LOW_STOCK, title='T1', message='M1')
-        self.n2 = Notification.objects.create(recipient=self.user, type=NotificationType.SALE_COMPLETED, title='T2', message='M2')
-        self.other_notif = Notification.objects.create(recipient=self.other, type=NotificationType.LOW_STOCK, title='T3', message='M3')
+        # Phase 8.98: titles made long/unique (not bare "T1"/"T2"/"T3") —
+        # a short substring assertion against a full rendered page (which
+        # always includes a randomly-generated CSRF token) has a real,
+        # if small, chance of a false-positive collision; hit exactly once
+        # by chance during Phase 8.98's own test run (a token containing
+        # "vT3E" tripped assertNotContains(response, 'T3')). Not a code
+        # bug — a pre-existing test-fixture fragility, fixed here since it
+        # was found while this phase's own new tests ran alongside it.
+        self.n1 = Notification.objects.create(recipient=self.user, type=NotificationType.LOW_STOCK, title='NotifOwnTitleOne', message='M1')
+        self.n2 = Notification.objects.create(recipient=self.user, type=NotificationType.SALE_COMPLETED, title='NotifOwnTitleTwo', message='M2')
+        self.other_notif = Notification.objects.create(recipient=self.other, type=NotificationType.LOW_STOCK, title='NotifOtherUserTitleThree', message='M3')
 
     def test_list_shows_only_own_notifications(self):
         self.client.login(username='notifuser', password='x')
         response = self.client.get(reverse('frontend:notifications'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'T1')
-        self.assertNotContains(response, 'T3')
+        self.assertContains(response, 'NotifOwnTitleOne')
+        self.assertNotContains(response, 'NotifOtherUserTitleThree')
 
     def test_unread_count_reflects_only_own_unread(self):
         self.client.login(username='notifuser', password='x')
@@ -1722,6 +3142,37 @@ class NotificationViewTests(TestCase):
         ):
             self.assertEqual(self.client.get(url).status_code, 302)
 
+    def test_sidebar_badge_is_no_longer_a_hardcoded_mock_value(self):
+        """Phase 8.99f-2: sidebar.html's notification badge used to be a
+        literal, unwired "6" (Phase 3.6 mock era). It's now the same
+        hidden-by-default element the topbar dot already uses the pattern
+        for, driven by notifications.js polling this same
+        notification_unread_count endpoint — not a second server-computed
+        value, so there's nothing new to assert server-side beyond "the
+        mock value is gone and the real hook point exists."""
+        self.client.login(username='notifuser', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertNotContains(response, '<span class="nav-item-badge">6</span>')
+        self.assertContains(response, 'id="sidebarNotifBadge"')
+
+
+class PasswordGeneratorTests(TestCase):
+    """Phase 8.98e — frontend.validators.generate_strong_password(), used
+    by UserListCreateView.post() so the Admin never chooses a new user's
+    password. Must reliably satisfy the real AUTH_PASSWORD_VALIDATORS
+    chain (config/settings.py), not a hand-rolled subset of it."""
+
+    def test_generated_password_passes_full_validator_chain(self):
+        for _ in range(25):
+            validate_password(generate_strong_password())  # raises on failure
+
+    def test_generated_passwords_are_random_not_fixed(self):
+        passwords = {generate_strong_password() for _ in range(10)}
+        self.assertEqual(len(passwords), 10)
+
+    def test_default_length(self):
+        self.assertEqual(len(generate_strong_password()), 14)
+
 
 class UserManagementViewTests(TestCase):
 
@@ -1738,33 +3189,151 @@ class UserManagementViewTests(TestCase):
     def valid_payload(self, **overrides):
         payload = {
             'full_name': 'New Person', 'username': 'newperson', 'employee_id': 'EMP-8099',
-            'email': 'newperson@example.com', 'password': 'Str0ng!Passw0rd', 'role': 'staff',
+            'email': 'newperson@example.com', 'role': 'staff',
         }
         payload.update(overrides)
         return payload
 
-    def test_admin_can_create_user_with_working_password(self):
+    def test_admin_creates_user_with_generated_emailed_password(self):
+        """Phase 8.98e: UserForm has no password field at all now — a
+        strong password is generated server-side, set via set_password(),
+        and emailed directly to the new user. Confirms the whole chain:
+        the user really can log in with whatever was emailed, the Admin's
+        own JSON response never carries it, and it was generated (not
+        left blank/unusable).
+
+        Phase 8.99f-4: the response now also carries a `message`
+        confirming the emailed address on every real success (previously
+        a bare {'success': True} — the "no confirmation appears" report,
+        since no Add-modal in this app ever showed one and this was the
+        only case where the invisible-in-the-table outcome — did the
+        email really send — actually needed one)."""
         self.client.login(username='umadmin', password='x')
         response = self.client.post(reverse('frontend:users'), self.valid_payload())
         self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['message'], 'User created — credentials emailed to newperson@example.com.')
+        self.assertNotIn('warning', payload)
+        self.assertNotIn(b'assw', response.content, "the response body must never carry the generated password")
 
         created = User.objects.get(username='newperson')
-        self.assertTrue(created.check_password('Str0ng!Passw0rd'))
         self.assertTrue(created.is_active)
+        self.assertTrue(created.has_usable_password())
         self.assertTrue(AuditLog.objects.filter(action='USER_CREATED', affected_id=created.pk).exists())
 
-    def test_weak_password_rejected(self):
+        self.assertEqual(len(mail.outbox), 1)
+        email_body = mail.outbox[0].body
+        self.assertIn('newperson', email_body)
+        match = re.search(r'Temporary password:\s*(\S+)', email_body)
+        self.assertIsNotNone(match, "credentials email must contain the generated password")
+        emailed_password = match.group(1)
+        self.assertTrue(created.check_password(emailed_password), "the emailed password must actually work")
+
+    def test_submitted_password_field_is_ignored(self):
+        """UserForm has no 'password' field — posting one (a stale client,
+        or a raw request) must simply be ignored, not error, matching the
+        same precedent as Product's removed 'initial_stock' field
+        (ProductCreateViewTests)."""
         self.client.login(username='umadmin', password='x')
-        response = self.client.post(reverse('frontend:users'), self.valid_payload(password='weak'))
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('password', response.json()['errors'])
-        self.assertFalse(User.objects.filter(username='newperson').exists())
+        response = self.client.post(reverse('frontend:users'), self.valid_payload(password='Whatever-I-Choose1!'))
+        self.assertEqual(response.status_code, 200, response.content)
+        created = User.objects.get(username='newperson')
+        self.assertFalse(created.check_password('Whatever-I-Choose1!'), "a client-submitted password must never be used")
+
+    def test_generated_password_never_appears_in_notification_or_audit_log(self):
+        """The task's own hard rule: the generated password must appear in
+        NO audit log or notification body anywhere — checked here against
+        every row in both tables, not just the ones this flow itself
+        creates, and confirms no in-app Notification is created for the
+        new user at all (frontend.notifications.send_new_user_credentials_email()
+        deliberately creates none — see its own docstring)."""
+        self.client.login(username='umadmin', password='x')
+        self.client.post(reverse('frontend:users'), self.valid_payload())
+        created = User.objects.get(username='newperson')
+
+        match = re.search(r'Temporary password:\s*(\S+)', mail.outbox[0].body)
+        self.assertIsNotNone(match)
+        emailed_password = match.group(1)
+
+        self.assertFalse(Notification.objects.filter(recipient=created).exists())
+        for notif in Notification.objects.all():
+            self.assertNotIn(emailed_password, notif.title)
+            self.assertNotIn(emailed_password, notif.message)
+        for log in AuditLog.objects.all():
+            self.assertNotIn(emailed_password, json.dumps(log.details))
+
+    def test_email_send_failure_still_creates_the_account_but_warns(self):
+        """Phase 8.99f-3: before this phase, a failed credentials-email
+        send (send_new_user_credentials_email() already fails open
+        internally) produced the exact same {'success': True} as a real
+        send — a stranded account with a usable password nobody knows,
+        reported as a clean success. The account is still deliberately
+        created (rolling back would throw away validated admin work over
+        what's usually a transient delivery problem), but the response
+        must now say so."""
+        self.client.login(username='umadmin', password='x')
+        with patch('frontend.notifications.send_mail', side_effect=Exception('SMTP down')):
+            response = self.client.post(reverse('frontend:users'), self.valid_payload())
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertIn('warning', payload)
+        self.assertIn('newperson@example.com', payload['warning'])
+
+        created = User.objects.get(username='newperson')
+        self.assertTrue(created.is_active)
+        self.assertTrue(created.has_usable_password(), "the account must still be created and usable, just unreachable by email")
+
+    def test_normal_creation_response_has_message_not_warning(self):
+        """`message` and `warning` are mutually exclusive — a real send
+        gets the confirmation, never both keys at once."""
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:users'), self.valid_payload())
+        payload = response.json()
+        self.assertIn('message', payload)
+        self.assertNotIn('warning', payload)
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend')
+    def test_console_backend_creation_message_discloses_dev_mode(self):
+        """Phase 8.99f-5: the root cause of "works when the tool does it,
+        not when I do it" — the console backend never raises (so
+        send_new_user_credentials_email() returns True) but no real email
+        ever leaves the machine, it only prints to whichever terminal runs
+        the server. Before this phase, that produced the exact same
+        `message` text as a genuine SMTP send — a real, honest-*looking*
+        overclaim. The message must now say plainly that nothing was
+        really emailed, distinct from both the real-send `message` and
+        the failed-send `warning`."""
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:users'), self.valid_payload())
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertIn('message', payload)
+        self.assertNotIn('warning', payload)
+        self.assertIn('console email backend', payload['message'])
+        self.assertIn('no real email was sent', payload['message'])
+        self.assertIn('newperson@example.com', payload['message'])
 
     def test_staff_cannot_create_user(self):
         self.client.login(username='umstaff', password='x')
         response = self.client.post(reverse('frontend:users'), self.valid_payload())
         self.assertEqual(response.status_code, 302)
         self.assertFalse(User.objects.filter(username='newperson').exists())
+
+    def test_add_user_modal_has_no_leaked_comment_text(self):
+        """Phase 8.99f-4: a multi-line {# #} Django comment (users.html,
+        just above the Add User modal's info banner) doesn't close on its
+        own line, so Django's tokenizer (not DOTALL) fails to strip it —
+        the exact BUG-03/BUG-36 shape — and it rendered as literal page
+        text ("Phase 8.98e: no password field..."), the "stray lines" in
+        the modal. Converted to {% comment %}{% endcomment %}. The real
+        info banner right below it must still render."""
+        self.client.login(username='umadmin', password='x')
+        response = self.client.get(reverse('frontend:users'))
+        self.assertNotContains(response, 'Phase 8.98e: no password field')
+        self.assertNotContains(response, '{#')
+        self.assertContains(response, 'A temporary password will be generated automatically')
 
     def test_deactivate_and_reactivate(self):
         self.client.login(username='umadmin', password='x')
@@ -1785,6 +3354,152 @@ class UserManagementViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.admin.refresh_from_db()
         self.assertTrue(self.admin.is_active)
+
+    def test_clean_user_with_no_history_can_be_hard_deleted(self):
+        """Phase 8.99f-2: a user who has never created/approved/cancelled
+        a PO or sale, never performed a movement, never requested/approved
+        an adjustment, and never appears as an AuditLog actor is the one
+        case a real delete is safe (see _user_ids_with_history())."""
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:user_delete', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(User.objects.filter(pk=self.staff.pk).exists())
+        entry = AuditLog.objects.get(action='USER_DELETED', affected_id=self.staff.pk)
+        self.assertEqual(entry.details.get('deleted_username'), 'umstaff')
+
+    def test_user_with_history_cannot_be_hard_deleted(self):
+        """A user referenced by any PROTECT FK must be refused, not 500."""
+        category = Category.objects.create(name='UM Delete Category')
+        supplier = Supplier.objects.create(
+            supplier_name='UM Delete Supply', company_name='UM Delete Supply Co',
+            contact_person='X', email='umdeletesupply@example.com', phone='000', address='addr',
+        )
+        PurchaseOrder.objects.create(supplier=supplier, created_by=self.staff)
+
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:user_delete', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('deactivate instead', response.json()['error'].lower())
+        self.assertTrue(User.objects.filter(pk=self.staff.pk).exists())
+
+    def test_user_who_is_only_an_audit_actor_cannot_be_hard_deleted(self):
+        """Referenced only via AuditLog.user (SET_NULL) — still refused,
+        since a real delete would silently null who performed that action."""
+        audit.log_action(self.staff, audit.LOGIN_SUCCESS, 'auth', status='success')
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:user_delete', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(User.objects.filter(pk=self.staff.pk).exists())
+
+    def test_admin_cannot_delete_own_account(self):
+        self.client.login(username='umadmin', password='x')
+        response = self.client.post(reverse('frontend:user_delete', args=[self.admin.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(User.objects.filter(pk=self.admin.pk).exists())
+
+    def test_staff_cannot_delete_a_user(self):
+        self.client.login(username='umstaff', password='x')
+        response = self.client.post(reverse('frontend:user_delete', args=[self.admin.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(User.objects.filter(pk=self.admin.pk).exists())
+
+    def test_resend_credentials_generates_new_password_and_emails_it(self):
+        """Phase 8.99f-7: the recovery path for a stranded account — a
+        fresh strong password (not the original one), set via
+        set_password(), emailed through the same
+        send_new_user_credentials_email() path used at creation."""
+        self.client.login(username='umadmin', password='x')
+        old_hash = self.staff.password
+        response = self.client.post(reverse('frontend:user_resend_credentials', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertIn('message', payload)
+        self.assertIn('Credentials resent', payload['message'])
+
+        self.staff.refresh_from_db()
+        self.assertNotEqual(self.staff.password, old_hash, "resend must set a genuinely new password, not reuse the old hash")
+        self.assertTrue(AuditLog.objects.filter(action='USER_CREDENTIALS_RESENT', affected_id=self.staff.pk).exists())
+
+        self.assertEqual(len(mail.outbox), 1)
+        match = re.search(r'Temporary password:\s*(\S+)', mail.outbox[0].body)
+        self.assertIsNotNone(match)
+        self.assertTrue(self.staff.check_password(match.group(1)), "the resent password must actually work")
+
+    def test_resend_credentials_failure_returns_warning_not_false_success(self):
+        self.client.login(username='umadmin', password='x')
+        with patch('frontend.notifications.send_mail', side_effect=Exception('SMTP down')):
+            response = self.client.post(reverse('frontend:user_resend_credentials', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertIn('warning', payload)
+        self.assertNotIn('message', payload)
+        self.assertIn(self.staff.email, payload['warning'])
+
+    def test_resend_credentials_password_never_in_notification_or_audit_log(self):
+        self.client.login(username='umadmin', password='x')
+        self.client.post(reverse('frontend:user_resend_credentials', args=[self.staff.pk]))
+        match = re.search(r'Temporary password:\s*(\S+)', mail.outbox[0].body)
+        resent_password = match.group(1)
+
+        self.assertFalse(Notification.objects.filter(recipient=self.staff).exists())
+        for log in AuditLog.objects.all():
+            self.assertNotIn(resent_password, json.dumps(log.details))
+
+    def test_staff_cannot_resend_credentials(self):
+        self.client.login(username='umstaff', password='x')
+        response = self.client.post(reverse('frontend:user_resend_credentials', args=[self.admin.pk]))
+        self.assertEqual(response.status_code, 302)
+
+    def test_resendable_flag_only_for_never_logged_in_active_users(self):
+        """Resend is offered while last_login is still None (the real
+        signal the original credentials were never used) — disappears
+        once they log in for real, and never offered for a deactivated
+        account."""
+        never_logged_in = self.staff
+        self.assertIsNone(never_logged_in.last_login)
+
+        logged_in_user = User.objects.create_user(
+            username='umloggedin', email='umloggedin@example.com', password='x',
+            employee_id='EMP-8023', full_name='UM Logged In', role=UserRole.STAFF,
+        )
+        self.client.login(username='umloggedin', password='x')  # sets last_login
+        self.client.logout()
+
+        inactive_user = User.objects.create_user(
+            username='uminactive', email='uminactive@example.com', password='x',
+            employee_id='EMP-8024', full_name='UM Inactive', role=UserRole.STAFF, is_active=False,
+        )
+
+        self.client.login(username='umadmin', password='x')
+        response = self.client.get(reverse('frontend:users'))
+        by_pk = {u.pk: u.resendable for u in response.context['users']}
+        self.assertTrue(by_pk[never_logged_in.pk])
+        self.assertFalse(by_pk[logged_in_user.pk], "a user who has actually logged in no longer needs a resend")
+        self.assertFalse(by_pk[inactive_user.pk], "a deactivated account shouldn't offer resend")
+
+    def test_deletable_flag_in_list_context(self):
+        """UserListCreateView.get() must mark the clean user deletable and
+        both the acting admin (self) and a user with history not
+        deletable — the same rule UserDeleteView enforces server-side."""
+        category = Category.objects.create(name='UM Deletable Category')
+        supplier = Supplier.objects.create(
+            supplier_name='UM Deletable Supply', company_name='UM Deletable Supply Co',
+            contact_person='X', email='umdeletablesupply@example.com', phone='000', address='addr',
+        )
+        history_user = User.objects.create_user(
+            username='umhistory', email='umhistory@example.com', password='x',
+            employee_id='EMP-8022', full_name='UM History', role=UserRole.STAFF,
+        )
+        PurchaseOrder.objects.create(supplier=supplier, created_by=history_user)
+
+        self.client.login(username='umadmin', password='x')
+        response = self.client.get(reverse('frontend:users'))
+        by_pk = {u.pk: u.deletable for u in response.context['users']}
+        self.assertTrue(by_pk[self.staff.pk], "a never-used account must be deletable")
+        self.assertFalse(by_pk[history_user.pk], "a user with PO history must not be deletable")
+        self.assertFalse(by_pk[self.admin.pk], "the logged-in admin must never see themselves as deletable")
 
 
 class SettingsViewTests(TestCase):
@@ -1921,3 +3636,687 @@ class ReportsViewTests(TestCase):
         self.client.login(username='repsuper', password='x')
         response = self.client.get(reverse('frontend:report_export', args=['inventory']) + '?format=csv')
         self.assertIn(b'REP-SKU-001', response.content)
+
+
+class TimeZoneConfigTests(TestCase):
+    """Phase 8.6 (BUG-37): the app must display timestamps in Bangladesh
+    time, not UTC — settings.TIME_ZONE drives every `{{ value|date:... }}`
+    render and `timezone.localtime()` call. USE_TZ stays True (storage is
+    still real UTC instants); only the display timezone changed."""
+
+    def test_time_zone_is_asia_dhaka(self):
+        from django.conf import settings as django_settings
+        self.assertEqual(django_settings.TIME_ZONE, 'Asia/Dhaka')
+        self.assertTrue(django_settings.USE_TZ)
+
+    def test_localtime_conversion_is_six_hours_ahead_of_utc(self):
+        an_instant = timezone.now()
+        local = timezone.localtime(an_instant)
+        self.assertEqual(local.utcoffset(), timedelta(hours=6))
+
+
+class DashboardGreetingTests(TestCase):
+    """Phase 8.6 (BUG-37/BUG-38): greeting must reflect the real logged-in
+    user (not the old hardcoded 'Amara' placeholder, which only ever
+    resolved because the template referenced a `first_name` field the
+    custom User model doesn't have) and must track time of day in
+    Bangladesh time, computed server-side in frontend.views.dashboard()."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='greetme', email='greetme@example.com', password='Correct-Horse1!',
+            employee_id='EMP-3001', full_name='Priya Nair', role=UserRole.STAFF,
+        )
+        self.client.login(username='greetme', password='Correct-Horse1!')
+
+    def test_greeting_shows_real_user_name_not_amara(self):
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertContains(response, 'Priya')
+        self.assertNotContains(response, 'Amara')
+
+    def test_greeting_is_good_morning_before_noon(self):
+        from unittest.mock import patch
+        with patch('frontend.views.timezone.localtime') as mock_localtime:
+            mock_localtime.return_value = timezone.datetime(2026, 8, 11, 9, 0)
+            response = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(response.context['greeting'], 'Good morning')
+
+    def test_greeting_is_good_afternoon_between_noon_and_five(self):
+        from unittest.mock import patch
+        with patch('frontend.views.timezone.localtime') as mock_localtime:
+            mock_localtime.return_value = timezone.datetime(2026, 8, 11, 14, 0)
+            response = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(response.context['greeting'], 'Good afternoon')
+
+    def test_greeting_is_good_evening_after_five(self):
+        from unittest.mock import patch
+        with patch('frontend.views.timezone.localtime') as mock_localtime:
+            mock_localtime.return_value = timezone.datetime(2026, 8, 11, 20, 0)
+            response = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(response.context['greeting'], 'Good evening')
+
+
+class InventoryListViewTests(TestCase):
+    """Phase 8.9 (BUG-37/BUG-41): frontend:inventory used to be a one-line
+    render() over hardcoded mock rows. Proves the real InventoryListView
+    renders genuine InventoryRecord data and exposes no mutation path at
+    all — this page is documented (07_INVENTORY.md) as GET-only."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='invstaff', email='invstaff@example.com', password='x',
+            employee_id='EMP-5001', full_name='Inventory Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Consumables')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Supply Co', company_name='Supply Co Ltd',
+            contact_person='Al', email='supply@example.com', phone='555-0199',
+            address='1 Supply Way',
+        )
+        self.low_stock_product = Product.objects.create(
+            sku='INV-LOW-001', name='Low Stock Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('5.00'),
+            selling_price=Decimal('9.00'), reorder_level=10,
+        )
+        self.out_of_stock_product = Product.objects.create(
+            sku='INV-OUT-001', name='Out of Stock Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('5.00'),
+            selling_price=Decimal('9.00'), reorder_level=10,
+        )
+        InventoryService.initialize_for_product(self.low_stock_product)
+        InventoryService.initialize_for_product(self.out_of_stock_product)
+        InventoryService.increase_stock(
+            product=self.low_stock_product, quantity=4, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.user,
+        )
+
+    def test_requires_login(self):
+        response = self.client.get(reverse('frontend:inventory'))
+        self.assertRedirects(response, f"{reverse('frontend:login')}?next={reverse('frontend:inventory')}")
+
+    def test_renders_real_records_matching_the_database(self):
+        self.client.login(username='invstaff', password='x')
+        response = self.client.get(reverse('frontend:inventory'))
+        self.assertEqual(response.status_code, 200)
+
+        records = {r.product_id: r for r in response.context['records']}
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[self.low_stock_product.pk].current_stock, 4)
+        self.assertEqual(records[self.low_stock_product.pk].status, InventoryStatus.LOW_STOCK)
+        self.assertEqual(records[self.out_of_stock_product.pk].current_stock, 0)
+        self.assertEqual(records[self.out_of_stock_product.pk].status, InventoryStatus.OUT_OF_STOCK)
+
+        self.assertContains(response, 'Low Stock Widget')
+        self.assertContains(response, 'Out of Stock Widget')
+        self.assertContains(response, 'INV-LOW-001')
+
+    def test_counts_reflect_real_aggregates(self):
+        self.client.login(username='invstaff', password='x')
+        response = self.client.get(reverse('frontend:inventory'))
+        counts = response.context['counts']
+        self.assertEqual(counts['total_skus'], 2)
+        self.assertEqual(counts['low_stock'], 1)
+        self.assertEqual(counts['out_of_stock'], 1)
+
+    def test_any_authenticated_role_can_view(self):
+        """07_INVENTORY.md's own reference view uses @staff_required, which
+        in this project's RBAC means all 3 roles (frontend/decorators.py) —
+        matching AnyStaffMixin's behavior here, not a stricter gate."""
+        admin = User.objects.create_user(
+            username='invadmin', email='invadmin@example.com', password='x',
+            employee_id='EMP-5002', full_name='Inventory Admin', role=UserRole.ADMIN,
+        )
+        self.client.login(username='invadmin', password='x')
+        self.assertEqual(self.client.get(reverse('frontend:inventory')).status_code, 200)
+
+    def test_view_exposes_no_mutation_endpoint(self):
+        """The page is read-only by design — confirm POST isn't even a
+        recognized method on this view (405), and that stock is genuinely
+        untouched either way."""
+        self.client.login(username='invstaff', password='x')
+        response = self.client.post(reverse('frontend:inventory'), {})
+        self.assertEqual(response.status_code, 405)
+        record = InventoryRecord.objects.get(product=self.low_stock_product)
+        self.assertEqual(record.current_stock, 4)
+
+
+class DashboardViewTests(TestCase):
+    """Phase 8.96 (BUG-41): dashboard() used to pass only {"greeting": ...}
+    and every KPI/chart/widget was a |default:"..." fabrication. Proves the
+    real queries defined in docs/09_DASHBOARD.md return correct counts
+    against known fixture data, and that Decision 5 (Recent Activity is
+    admin/supervisor-only) actually holds in the rendered HTML, not just
+    in the view's Python logic."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='dashadmin', email='dashadmin@example.com', password='x',
+            employee_id='EMP-6001', full_name='Dash Admin', role=UserRole.ADMIN,
+        )
+        self.supervisor = User.objects.create_user(
+            username='dashsuper', email='dashsuper@example.com', password='x',
+            employee_id='EMP-6002', full_name='Dash Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.staff = User.objects.create_user(
+            username='dashstaff', email='dashstaff@example.com', password='x',
+            employee_id='EMP-6003', full_name='Dash Staff', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Dash Category')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Dash Supply', company_name='Dash Supply Co',
+            contact_person='D', email='dashsupply@example.com', phone='555-0200',
+            address='1 Dash Way',
+        )
+        self.low_product = Product.objects.create(
+            sku='DASH-LOW-001', name='Dash Low Stock Item', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('4.00'),
+            selling_price=Decimal('8.00'), reorder_level=10,
+        )
+        self.out_product = Product.objects.create(
+            sku='DASH-OUT-001', name='Dash Out of Stock Item', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('4.00'),
+            selling_price=Decimal('8.00'), reorder_level=10,
+        )
+        InventoryService.initialize_for_product(self.low_product)
+        InventoryService.initialize_for_product(self.out_product)
+        InventoryService.increase_stock(
+            product=self.low_product, quantity=3, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.admin,
+        )
+
+    def test_kpi_counts_match_real_data(self):
+        self.client.login(username='dashadmin', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        kpis = response.context['kpis']
+        self.assertEqual(kpis['total_products'], Product.objects.count())
+        self.assertEqual(kpis['total_categories'], Category.objects.count())
+        self.assertEqual(kpis['active_suppliers'], Supplier.objects.filter(is_active=True).count())
+        self.assertEqual(kpis['total_users'], User.objects.count())
+        # Every fixture row in this test was just created, so it all falls
+        # inside the 30-day trend window too.
+        self.assertEqual(kpis['new_products_30d'], Product.objects.count())
+        self.assertEqual(kpis['new_categories_30d'], Category.objects.count())
+        self.assertEqual(kpis['new_active_suppliers_30d'], Supplier.objects.filter(is_active=True).count())
+        self.assertEqual(kpis['new_users_30d'], User.objects.count())
+
+    def test_stat_strip_matches_real_inventory_aggregates(self):
+        self.client.login(username='dashadmin', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        stats = response.context['stats']
+
+        records = list(InventoryRecord.objects.all())
+        expected_value = sum((r.total_value for r in records), Decimal('0'))
+        expected_units = sum(r.current_stock for r in records)
+
+        self.assertEqual(stats['inventory_value'], expected_value)
+        self.assertEqual(stats['stock_units'], expected_units)
+        self.assertEqual(
+            stats['low_stock_count'],
+            InventoryRecord.objects.filter(status=InventoryStatus.LOW_STOCK).count(),
+        )
+        self.assertEqual(
+            stats['out_of_stock_count'],
+            InventoryRecord.objects.filter(status=InventoryStatus.OUT_OF_STOCK).count(),
+        )
+
+    def test_stock_alerts_shows_real_records(self):
+        self.client.login(username='dashadmin', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        alert_product_ids = {record.product_id for record in response.context['stock_alerts']}
+        self.assertIn(self.low_product.pk, alert_product_ids)
+        self.assertIn(self.out_product.pk, alert_product_ids)
+        self.assertContains(response, 'Dash Low Stock Item')
+        self.assertContains(response, 'Dash Out of Stock Item')
+
+    def test_recent_activity_visible_for_admin_and_supervisor(self):
+        for username in ('dashadmin', 'dashsuper'):
+            self.client.login(username=username, password='x')
+            response = self.client.get(reverse('frontend:dashboard'))
+            self.assertIsNotNone(response.context['recent_activity'])
+            self.assertContains(response, 'Recent activity')
+            self.client.logout()
+
+    def test_recent_activity_not_rendered_for_staff(self):
+        """Decision 5: not hidden-but-in-DOM — genuinely absent from the
+        rendered HTML for a staff user, the same treatment AI Insights
+        gets for everyone."""
+        self.client.login(username='dashstaff', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertIsNone(response.context['recent_activity'])
+        self.assertNotContains(response, 'Recent activity')
+
+    def test_pending_approvals_has_no_action_buttons(self):
+        PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.admin, status=POStatus.PENDING)
+        self.client.login(username='dashsuper', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertContains(response, 'Pending approvals')
+        self.assertNotContains(response, 'aria-label="Approve"')
+        self.assertNotContains(response, 'aria-label="Reject"')
+
+    def test_ai_insights_section_dropped_entirely(self):
+        self.client.login(username='dashadmin', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertNotContains(response, 'AI Insights')
+        self.assertNotContains(response, 'Demand forecasting')
+        self.assertNotContains(response, 'Slow-moving')
+
+    def test_anonymous_redirects_to_login(self):
+        """Phase 8.97 Part A: DashboardView now requires AnyStaffMixin —
+        closing the real risk Phase 8.96 flagged (real business aggregates,
+        not fabricated ones, were reachable unauthenticated). Confirms the
+        redirect, not just "doesn't crash" — real data must never render
+        for an anonymous request at all."""
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertRedirects(response, f"{reverse('frontend:login')}?next={reverse('frontend:dashboard')}")
+
+    def test_all_three_roles_load_the_dashboard(self):
+        for username in ('dashadmin', 'dashsuper', 'dashstaff'):
+            self.client.login(username=username, password='x')
+            response = self.client.get(reverse('frontend:dashboard'))
+            self.assertEqual(response.status_code, 200, username)
+            self.client.logout()
+
+    def test_refresh_and_new_purchase_order_buttons_removed(self):
+        """Phase 8.99j: both were plain, unwired <button>s — "New purchase
+        order" specifically is exactly the action-button class
+        09_DASHBOARD.md's own Decision 4 keeps off this page (actions live
+        in their real modules); removing it aligns the page with its own
+        approved spec, not just decluttering."""
+        self.client.login(username='dashadmin', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertNotContains(response, 'Refresh data')
+        self.assertNotContains(response, 'New purchase order')
+
+
+class AIPageAccessTests(TestCase):
+    """Phase 8.99j — closes BUG-43: demand_forecasting/slow_moving_dead_
+    stock had zero auth requirement at all (reachable by anyone, logged
+    in or not). Now SupervisorRequiredMixin — a disclosed deviation from
+    BUG-43's own suggested AnyStaffMixin fix, since this phase's actual
+    requirement ("staff can't see the AI models") is narrower. Proves
+    both layers: the server-side gate (the real control) and the sidebar
+    nav-link visibility (the UX layer), and that the two agree."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='aiadmin', email='aiadmin@example.com', password='x',
+            employee_id='EMP-9001', full_name='AI Admin', role=UserRole.ADMIN,
+        )
+        self.supervisor = User.objects.create_user(
+            username='aisuper', email='aisuper@example.com', password='x',
+            employee_id='EMP-9002', full_name='AI Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.staff = User.objects.create_user(
+            username='aistaff', email='aistaff@example.com', password='x',
+            employee_id='EMP-9003', full_name='AI Staffer', role=UserRole.STAFF,
+        )
+
+    def test_anonymous_redirected_to_login_from_both_pages(self):
+        for url_name in ('forecasting', 'slow_moving'):
+            url = reverse(f'frontend:{url_name}')
+            response = self.client.get(url)
+            self.assertRedirects(response, f"{reverse('frontend:login')}?next={url}")
+
+    def test_staff_blocked_from_both_pages_by_direct_url(self):
+        """The real control — not just the hidden nav link. A direct GET
+        past the (now-hidden) sidebar link must still be refused."""
+        self.client.login(username='aistaff', password='x')
+        for url_name in ('forecasting', 'slow_moving'):
+            response = self.client.get(reverse(f'frontend:{url_name}'))
+            self.assertEqual(response.status_code, 302, url_name)
+
+    def test_supervisor_and_admin_can_open_both_pages(self):
+        for username in ('aisuper', 'aiadmin'):
+            self.client.login(username=username, password='x')
+            for url_name in ('forecasting', 'slow_moving'):
+                response = self.client.get(reverse(f'frontend:{url_name}'))
+                self.assertEqual(response.status_code, 200, f"{username}/{url_name}")
+            self.client.logout()
+
+    def test_staff_does_not_see_ai_nav_links(self):
+        self.client.login(username='aistaff', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertNotContains(response, 'Demand Forecasting')
+        self.assertNotContains(response, 'Slow-Moving')
+        self.assertNotContains(response, '/ai/forecasting/')
+        self.assertNotContains(response, '/ai/slow-moving/')
+
+    def test_supervisor_and_admin_see_ai_nav_links(self):
+        for username in ('aisuper', 'aiadmin'):
+            self.client.login(username=username, password='x')
+            response = self.client.get(reverse('frontend:dashboard'))
+            self.assertContains(response, 'Demand Forecasting')
+            self.assertContains(response, 'Slow-Moving')
+            self.client.logout()
+
+
+class MovementHistoryViewTests(TestCase):
+    """Phase 8.98 — Inventory's "Movement history" button used to do
+    nothing. Proves the real page renders the actual InventoryMovement
+    ledger, its server-side date-range filter genuinely narrows results
+    (not client-side, per this task's own explicit decision — the ledger
+    grows unbounded), the optional product filter works, and the page is
+    strictly read-only over the immutable ledger."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='movstaff', email='movstaff@example.com', password='x',
+            employee_id='EMP-7001', full_name='Movement Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Movement Category')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Movement Supply', company_name='Movement Supply Co',
+            contact_person='M', email='movsupply@example.com', phone='555-0300',
+            address='1 Movement Way',
+        )
+        self.product = Product.objects.create(
+            sku='MOV-001', name='Movement Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('3.00'),
+            selling_price=Decimal('6.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(self.product)
+
+    def make_movement_on(self, when, product=None, reference_id=0):
+        """Seeds a real movement via InventoryService (the only legitimate
+        way to create one), then backdates its created_at with a raw
+        QuerySet.update() — bypasses InventoryMovement.save()'s immutability
+        guard (BUG-20) entirely, since .update() never calls save(); that's
+        exactly why this is only ever done here, in test setup, and never
+        in application code."""
+        InventoryService.increase_stock(
+            product=product or self.product, quantity=1, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=reference_id, performed_by=self.user,
+        )
+        movement = InventoryMovement.objects.filter(product=product or self.product).latest('created_at')
+        InventoryMovement.objects.filter(pk=movement.pk).update(created_at=when)
+        return InventoryMovement.objects.get(pk=movement.pk)
+
+    def test_requires_login(self):
+        response = self.client.get(reverse('frontend:movement_history'))
+        self.assertRedirects(
+            response, f"{reverse('frontend:login')}?next={reverse('frontend:movement_history')}"
+        )
+
+    def test_renders_real_movements_matching_the_database(self):
+        self.make_movement_on(timezone.now() - timedelta(days=100), reference_id=1)
+        self.make_movement_on(timezone.now() - timedelta(days=1), reference_id=2)
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['total_count'], InventoryMovement.objects.count())
+        self.assertContains(response, 'Movement Widget')
+
+    def test_date_range_filter_narrows_correctly(self):
+        old = self.make_movement_on(timezone.now() - timedelta(days=100), reference_id=1)
+        recent = self.make_movement_on(timezone.now() - timedelta(days=1), reference_id=2)
+        self.client.login(username='movstaff', password='x')
+
+        today = timezone.localdate()
+        response = self.client.get(reverse('frontend:movement_history'), {
+            'date_from': (today - timedelta(days=5)).isoformat(),
+            'date_to': today.isoformat(),
+        })
+        shown_ids = {m.pk for m in response.context['page'].object_list}
+        self.assertIn(recent.pk, shown_ids)
+        self.assertNotIn(old.pk, shown_ids)
+
+    def test_product_filter_narrows_to_one_product(self):
+        other_product = Product.objects.create(
+            sku='MOV-002', name='Other Movement Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('3.00'),
+            selling_price=Decimal('6.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(other_product)
+        self.make_movement_on(timezone.now(), product=other_product, reference_id=9)
+        mine = self.make_movement_on(timezone.now(), reference_id=3)
+
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'), {'product': self.product.pk})
+        shown_ids = {m.pk for m in response.context['page'].object_list}
+        self.assertEqual(shown_ids, {mine.pk})
+
+    def test_movement_type_filter_narrows_correctly(self):
+        """Phase 8.99d: movement_type is now server-side, not
+        table-filter.js. AdjustmentService.approve() is the only real path
+        that produces an ADJUSTMENT-type movement."""
+        purchase_movement = self.make_movement_on(timezone.now(), reference_id=1)
+        adjustment = InventoryAdjustment.objects.create(
+            product=self.product, adjustment_type=AdjustmentType.INCREASE, quantity=2,
+            reason='Recount', requested_by=self.user,
+        )
+        AdjustmentService.approve(adjustment, self.user)
+
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'), {'movement_type': 'adjustment'})
+        shown_types = {m.movement_type for m in response.context['page'].object_list}
+        self.assertEqual(shown_types, {'adjustment'})
+        shown_ids = {m.pk for m in response.context['page'].object_list}
+        self.assertNotIn(purchase_movement.pk, shown_ids)
+
+    def test_search_filter_narrows_correctly(self):
+        """Phase 8.99d: search (q) is now server-side, product name/SKU
+        icontains — replaces the old client-side-only table-filter.js
+        search, which could never be reflected in an export."""
+        other_product = Product.objects.create(
+            sku='MOV-003', name='Totally Different Item', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('3.00'),
+            selling_price=Decimal('6.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(other_product)
+        mine = self.make_movement_on(timezone.now(), reference_id=5)
+        other = self.make_movement_on(timezone.now(), product=other_product, reference_id=6)
+
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'), {'q': 'Movement Widget'})
+        shown_ids = {m.pk for m in response.context['page'].object_list}
+        self.assertIn(mine.pk, shown_ids)
+        self.assertNotIn(other.pk, shown_ids)
+
+        response_sku = self.client.get(reverse('frontend:movement_history'), {'q': 'MOV-001'})
+        shown_ids_sku = {m.pk for m in response_sku.context['page'].object_list}
+        self.assertEqual(shown_ids_sku, {mine.pk})
+
+    def test_combined_filters_narrow_together(self):
+        """date + product + type applied simultaneously, not just alone."""
+        other_product = Product.objects.create(
+            sku='MOV-004', name='Combo Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('3.00'),
+            selling_price=Decimal('6.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(other_product)
+        today = timezone.localdate()
+        in_range_mine = self.make_movement_on(timezone.now() - timedelta(days=1), reference_id=10)
+        self.make_movement_on(timezone.now() - timedelta(days=100), reference_id=11)  # out of date range
+        self.make_movement_on(timezone.now() - timedelta(days=1), product=other_product, reference_id=12)  # wrong product
+
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'), {
+            'date_from': (today - timedelta(days=5)).isoformat(),
+            'date_to': today.isoformat(),
+            'product': self.product.pk,
+            'movement_type': 'purchase',
+        })
+        shown_ids = {m.pk for m in response.context['page'].object_list}
+        self.assertEqual(shown_ids, {in_range_mine.pk})
+
+    def test_filter_survives_pagination(self):
+        """Page 2 of a filtered set is still filtered, not the full ledger."""
+        other_product = Product.objects.create(
+            sku='MOV-005', name='Noise Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('3.00'),
+            selling_price=Decimal('6.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(other_product)
+        # 3 movements outside the filter (noise), then 55 matching ones
+        # (> PAGE_SIZE=50) so page 2 genuinely exists under the filter.
+        for i in range(3):
+            self.make_movement_on(timezone.now(), product=other_product, reference_id=1000 + i)
+        mine_ids = set()
+        for i in range(55):
+            m = self.make_movement_on(timezone.now(), reference_id=2000 + i)
+            mine_ids.add(m.pk)
+
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'), {'product': self.product.pk, 'page': 2})
+        self.assertEqual(response.status_code, 200)
+        page2_ids = {m.pk for m in response.context['page'].object_list}
+        self.assertTrue(page2_ids.issubset(mine_ids), "page 2 must still only contain the filtered product's movements")
+        self.assertEqual(response.context['total_count'], 55, "total_count must reflect the filtered set, not the whole ledger")
+
+    def test_return_option_not_offered(self):
+        """Phase 8.99d: no code path ever creates MovementType.RETURN
+        (grepped services.py/views.py) — a filter value that can never
+        match anything shouldn't be offered."""
+        self.client.login(username='movstaff', password='x')
+        response = self.client.get(reverse('frontend:movement_history'))
+        self.assertNotIn('return', [value for value, _ in response.context['movement_types']])
+        self.assertNotContains(response, 'value="return"')
+
+    def test_view_exposes_no_mutation_endpoint(self):
+        self.client.login(username='movstaff', password='x')
+        response = self.client.post(reverse('frontend:movement_history'), {})
+        self.assertEqual(response.status_code, 405)
+
+    def test_export_produces_real_csv_respecting_the_date_filter(self):
+        import csv
+        import io
+
+        self.make_movement_on(timezone.now() - timedelta(days=100), reference_id=1)
+        self.make_movement_on(timezone.now() - timedelta(days=1), reference_id=2)
+        self.client.login(username='movstaff', password='x')
+
+        today = timezone.localdate()
+        response = self.client.get(reverse('frontend:movement_history_export'), {
+            'date_from': (today - timedelta(days=5)).isoformat(),
+            'date_to': today.isoformat(),
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+        rows = list(csv.reader(io.StringIO(response.content.decode())))
+        self.assertEqual(len(rows), 2)  # header + the one in-range movement
+        self.assertIn('Movement Widget', rows[1])
+
+    def test_csv_export_row_count_matches_filtered_db_query(self):
+        """CSV row count must equal a direct DB query for the same
+        filter — not the full table, for at least 3 different filter
+        combinations, including one that returns zero rows."""
+        import csv
+        import io
+
+        other_product = Product.objects.create(
+            sku='MOV-006', name='Export Count Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('3.00'),
+            selling_price=Decimal('6.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(other_product)
+        self.make_movement_on(timezone.now(), reference_id=20)
+        self.make_movement_on(timezone.now(), reference_id=21)
+        self.make_movement_on(timezone.now(), product=other_product, reference_id=22)
+        self.client.login(username='movstaff', password='x')
+
+        combos = [
+            {},  # no filter -> full table
+            {'product': self.product.pk},  # 2 rows
+            {'product': other_product.pk, 'movement_type': 'purchase'},  # 1 row
+            {'q': 'no-such-product-anywhere'},  # 0 rows — honest empty export
+        ]
+        for params in combos:
+            expected_qs = InventoryMovement.objects.all()
+            if params.get('product'):
+                expected_qs = expected_qs.filter(product_id=params['product'])
+            if params.get('movement_type'):
+                expected_qs = expected_qs.filter(movement_type=params['movement_type'])
+            if params.get('q'):
+                expected_qs = expected_qs.filter(product__name__icontains=params['q'])
+            expected_count = expected_qs.count()
+
+            response = self.client.get(reverse('frontend:movement_history_export'), params)
+            self.assertEqual(response.status_code, 200, params)
+            rows = list(csv.reader(io.StringIO(response.content.decode())))
+            data_rows = len(rows) - 1  # minus header
+            self.assertEqual(data_rows, expected_count, f"CSV row count mismatch for {params}")
+
+    def test_pdf_export_returns_real_pdf_with_filters_in_header(self):
+        self.make_movement_on(timezone.now(), reference_id=30)
+        self.client.login(username='movstaff', password='x')
+
+        response = self.client.get(reverse('frontend:movement_history_export'), {
+            'product': self.product.pk, 'format': 'pdf',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        self.assertIn('movement_history.pdf', response['Content-Disposition'])
+
+    def test_pdf_export_zero_rows_is_honest_empty_not_error(self):
+        self.make_movement_on(timezone.now(), reference_id=31)
+        self.client.login(username='movstaff', password='x')
+
+        response = self.client.get(reverse('frontend:movement_history_export'), {
+            'q': 'no-such-product-anywhere', 'format': 'pdf',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b'%PDF'))
+
+
+class ExportViewTests(TestCase):
+    """Phase 8.98 (BUG-44): Products/Suppliers/Audit Log's "Export" buttons
+    used to do nothing. Proves each now returns a genuine, correctly
+    populated CSV, and that Audit Log's export stays Admin-only exactly
+    like the page it exports, per 13_AUDIT.md."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='expstaff', email='expstaff@example.com', password='x',
+            employee_id='EMP-7101', full_name='Export Staffer', role=UserRole.STAFF,
+        )
+        self.admin = User.objects.create_user(
+            username='expadmin', email='expadmin@example.com', password='x',
+            employee_id='EMP-7102', full_name='Export Admin', role=UserRole.ADMIN,
+        )
+        self.category = Category.objects.create(name='Export Category')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Export Supply', company_name='Export Supply Co',
+            contact_person='E', email='exportsupply@example.com', phone='555-0400',
+            address='1 Export Way',
+        )
+        self.product = Product.objects.create(
+            sku='EXP-001', name='Export Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('2.00'), selling_price=Decimal('4.00'),
+        )
+
+    def test_product_export_returns_real_csv(self):
+        self.client.login(username='expstaff', password='x')
+        response = self.client.get(reverse('frontend:product_export'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+        content = response.content.decode()
+        self.assertIn('Export Widget', content)
+        self.assertIn('EXP-001', content)
+
+    def test_supplier_export_returns_real_csv(self):
+        self.client.login(username='expstaff', password='x')
+        response = self.client.get(reverse('frontend:supplier_export'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Export Supply Co', response.content.decode())
+
+    def test_audit_log_export_blocked_for_staff(self):
+        self.client.login(username='expstaff', password='x')
+        response = self.client.get(reverse('frontend:audit_log_export'))
+        self.assertRedirects(response, reverse('frontend:dashboard'))
+
+    def test_audit_log_export_returns_real_csv_for_admin(self):
+        audit.log_action(
+            self.admin, audit.PRODUCT_CREATED, 'products',
+            affected_id=self.product.pk, status='success',
+        )
+        self.client.login(username='expadmin', password='x')
+        response = self.client.get(reverse('frontend:audit_log_export'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('PRODUCT_CREATED', response.content.decode())
+
+    def test_all_exports_require_login(self):
+        for url_name in ('product_export', 'supplier_export', 'audit_log_export', 'movement_history_export'):
+            url = reverse(f'frontend:{url_name}')
+            response = self.client.get(url)
+            self.assertRedirects(response, f"{reverse('frontend:login')}?next={url}")

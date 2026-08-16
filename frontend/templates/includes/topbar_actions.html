@@ -1,17 +1,18 @@
 {% comment %}
   includes/topbar_actions.html
-  The right-hand portion of the topbar: search, notifications, user menu.
-  Kept free of {% block %} tags on purpose — blocks only resolve correctly
+  The right-hand portion of the topbar: notifications, user menu. Kept
+  free of {% block %} tags on purpose — blocks only resolve correctly
   against the extends chain when they live in the base template file itself,
   not inside a nested {% include %}. The eyebrow/title block lives in
   dashboard_base.html directly; this partial is included right after it.
-{% endcomment %}
-<div class="topbar-search">
-  <svg class="icon"><use href="#icon-search"></use></svg>
-  <input type="search" placeholder="Search products, suppliers, PO#..." aria-label="Search">
-  <kbd>/</kbd>
-</div>
 
+  Phase 8.98: the global topbar search box (present on every page,
+  including the Dashboard) was removed — it never had any JS wiring at
+  all (confirmed: no handler anywhere), purely decorative markup with no
+  real search behind it. `.topbar-actions` picks up `margin-left: auto`
+  in dashboard.css to keep itself pinned to the right edge now that the
+  search box's `flex:1` isn't there to do that anymore.
+{% endcomment %}
 <div class="topbar-actions">
   <div class="dropdown" id="notifDropdown">
     <button class="icon-btn" type="button" aria-label="Notifications" aria-expanded="false" data-dropdown-toggle>
@@ -59,7 +60,13 @@
 
   <div class="dropdown" id="userMenuDropdown">
     <button class="topbar-user" type="button" aria-expanded="false" data-dropdown-toggle>
-      <div class="avatar">{{ request.user.get_initials|default:"AT" }}</div>
+      <div class="avatar">
+        {% if request.user.profile_image %}
+          <img src="{{ request.user.profile_image.url }}" alt="">
+        {% else %}
+          {{ request.user.get_initials|default:"AT" }}
+        {% endif %}
+      </div>
       <div class="topbar-user-info">
         <div class="name">{{ request.user.get_full_name|default:"Amara Tenzin" }}</div>
         <div class="role">{{ request.user.get_role_display|default:"System Administrator" }}</div>

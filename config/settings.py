@@ -42,6 +42,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # Phase 10 — Phase 9 decided against a general DRF layer but
+    # pre-committed one small, read-only AI slice to be built here (see
+    # docs/project_memory.md §13). This is the only DRF usage in the
+    # project; the other ~55 documented endpoints remain unbuilt.
+    'rest_framework',
 ]
 
 MIDDLEWARE = [
@@ -332,3 +337,21 @@ X_FRAME_OPTIONS = 'DENY'
 # X-XSS-Protection header it controlled as ineffective/risky years ago).
 # Setting it under Django 6.0.7 (this project's version) is simply inert,
 # not a real control — disclosed here rather than added as dead cargo.
+
+# Phase 10 — TECH_STACK.md's documented block, used verbatim. Session auth
+# (not token/JWT) since this is a read-only slice consumed by the same
+# browser session that's already logged in, not a separate API client.
+# IsAuthenticated is the global floor; ClassificationListAPIView/
+# ClassificationSummaryAPIView both override it with the one real
+# permission class this phase adds (IsSupervisorOrAbove), matching the
+# SupervisorRequiredMixin gate already on the page these serve.
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 25,
+}

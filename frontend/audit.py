@@ -144,6 +144,16 @@ AI_MODEL_RETRAIN_FAILED = 'AI_MODEL_RETRAIN_FAILED'
 AI_FORECASTS_GENERATED = 'AI_FORECASTS_GENERATED'
 AI_CLASSIFICATION_RUN = 'AI_CLASSIFICATION_RUN'
 AI_CLASSIFICATION_FAILED = 'AI_CLASSIFICATION_FAILED'
+# Phase 10 — DEAD_STOCK_DETECTION.md's own Audit Actions table names this
+# alongside the two above but it was never added when they were; added now.
+AI_PRODUCT_RECLASSIFIED = 'AI_PRODUCT_RECLASSIFIED'
+# Phase 11 — DEMAND_FORECASTING.md's own Audit Actions table.
+# AI_FORECAST_REPORT_EXPORTED (also in that table) isn't added: the
+# generic REPORT_EXPORTED_PDF/REPORT_EXPORTED_CSV below already fire for
+# every report type ReportExportView serves, ai-forecasts included —
+# confirmed by reading that view before deciding a forecast-specific
+# constant would just be dead code next to the one already covering it.
+AI_ACTUAL_DEMAND_BACKFILLED = 'AI_ACTUAL_DEMAND_BACKFILLED'
 
 # Settings
 SETTINGS_UPDATED = 'SETTINGS_UPDATED'

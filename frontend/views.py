@@ -60,11 +60,16 @@ from frontend.forms import (
     parse_line_items,
 )
 from frontend.mixins import AdminRequiredMixin, AnyStaffMixin, SupervisorRequiredMixin
+from frontend.classification import run_full_classification
+from frontend.forecasting import backfill_actual_demand, run_full_forecast
 from frontend.models import (
     AdjustmentStatus,
     AuditLog,
     Category,
+    DemandForecast,
+    ForecastPeriod,
     InventoryAdjustment,
+    InventoryClassification,
     InventoryMovement,
     InventoryRecord,
     InventoryStatus,
@@ -78,6 +83,7 @@ from frontend.models import (
     SaleItem,
     SaleStatus,
     SaleTransaction,
+    StockClassification,
     Supplier,
     SystemSettings,
     UnitOfMeasurement,
@@ -1701,15 +1707,248 @@ class AdjustmentRejectView(SupervisorRequiredMixin, View):
 # file is a class with a mixin, not a decorated function).
 
 class DemandForecastingView(SupervisorRequiredMixin, View):
+    """Phase 11 — real DemandForecast data (was a static TREND_DATA/table
+    mock). SupervisorRequiredMixin is unchanged from Phase 8.99j/BUG-43 —
+    not re-added, not modified; both GET and POST inherit the same gate.
+
+    DemandForecast rows accumulate real history by design (REQ 9.9 needs
+    past forecasts kept around to compare against actual_demand once
+    backfilled) — run_full_forecast() never deletes old rows, matching
+    the doc's own reference code (a plain .create(), no update_or_create;
+    unlike InventoryClassification, DemandForecast has no OneToOneField
+    forcing one-row-per-product). Repeated "Run forecast now" clicks are
+    therefore expected to accumulate rows over time — this view's own GET
+    query keeps the *display* sane by showing only the most recent batch
+    (deduped by (product, period, period_start), keyed off created_at),
+    not by changing what gets written."""
+
+    _PERIOD_LABEL = {ForecastPeriod.WEEKLY: 'weekly', ForecastPeriod.MONTHLY: 'monthly'}
+
+    def _latest_batch(self):
+        """One row per (product_id, forecast_period, period_start) — the
+        most recently created one, discarding older re-run duplicates
+        from the *display* only (the DB keeps every row)."""
+        all_forecasts = list(
+            DemandForecast.objects.select_related('product', 'product__category')
+            .order_by('-created_at')
+        )
+        latest = {}
+        for f in all_forecasts:
+            key = (f.product_id, f.forecast_period, f.period_start)
+            if key not in latest:
+                latest[key] = f
+        return list(latest.values()), (all_forecasts[0] if all_forecasts else None)
+
+    def _build_chart_data(self, forecasts, period_choice):
+        buckets = {}
+        for f in forecasts:
+            if f.forecast_period != period_choice:
+                continue
+            buckets.setdefault(f.period_start, {'demand': 0.0, 'reorder': 0})
+            buckets[f.period_start]['demand'] += float(f.forecasted_demand)
+            buckets[f.period_start]['reorder'] += f.recommended_reorder_qty
+        keys = sorted(buckets.keys())[:4]
+        return {
+            'labels': [k.strftime('%d %b') for k in keys],
+            'demand': [round(buckets[k]['demand'], 1) for k in keys],
+            'reorder': [buckets[k]['reorder'] for k in keys],
+        }
 
     def get(self, request):
-        return render(request, "intelligence/forecasting.html", {"active_nav": "forecasting"})
+        forecasts, last_run = self._latest_batch()
+        stock_by_product = dict(InventoryRecord.objects.values_list('product_id', 'current_stock'))
+
+        # One table row per (product, period-type): the nearest upcoming
+        # forecast only — matches the page's own shape (a row is "this
+        # product's next weekly/monthly forecast", not every future step).
+        nearest = {}
+        for f in forecasts:
+            key = (f.product_id, f.forecast_period)
+            if key not in nearest or f.period_start < nearest[key].period_start:
+                nearest[key] = f
+        table_rows = sorted(nearest.values(), key=lambda f: (f.product.name, f.forecast_period))
+        for f in table_rows:
+            f.search_blob = f"{f.product.name} {f.product.sku}".lower()
+            f.period_type = self._PERIOD_LABEL[f.forecast_period]
+            f.current_stock_display = stock_by_product.get(f.product_id, 0)
+            f.confidence_pct = round(float(f.confidence_score) * 100)
+
+        flagged_count = sum(1 for f in table_rows if f.recommended_reorder_qty > 0)
+        confidences = [float(f.confidence_score) for f in table_rows]
+        avg_confidence_pct = round(sum(confidences) / len(confidences) * 100) if confidences else 0
+
+        reorder_priorities = sorted(
+            (f for f in table_rows if f.recommended_reorder_qty > 0),
+            key=lambda f: -f.recommended_reorder_qty,
+        )[:4]
+
+        context = {
+            "active_nav": "forecasting",
+            "forecasts": table_rows,
+            "categories": Category.objects.filter(is_active=True).order_by("name"),
+            "products_forecasted": len({f.product_id for f in table_rows}),
+            "avg_confidence_pct": avg_confidence_pct,
+            "flagged_count": flagged_count,
+            "last_run": last_run,
+            "reorder_priorities": reorder_priorities,
+            "chart_data": {
+                "weekly": self._build_chart_data(forecasts, ForecastPeriod.WEEKLY),
+                "monthly": self._build_chart_data(forecasts, ForecastPeriod.MONTHLY),
+            },
+        }
+        return render(request, "intelligence/forecasting.html", context)
+
+    def post(self, request):
+        """Manual "Run forecast now" — synchronous (no Celery). Backfills
+        elapsed forecasts first, then retrains both period models with
+        the latest data and generates fresh forecasts for every active
+        product. The doc's slow/dead-equivalent here is notify_supervisors
+        for 'ai_replenish' — documented as living inside the same un-built
+        Celery task; fired from this view instead, per replenish_alerts
+        run_full_forecast() returns (that function stays notify-free,
+        matching frontend/classification.py's run_full_classification())."""
+        backfilled = backfill_actual_demand()
+        audit.log_action(
+            request.user, audit.AI_ACTUAL_DEMAND_BACKFILLED, "ai_forecasting",
+            status="success", details={"forecasts_updated": backfilled},
+        )
+
+        try:
+            result = run_full_forecast()
+        except Exception as e:
+            audit.log_action(
+                request.user, audit.AI_MODEL_RETRAIN_FAILED, "ai_forecasting",
+                status="failure", details={"error": str(e)},
+            )
+            return JsonResponse({"success": False, "error": "Forecast run failed."}, status=500)
+
+        audit.log_action(
+            request.user, audit.AI_MODEL_RETRAINED, "ai_forecasting",
+            status="success", details={"mae": result["mae"]},
+        )
+        audit.log_action(
+            request.user, audit.AI_FORECASTS_GENERATED, "ai_forecasting",
+            status="success", details={
+                "products_considered": result["products_considered"],
+                "forecasts_created": result["forecasts_created"],
+            },
+        )
+
+        for alert in result["replenish_alerts"]:
+            notify_supervisors(
+                NotificationType.AI_REPLENISH, f'AI: Replenish {alert["product"].name}',
+                f'Forecasted demand ({alert["forecasted_demand"]} units) exceeds current '
+                f'stock ({alert["current_stock"]} units). Recommended order: '
+                f'{alert["recommended_qty"]} units.',
+                link="/ai/forecasting/",
+            )
+
+        return JsonResponse({
+            "success": True,
+            "forecasts_created": result["forecasts_created"],
+            "replenish_alerts": len(result["replenish_alerts"]),
+        })
 
 
 class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
+    """Phase 10 — real InventoryClassification data (was a static mock
+    table). SupervisorRequiredMixin is unchanged from Phase 8.99j/BUG-43 —
+    not re-added, not modified; both GET and POST inherit the same gate
+    from the class, so the manual "Run classification now" action is
+    guarded identically to the page itself."""
+
+    _BADGE = {
+        StockClassification.FAST: "badge-success",
+        StockClassification.SLOW: "badge-warning",
+        StockClassification.DEAD: "badge-danger",
+    }
 
     def get(self, request):
-        return render(request, "intelligence/slow_moving.html", {"active_nav": "slow-moving"})
+        settings_obj = SystemSettings.get_settings()
+        classifications = list(
+            InventoryClassification.objects.select_related("product", "product__category")
+            .order_by("product__name")
+        )
+        counts = {StockClassification.FAST: 0, StockClassification.SLOW: 0, StockClassification.DEAD: 0}
+        for c in classifications:
+            counts[c.classification] = counts.get(c.classification, 0) + 1
+            c.badge = self._BADGE.get(c.classification, "badge-indigo")
+            c.search_blob = f"{c.product.name} {c.product.sku}".lower()
+            if c.last_sold_date is None:
+                c.last_sold_label = "Never sold"
+            elif c.days_since_last_sale == 0:
+                c.last_sold_label = "Today"
+            elif c.days_since_last_sale == 1:
+                c.last_sold_label = "1 day ago"
+            else:
+                c.last_sold_label = f"{c.days_since_last_sale} days ago"
+
+        dead_watch = sorted(
+            (c for c in classifications if c.classification == StockClassification.DEAD),
+            key=lambda c: -c.days_since_last_sale,
+        )[:2]
+        slow_watch = sorted(
+            (c for c in classifications if c.classification == StockClassification.SLOW),
+            key=lambda c: -c.days_since_last_sale,
+        )[:1]
+        for c in slow_watch:
+            c.days_to_dead = max(settings_obj.dead_stock_threshold_days - c.days_since_last_sale, 0)
+
+        context = {
+            "active_nav": "slow-moving",
+            "classifications": classifications,
+            "counts": counts,
+            "total_flagged": counts[StockClassification.SLOW] + counts[StockClassification.DEAD],
+            "categories": Category.objects.filter(is_active=True).order_by("name"),
+            "dead_watch": dead_watch,
+            "slow_watch": slow_watch,
+            "slow_threshold": settings_obj.slow_moving_threshold_days,
+            "dead_threshold": settings_obj.dead_stock_threshold_days,
+            "chart_data": {
+                "fast": counts[StockClassification.FAST],
+                "slow": counts[StockClassification.SLOW],
+                "dead": counts[StockClassification.DEAD],
+            },
+        }
+        return render(request, "intelligence/slow_moving.html", context)
+
+    def post(self, request):
+        """Manual "Run classification now" — synchronous (no Celery, see
+        docs/project_memory.md §13). The doc hosts the slow/dead
+        supervisor notification inside a Celery task this project isn't
+        building; fired here instead, from the one real trigger that
+        exists, so the REQ-covered behavior isn't lost to an un-built
+        host."""
+        try:
+            results = run_full_classification()
+        except Exception as e:
+            audit.log_action(
+                request.user, audit.AI_CLASSIFICATION_FAILED, "ai_classification",
+                status="failure", details={"error": str(e)},
+            )
+            return JsonResponse({"success": False, "error": "Classification run failed."}, status=500)
+
+        audit.log_action(
+            request.user, audit.AI_CLASSIFICATION_RUN, "ai_classification",
+            status="success", details=results,
+        )
+
+        slow_count = results.get(StockClassification.SLOW, 0)
+        dead_count = results.get(StockClassification.DEAD, 0)
+        if slow_count:
+            notify_supervisors(
+                NotificationType.AI_SLOW_STOCK, f"AI Alert: {slow_count} Slow-Moving Products",
+                f"{slow_count} products identified as slow-moving. Review recommended.",
+                link="/ai/slow-moving/",
+            )
+        if dead_count:
+            notify_supervisors(
+                NotificationType.AI_DEAD_STOCK, f"AI Alert: {dead_count} Dead Stock Products",
+                f"{dead_count} products have had no sales activity. Immediate action recommended.",
+                link="/ai/slow-moving/",
+            )
+
+        return JsonResponse({"success": True, "results": results})
 
 # ------------------------------------------------------------------ Reports
 # Phase 8 — docs/10_REPORTS.md: "All report access is Supervisor+ only and

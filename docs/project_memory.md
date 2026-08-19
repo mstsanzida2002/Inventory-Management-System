@@ -904,7 +904,7 @@ but not there yet.
 | Layer | Documented in `TECH_STACK.md` | Actually in `requirements.txt` / `settings.py` |
 |---|---|---|
 | Framework | Django 5.x | **Django 6.0.7** (newer than documented) |
-| API | DRF 3.15+ | Not installed |
+| API | DRF 3.15+ | **djangorestframework 3.18.0** — installed Phase 10, one read-only classification slice only (§13); the other ~55 documented endpoints remain unbuilt |
 | Database | PostgreSQL 15+ | **PostgreSQL 18** (local, Phase 3.8) — matches the documented engine. `db.sqlite3` no longer used (§6) |
 | Cache/queue | Redis 7+, Celery 5.x | Not installed |
 | ML | Scikit-learn 1.4+, Pandas, NumPy | Not installed |
@@ -1751,11 +1751,12 @@ nothing calls.
 
 ## 7. AI Features
 
-Both AI pages are polished front-end mocks with **no real model, no real
-job, no real data pipeline** behind them. `DemandForecast` and
-`InventoryClassification` exist as migrated Django models (§6) but are
-completely unused — the pages below remain 100% static mocks with no
-connection to these models yet.
+**Demand Forecasting remains a polished front-end mock — no real model, no
+real job, no real data pipeline (Phase 11's territory). Slow-Moving & Dead
+Stock is real as of Backend Phase 10**: `frontend/classification.py`
+implements the documented rule-based classifier for real, writing real
+`InventoryClassification` rows, wired into `slow_moving.html` and a small
+read-only DRF slice. `DemandForecast` remains a migrated-but-unused model.
 
 **Demand Forecasting** (`docs/DEMAND_FORECASTING.md`, page at
 `/ai/forecasting/`):
@@ -1776,34 +1777,40 @@ connection to these models yet.
   the one place the mock explicitly explains, to the viewer, that it's
   describing an unbuilt pipeline.
 
-**Slow-Moving & Dead Stock Detection** (`docs/DEAD_STOCK_DETECTION.md`,
-page at `/ai/slow-moving/`):
-- Documented logic: rule-based, no ML. `fast` = sold recently + turnover
-  above threshold; `slow` = last sold between `slow_moving_threshold_days`
-  (default 60) and `dead_stock_threshold_days` (default 180) days ago;
-  `dead` = beyond 180 days or never sold. Runs daily via Celery, plus
-  reactively after every completed sale via a `post_save` signal.
-- Actual implementation: `slow_moving.html` shows a hardcoded 11-row table
-  with `data-classification` attributes, a Chart.js doughnut
-  (`[1142, 118, 24]` fast/slow/dead), and recommendation text **adapted
-  from the actual sentence templates in the documented `classifier.py`**
-  (not invented copy) — except the never-sold case, where the doc's
-  `days_since = 9999` sentinel is deliberately **not** reproduced verbatim
-  ("No recorded sales..." is shown instead of "...9999 days...") since
-  leaking an internal sentinel value would look like a bug in a production
-  UI. This is a recorded, deliberate deviation — not an oversight.
-- A pre-existing inconsistency was found and only partially fixed: the
-  older `dashboard/dashboard.html` mock preview table mislabels some items
-  against the documented 60/180-day thresholds (e.g., a 142-day-old item
-  shown as "Dead stock" when the docs say that's "Slow-moving"). The new
-  `slow_moving.html` page uses corrected labels for the same product
-  names/day-values; `dashboard.html` itself was left as-is (out of scope
-  at the time, still a latent inconsistency — see §12).
+**Slow-Moving & Dead Stock Detection — real as of Backend Phase 10**
+(`docs/DEAD_STOCK_DETECTION.md`, page at `/ai/slow-moving/`,
+`frontend/classification.py`):
+- Rule-based, no ML, exactly as documented: `fast` = sold recently
+  (turnover is computed and shown for context but is not a gate — the
+  doc's own Design Notes revision #2, matched not re-litigated); `slow` =
+  last sold between `slow_moving_threshold_days` (default 60) and
+  `dead_stock_threshold_days` (default 180) days ago, read from
+  `SystemSettings`, never hardcoded; `dead` = beyond that or never sold.
+  No Celery (not installed) — runs synchronously, either from
+  `SaleService.approve_sale()`/`cancel_sale()` (one product) or the manual
+  "Run classification now" button (all active products). Full rejection
+  reasoning for the documented `post_save` signal, the two further
+  translations (Dhaka-not-UTC "today," the real `SaleStatus.COMPLETED`
+  constant), the bulk-seed reclassification-volume finding, and a real
+  `turnover_rate` overflow bug found and fixed along the way — all in §13.
+- `slow_moving.html` renders a real `InventoryClassification` queryset
+  (was an 11-row hardcoded mock); the doughnut chart and KPI tiles read
+  real fast/slow/dead counts; filters stay client-side (`table-filter.js`,
+  unchanged) since the page is a bounded, non-paginated list. The
+  never-sold case still shows "No recorded sales..." rather than the
+  doc's internal `9999` sentinel — the same deliberate UI-copy decision
+  from before Phase 10, now proven by a live test, not just carried
+  forward as an assumption.
+- The pre-existing `dashboard/dashboard.html` mock preview inconsistency
+  noted below Phase 10 remains unchanged (still out of scope, see §12) —
+  Phase 10 only touched `slow_moving.html`.
+- DRF: `ClassificationListAPIView`/`ClassificationSummaryAPIView`
+  (read-only, `IsSupervisorOrAbove`) — the one slice Phase 9 pre-committed
+  to this phase. Full detail in §13.
 
-**Pending (100% of the real AI work)**: actual model training code, actual
-Celery tasks, actually persisting to the now-existing `DemandForecast`/
-`InventoryClassification` models (which requires migrations first), actual
-signal-based reclassification, everything.
+**Still pending**: Demand Forecasting's actual model training code,
+actual Celery tasks/Beat schedule for either AI feature, and persisting to
+`DemandForecast` — all Phase 11.
 
 ---
 
@@ -2821,6 +2828,371 @@ inert but undeleted for the same reason.
   other EMAIL_* keys with empty-string-safe defaults (`EMAIL_HOST_USER`/
   `EMAIL_HOST_PASSWORD`) stay as blank lines, since blank is genuinely
   equivalent to absent for those two specifically.
+- **`seed_dev_data.py` backdates its ledger via a queryset-level
+  `InventoryMovement.objects.filter(...).update(created_at=...)` (Phase
+  9.5) — deliberately bypassing both `auto_now_add` and BUG-20's own
+  immutability guard.** This exists so Phases 10/11 (AI demand
+  forecasting, slow-moving/dead-stock classification) have real data
+  spanning the 60/180-day thresholds and a real `stockout_flag`-triggering
+  window to be right or wrong about — the dev DB otherwise has every row
+  dated "today" (every seeded sale/movement created within the same few
+  real seconds). **This is DEBUG-guarded dev-fixture mutation, not a
+  production code path.** `InventoryMovement.save()`'s `if self.pk: raise
+  PermissionError` guard (BUG-20) is completely untouched — `.update()`
+  bypasses `save()` by design (it goes straight to SQL), which is exactly
+  why it's the only way to do this at all, not a workaround discovered by
+  accident. No application code outside this one management command gains
+  the ability to mutate a movement row. **Any future `.update()` call
+  against `InventoryMovement` outside a seed command is a bug, not
+  precedent set by this file** — flagged explicitly so it doesn't get
+  cited as "we already do this elsewhere" later.
+  Two related, smaller Phase 9.5 disclosures on the same file:
+  (a) `PurchaseOrder._generate_po_number()`/`SaleTransaction.
+  _generate_invoice_number()`'s 4-digit random suffix (no collision-retry
+  loop, already disclosed as a known limitation alongside BUG-47) hit real
+  birthday-paradox collisions at this seed's volume — every PO/sale is
+  created within the same few seconds of real wall-clock time regardless
+  of which historical date it's backdated to afterward, so ~200+ rows draw
+  from the same "today" 9000-value number space. Fixed with a retry loop
+  in the seed command only (`_new_po()`/`_new_sale()`); the real generator
+  in `models.py` is untouched — this is seed-volume-specific, not a
+  latent production bug (no real deployment creates hundreds of POs/sales
+  in the same few seconds). (b) `SystemSettings.email_notifications_enabled`
+  is force-set to `False` before any bulk purchase/sale is created (~250+
+  approval-type events, each of which would otherwise fire a real
+  synchronous `send_mail()` per `frontend/notifications.py`'s
+  `_maybe_send_email()`) and left off after seeding; an admin can
+  re-enable it from the Settings page. In-app `Notification` rows are
+  unaffected, only the email side effect.
+- **Part A's premise (Phase 9.5 task spec) — that `SaleTransaction.save()`/
+  `PurchaseOrder.save()` needed changing from unconditional date
+  assignment to "assign only if unset" — did not match the actual code,
+  checked before changing anything.** Both already read `if self.
+  transaction_date is None: ...` / `if self.order_date is None: ...`
+  (this was already true going into Phase 9.5; BUG-47's Phase 8.99 fix
+  happened to write it this way, not for backdating purposes — TIME_ZONE
+  correctness was the only goal at the time). No model change was made.
+  `ExplicitDateAssignmentTests` (`frontend/tests.py`) proves the
+  consequence that matters — a caller that constructs the model with the
+  field already populated gets that exact value, not "today" — which is
+  the whole mechanism `seed_dev_data.py` relies on. Confirmed separately
+  (Part A step 2) that this is a capability, not a hole: `PurchaseOrderForm`/
+  `SaleTransactionForm.Meta.fields` never list `order_date`/
+  `transaction_date`/`approved_at`, and every real view path only ever
+  passes form `cleaned_data` into the service layer — a crafted POST
+  cannot inject a date. `approved_at` (`PurchaseOrder`/`SaleTransaction`/
+  `InventoryAdjustment`) is set unconditionally to `timezone.now()`
+  *inside* `PurchaseService.approve()`/`SaleService.approve_sale()`/
+  `AdjustmentService.approve()` — not via `save()`/`auto_now` — and was
+  deliberately left that way (no service-layer date parameter added, per
+  this task's own explicit instruction); the seed calls the real service
+  method for its real business logic, then does an ordinary
+  `.save(update_fields=['approved_at'])` afterward. This isn't a bypass of
+  anything — `approved_at` carries no immutability guard the way
+  `InventoryMovement`'s fields do — so unlike the ledger-backdating
+  finding above, it needed no disclosure of its own.
+- **`docs/DEMAND_FORECASTING.md`'s `get_sales_dataframe()` reference code
+  has no `transaction__status='completed'` filter at all, unlike
+  `docs/DEAD_STOCK_DETECTION.md`'s `get_last_sold_date()`/
+  `calculate_turnover_rate()`, which both filter on it explicitly (Phase
+  9.5 finding, while building non-completed seed records to prove "AI
+  queries exclude them" per that phase's own Verification step).** Not
+  fixed here — Phase 10's forecaster doesn't exist yet, and this file's
+  scope is data only, not classifier/forecaster code. Flagged for whoever
+  implements Phase 10: as literally documented, `get_sales_dataframe()`
+  would include `SaleItem` rows from draft/pending/rejected/cancelled
+  sales too (they all have real `SaleItem` rows from
+  `SaleService.create_sale()` regardless of whether the sale ever gets
+  approved), inflating demand. The seed's non-completed sales (3 pending,
+  2 rejected, 2 cancelled) deliberately sit on cohort products that
+  already have a stable, separately-measured last-sold date specifically
+  so this gap is visible/testable the moment Phase 10 is built, not
+  discovered later against production data.
+- **Part D (Phase 9.5) — `transaction_date` (not `approved_at`) stays the
+  field both AI docs key off; not changed.** A draft-to-approval gap is
+  real (`transaction_date` is stamped at draft creation, `approved_at` at
+  approval, and nothing in this codebase bounds how long a sale can sit
+  PENDING in between) but is judged noise-level at the granularities both
+  features actually use: weekly/monthly aggregation for forecasting, and
+  60/180-*day* thresholds for classification. A sale drafted Sunday night
+  and approved Monday can shift one unit of demand into an adjacent
+  weekly bucket; it essentially never moves `days_since_last_sale` across
+  a 60- or 180-day boundary. `transaction_date` is also the semantically
+  right field regardless of the gap's size — it's the business's record
+  of when the sale happened, not of when the internal approval paperwork
+  caught up; `approved_at` reflects workflow timing, not demand timing.
+  Both AI docs already specify `transaction_date` as the join key, so
+  switching would mean editing two reference-code specs to fix a skew
+  smaller than the noise real sales data has anyway. Revisit only if this
+  system is ever extended to allow long-pending (multi-week) approval
+  queues, which would be a process problem worth its own fix regardless
+  of which date field forecasting reads.
+- **Backend Phase 10 — the documented `post_save(SaleTransaction)`
+  reclassification signal was rejected; an explicit synchronous call at
+  the end of `SaleService.approve_sale()`/`cancel_sale()` was used
+  instead.** Verified both of the task's suspected reasons against the
+  actual code before deciding: (1) `create_sale()`'s very first
+  `SaleTransaction.objects.create(...)` fires `post_save` before any
+  `SaleItem` exists (they're created in the loop immediately after) —
+  true, but harmless in isolation, since a naive `if instance.status ==
+  'completed'` guard would already skip that save (status defaults to
+  DRAFT). (2) The real problem is architectural, not timing: a signal
+  fires on *every* save of the model — create, submit, approve, reject,
+  cancel, roughly 3-5 saves per sale lifecycle — and correctness would
+  depend entirely on an incidental status-string check getting it right,
+  not on the signal genuinely being scoped to "stock just moved." It also
+  can't cover `cancel_sale()` at all without a second condition (`status
+  == 'completed' OR status == 'cancelled'`), silently grows every time a
+  new save-triggering transition is added, and lives in a separate
+  `signals.py` a reader of `services.py` — where every other real
+  business event in this app is already legible — would have no reason to
+  know exists (this project's established explicit-call-sites discipline:
+  `notify_user()`/`notify_supervisors()` are already "the ONLY code path
+  allowed to create Notification rows," not a signal either).
+  **Bulk-seed volume, checked and disclosed as asked:** `seed_dev_data.py`
+  calls `approve_sale()` ~180+ times per run, each one now firing a real
+  `classify_product()` call against whatever the DB looks like at that
+  exact moment in real execution time — which is *not yet backdated* (the
+  seed's own backdating follow-up runs after each service call returns).
+  Every one of those ~180 intermediate classifications is computed
+  against wrong (not-yet-backdated) dates and gets silently overwritten
+  by the next real event for that product; only a final
+  `run_full_classification()` call, added to the very end of the seed
+  command after every date in the dataset is already correct, produces
+  the classification state the Phase 9.5 cohort table was built to prove.
+  Confirmed live: 177 `AI_PRODUCT_RECLASSIFIED` audit rows from one seed
+  run, all superseded by the closing pass. Not "thousands," but real, and
+  the seed would produce a wrong final dataset without the closing call.
+  **`cancel_sale()`'s reclassification is a same-result no-op by design,
+  included anyway per the task's explicit instruction.** `cancel_sale()`
+  only ever runs on DRAFT/PENDING sales (8.99c) — pre-approval, so no
+  stock has moved and no `SaleItem` there has ever counted toward
+  `get_last_sold_date()`/`calculate_turnover_rate()` (both filter
+  `status=COMPLETED`); `classify_product()` will recompute the exact
+  result it already has. Kept for a genuine reason, not just compliance:
+  keeps `classified_at` a real "last touched" timestamp, costs one cheap
+  query per line item, and needs no future code change if a
+  classification signal ever does start reading non-completed sales. No
+  `AI_PRODUCT_RECLASSIFIED` audit row is logged for this path specifically
+  — logging a "reclassified" entry for a call that changes nothing would
+  be audit-log noise, not a real event.
+  **Two further translations, both disclosed:** `classify_product()`'s
+  `today = timezone.now().date()` (UTC calendar date) → `timezone.
+  localdate()` (Asia/Dhaka) — same class of bug as BUG-47, proven by a
+  test where the classification genuinely flips (SLOW vs FAST) depending
+  on which "today" is used. The doc's bare `'completed'` string literal →
+  `SaleStatus.COMPLETED`, the real enum this codebase reads everywhere
+  else (identical value, not a behavior change).
+  **DRF slice (Phase 9's pre-commitment, built here):**
+  `ClassificationListAPIView`/`ClassificationSummaryAPIView`, one new
+  permission class (`IsSupervisorOrAbove`, matching the
+  `SupervisorRequiredMixin` gate already on the page), `frontend/
+  serializers.py`'s `InventoryClassificationSerializer` used verbatim from
+  the doc — every field it names matched the real model with no
+  adjustment needed. `djangorestframework==3.18.0` installed (was not
+  installed before this phase — Phase 9 confirmed DRF wasn't in
+  `requirements.txt`). `RunClassificationAPIView` deliberately not built
+  — it `.delay()`s a Celery task and Celery isn't installed; the manual
+  "Run classification now" POST (`SlowMovingDeadStockView.post()`,
+  guarded by the same `SupervisorRequiredMixin` the GET already had —
+  not re-added, not changed) is the only trigger. The doc's
+  slow/dead supervisor notifications, documented as living inside that
+  same un-built Celery task, are fired from the manual Run view instead
+  via `notify_supervisors()` — the REQ-covered behavior isn't lost to a
+  host that was never going to exist.
+  **`AI_PRODUCT_RECLASSIFIED` added to `audit.py`** — named in
+  `DEAD_STOCK_DETECTION.md`'s own Audit Actions table alongside
+  `AI_CLASSIFICATION_RUN`/`AI_CLASSIFICATION_FAILED` (both of which
+  already existed in `audit.py` before this phase) but never added when
+  those two were.
+  **A real bug found while testing the `calculate_average_stock()` fix,
+  not asked for but disclosed and fixed**: `calculate_turnover_rate()`'s
+  `total_sold / avg_stock` has no ceiling, and `InventoryClassification.
+  turnover_rate` is `DecimalField(max_digits=8, decimal_places=4)` — a
+  hard ceiling of 9999.9999. A product whose entire stock history
+  (received, then sold) falls within a tiny slice of the 90-day window
+  drives `avg_stock` toward zero and the ratio into the billions,
+  overflowing the field outright (a real `DataError` crash, proven by a
+  test that approves a sale moments after the product's own initial stock
+  receipt — exactly the shape a brand-new, fast-selling product would
+  produce in real usage, not just a test artifact). Capped at the field's
+  own ceiling in `calculate_turnover_rate()`; turnover is informational
+  only, never a classification gate, so capping it changes no
+  classification outcome. Documented as the Design Notes' 4th disclosed
+  revision alongside the 3rd (the `calculate_average_stock()` fix itself)
+  directly in `docs/DEAD_STOCK_DETECTION.md`, matching that doc's own
+  established self-correcting convention — unlike `TECH_STACK.md`/
+  `API_CONTRACTS.md` (left untouched per Phase 9's finding), this doc
+  explicitly hosts its own revision history inline.
+- **Backend Phase 11: Demand Forecasting — real pipeline
+  (`frontend/forecasting.py`), implementing `DEMAND_FORECASTING.md`'s own
+  7 disclosed Design Notes revisions (HistGradientBoostingRegressor,
+  chronological split, two-tier model selection, category_id/
+  stockout_flag features, the lag-shift fix, backtest-residual
+  confidence, `backfill_actual_demand()`) plus real bugs found while
+  building against pandas 3.0.5 and this project's real seeded data —
+  none of them anticipated by the doc, all found by actually running the
+  code against real data rather than trusting it as written.**
+  1. **`get_sales_dataframe()`'s date column was silently never
+  converted.** The reference code assigns the *converted* datetime into a
+  new `transaction_date` column, then renames the *original,
+  still-object-dtype* `transaction__transaction_date` column to `date` —
+  the column `build_features()` actually indexes on. `date` stayed
+  object-dtype the whole time; harmless-looking until `df.set_index(
+  'date').resample()`, which requires a genuine DatetimeIndex. pandas
+  3.0.5 (installed here) raises `TypeError` loudly; this bug doesn't
+  depend on that version, only its symptom's loudness does. Fixed:
+  rename first, convert the correctly-named column in place, no second
+  column. Pinned by `test_get_sales_dataframe_date_column_is_real_datetime`.
+  2. **A tz-aware/tz-naive merge failure in `get_stockout_flags()`.**
+  `InventoryMovement.created_at` is a `DateTimeField` (timezone-aware,
+  `USE_TZ=True`); `SaleTransaction.transaction_date` is a plain
+  `DateField`. Feeding the former straight into `pd.to_datetime()`
+  produces a tz-*aware* index; `build_features()`'s sales-side
+  `period_start` is tz-*naive*. `merge()`-ing the two raises
+  `ValueError` on pandas 3.0 ("You are trying to merge on datetime64[s]
+  and datetime64[us, UTC] columns"), not a silent misjoin. Fixed the
+  same way BUG-47 fixed an unrelated date bug: `timezone.localtime(dt)
+  .date()` before comparing, tz-naive on both sides and the correct
+  Asia/Dhaka calendar day besides.
+  3. **pandas 3.0 removed the bare `'M'` resample alias** ("'M' is no
+  longer supported for offsets. Please use 'ME' instead") — a real,
+  version-specific breaking change, not documented anywhere. The public
+  API of every function in this module still speaks `'W'`/`'M'` (
+  `ForecastPeriod`'s own vocabulary); only the internal `.resample()`
+  call needed the translation (`_RESAMPLE_ALIAS = {'W': 'W', 'M': 'ME'}`).
+  `predict_demand()`'s own `freq='MS'` (Month Start, a different, still-
+  valid alias for stepping `period_start` forward) was unaffected.
+  4. **A pandas 3.0.5 `reset_index()` column-naming assumption
+  (`get_stockout_flags()`'s `rename(columns={'index': ..., 0: ...})`)
+  was verified empirically before relying on it, per this phase's own
+  instruction** — confirmed correct for this version (an unnamed Series
+  with an unnamed DatetimeIndex resets to columns `['index', 0]`,
+  exactly as the doc assumes), not taken on faith.
+  5. **Phase 9.5's stockout cohort needed more pre-stockout runway —
+  found here, fixed in `seed_dev_data.py`, not a pipeline bug.**
+  `get_stockout_flags()` computed the right day and flag in isolation
+  (proven by `test_stockout_flag_computed_correctly_in_isolation`), but
+  the merge into `build_features()` silently dropped it: the stockout
+  fell inside the first ~4 weekly buckets of that product's *entire*
+  sales history, and `dropna()` (`lag_4` needs 4 prior periods) trims
+  exactly those buckets regardless of what's in them. `_build_stockout()`
+  now puts 6 sales (~7 weekly buckets) ahead of the stockout instead of
+  3, so the dropna() burn-in eats only leading weeks, not the stockout
+  week itself. Re-verified against the real seed: `stockout_flag == 1`
+  survives into training features for both stockout-cohort products.
+  6. **`run_full_forecast()` trains 'W' and 'M' independently, not
+  as an all-or-nothing pair — found by testing, not documented.**
+  `train_model()`'s own `len(df_features) < 10` guard is far harder to
+  satisfy for monthly resampling than weekly (a product needs roughly 14
+  months of history, pooled across products, before monthly rows survive
+  `dropna()` at all) — a system with solid weekly history but not yet
+  enough monthly history would otherwise lose its perfectly valid weekly
+  forecasts too, since the original design raised on the first failing
+  `train_model()` call before either period's forecasts were generated.
+  Each period's training failure is now caught independently
+  (`periods_trained`/`training_errors` in the returned summary); only
+  raises if *neither* period can train. Real seed data (Phase 9.5) trains
+  both periods successfully (MAE ≈ 3.2 weekly, ≈ 12.5 monthly) — this
+  matters for a newer/smaller install, not this project's own dataset.
+  7. **A cosmetic sklearn `UserWarning` ("X does not have valid feature
+  names, but OrdinalEncoder was fitted with feature names") on every
+  single forecast** — `train_model()` fits on a DataFrame (named
+  columns), `predict_demand()` predicted from a bare array. Fixed by
+  predicting from a `DataFrame` with the same `FEATURE_COLUMNS`; no
+  behavioral change, just stops what would be log spam in production.
+  8. **`DemandForecastSerializer` isn't defined anywhere in
+  `DEMAND_FORECASTING.md`** (referenced by name in the API Views section,
+  unlike `InventoryClassificationSerializer`'s full "## Serializer"
+  section in the sibling doc) — built following that same
+  product_name/product_sku-plus-real-fields shape, since nothing about
+  `DemandForecast`'s own fields suggested a different one.
+  9. **Two honest, non-bug characterizations, not overclaimed as
+  clean wins.** The trending cohort's actual `predict_demand()` output
+  oscillates (e.g. 6.7 → 14.27 → 7.91 → 12.72 units/week for Portable
+  Power Bank) rather than rising monotonically — the lag-rotation logic
+  is verified correct (Design Note 5), and the values sit well above
+  that product's own early-history baseline, but tree ensembles
+  (`HistGradientBoostingRegressor` included) fundamentally cannot
+  extrapolate past values seen in training; Design Note 1's claim is
+  that HGB generally outperforms `RandomForestRegressor` on tabular
+  data and supports native categorical features, not that it solves
+  non-extrapolation outright. Separately, several different products'
+  *furthest*-ahead monthly forecasts converge to identical values — a
+  real characteristic of a pooled model trained on sparse monthly data
+  (each product has at most a few months of real history in this seed),
+  not a code defect; not chased further given the seed's own modest
+  scale.
+  10. **Model persistence (`ai_models/`, local disk via `joblib`) makes
+  an ephemeral production disk survivable, at a real cost — noted, no
+  production storage decision made here.** `predict_demand()`'s
+  `except FileNotFoundError: train_model(...)` fallback is proven
+  end-to-end by `test_predict_demand_auto_trains_when_model_file_missing`
+  (delete the file, call predict, it retrains inline and returns real
+  predictions, no 500) — this means a Render-style redeploy that wipes
+  `ai_models/` degrades to "the first forecast request after a redeploy
+  is slow" rather than "forecasting breaks," but every subsequent
+  request until the *next* redeploy still hits a cold-started model file
+  with no cross-request caching benefit beyond that first request. No
+  persistent volume / object storage wiring is in scope here — flagged
+  for whenever production deployment (Phase D, per `ENVIRONMENT.md`) is
+  addressed for real.
+  11. **DRF: `ForecastListAPIView`/`ForecastSummaryAPIView` (Phase 9's
+  second pre-committed slice), reusing Phase 10's one permission class
+  (`IsSupervisorOrAbove`) — no new permission class added.**
+  `RunForecastAPIView`/`ProductForecastAPIView` deliberately not built
+  (Celery; not needed for this phase's own verification, respectively).
+
+- **Phase 11.5 extends the Phase 9.5 seed-only ledger-backdating disclosure
+  above to a much larger dataset (20 → 43 products, ~30 → ~55 weeks of
+  history on every forecastable cohort) — same mechanism, same
+  DEBUG-guard, same untouched `InventoryMovement.save()` guard, nothing
+  new to disclose about *how* it backdates.** What's new: 5 demand-pattern
+  cohorts (`trending` extended from 2→5 products; `trending_down`,
+  `seasonal`, `steady`, `spiky` added, 4-7 products each), each generated
+  from an explicit shape — base level + linear trend and/or a sinusoidal
+  seasonal term + bounded noise (`_weekly_series()`) — not a random walk,
+  so the forecaster's recovery of each shape could be checked directly
+  rather than assumed. All 8 original Phase 9.5 cohorts are unchanged in
+  shape and re-verified: same classification outcomes, same collision-
+  retry/coherence/idempotency guarantees. A new `_stock_and_sell()` helper
+  replaced the old hand-picked two-receive schedule for every
+  history-heavy cohort (three receives, each sized at 55% of that
+  product's own total generated demand) — a fixed schedule doesn't scale
+  once a product's year-long total demand isn't known until its shaped
+  series is actually generated; verified no `InsufficientStock`-class
+  error occurred across a full run. Result: 40 of 43 products now forecast
+  (vs. Phase 11's 17 of 20) — the 3 non-forecastable products are the same
+  *kind* of gap as before (2 never-sold, 1 short-history-only), not a new
+  one; every genuinely patterned product now clears `build_features()`'s
+  dropna() burn-in with 45-52 training rows (vs. as few as 6-9 for the
+  smaller Phase 9.5 trending pair).
+- **A genuine `predict_demand()` bug, exposed by this phase's richer data,
+  reported here rather than fixed (out of this phase's scope — seed data
+  only).** Single-step-ahead forecasts correctly recover every cohort's
+  shape (trending-up step-1 predictions land at/above each product's own
+  recent average; trending-down at/below; steady stays close to its flat
+  recent level; spiky comes in elevated but bounded) — the seed's signal
+  is real and learnable. But `predict_demand()`'s recursive multi-step
+  loop (frontend/forecasting.py, the `for i in range(1, periods_ahead+1)`
+  block) only rotates `lag_1..lag_4` and recomputes `rolling_avg_4` each
+  step; `period_num`, `rolling_std_4`, `category_id`, and `stockout_flag`
+  are copied once from the last real row and never advance across steps
+  2-4. Design Notes revision #5 (Phase 11) correctly stopped scrambling
+  these into the *wrong* feature slots (the original `np.roll()` bug) but
+  never added the missing advancement of `period_num` — every forecasted
+  step after the first is scored with a stale temporal-position feature
+  the model never saw paired with that step's lag values during training,
+  which plausibly explains the non-monotonic, sometimes direction-
+  reversing sequences observed in the weekly trend chart (e.g. one
+  trending-down product's forecast rising from 2.46 to 4.84 units/week
+  over its own 4-period horizon). Phase 11's own item 9 above attributed
+  similar oscillation entirely to tree ensembles' inability to extrapolate
+  past training values — that ceiling is real and unrelated to this, but
+  this frozen-`period_num` gap is a separate, narrower, and fixable code
+  issue this phase's wider variety of trending/seasonal cohorts made
+  visible for the first time. Not patched here per this phase's explicit
+  scope (seed data only); flagged for a future forecasting.py phase.
 
 ---
 
@@ -4794,6 +5166,122 @@ session history, not `git log`:
     pages load (`200`) and both nav links render. 8 new tests
     (`AIPageAccessTests`) + 1 more on the existing `DashboardViewTests` —
     281/281 → 287/287 passing.
+62. **Phase 9.5: seed_dev_data.py rebuilt into a large, deliberately-
+    backdated dataset (20 products across 8 cohorts — fast/slow/dead/
+    never-sold/short-history/stockout/trending — plus pending/rejected/
+    cancelled records) so Phases 10/11 have real data to be right or
+    wrong about.** Full reasoning and disclosure in §13 (Part A's premise
+    correction, the InventoryMovement `.update()` ledger-backdating escape
+    hatch, the PO/invoice-number collision-retry addition, the
+    `get_sales_dataframe()` status-filter gap found in
+    `DEMAND_FORECASTING.md`, and the `transaction_date`-vs-`approved_at`
+    recommendation). Stock/sales still go entirely through the real
+    service layer (`PurchaseService`/`SaleService`/`InventoryService`) —
+    only timestamps on rows that already went through that real path are
+    corrected afterward. Verified live: all 20 cohort placements land
+    exactly where intended (measured against the DB, not assumed), the
+    dataset's own coherence check (`approved_at` never before its
+    transaction/order date, never in the future) passes, `manage.py test`
+    290/290 (287 + 3 new `ExplicitDateAssignmentTests`), idempotent across
+    two full flush+reseed runs, and refuses under `DEBUG=False`. Dashboard/
+    Inventory/Movement History/Sales/Purchases/Reports all confirmed
+    rendering correctly against the new volume (Dashboard's 6-month
+    "Inventory movement" chart now shows a real curve instead of a flat
+    line; Reports' Phase 8.99c "Reason" column shows real cancelled/
+    rejected text).
+63. **Backend Phase 10: Slow-Moving & Dead Stock Detection — real rule-
+    based classifier, no ML, verified against Phase 9.5's cohorts.**
+    `frontend/classification.py` (new): `calculate_average_stock()`/
+    `calculate_turnover_rate()`/`get_last_sold_date()`/`classify_product()`/
+    `run_full_classification()`, translated from `DEAD_STOCK_DETECTION.md`
+    with a 3rd disclosed doc revision (the start-of-window fallback bug)
+    and a 4th found while testing it (a real `turnover_rate` field
+    overflow) — full reasoning in §13 and in the doc's own Design Notes.
+    Reclassification wired as an explicit synchronous call at the end of
+    `SaleService.approve_sale()`/`cancel_sale()`, not the documented
+    `post_save` signal — rejected with reasoning, not just translated
+    (§13). `slow_moving.html` now renders a real queryset (was an 11-row
+    mock); Run button POSTs for real via `row-actions.js` + an extended
+    (backward-compatible) `async-run-button.js`. Phase 8.99j's
+    `SupervisorRequiredMixin` gate (BUG-43) confirmed intact, not
+    re-added — both GET and POST inherit it from the class. DRF: the one
+    slice Phase 9 pre-committed here (`ClassificationListAPIView`/
+    `ClassificationSummaryAPIView`, `IsSupervisorOrAbove`,
+    `djangorestframework` installed for the first time this phase) — no
+    other endpoint touched. Verified live: all 20 Phase 9.5 cohorts
+    classify exactly as intended (including the exact-60/exact-180-day
+    boundary products), pending/rejected/cancelled sales confirmed
+    excluded (a product's pending sale today didn't mask its real 75-179-
+    day-old completed-sale classification), never-sold shows "No recorded
+    sales" not `9999`, approving a pending sale reclassifies live with no
+    manual Run, the Reports "AI Classification" export produces real rows
+    for the first time, and `manage.py test` 312/312 (290 + 22 new).
+64. **Backend Phase 11: Demand Forecasting — real pipeline
+    (`frontend/forecasting.py`), the heavier of the two AI phases; the
+    reference pipeline itself was revised 7 ways before any of this
+    started.** `pandas`/`scikit-learn`/`joblib` installed for the first
+    time (`requirements.txt`, same disclosed-gap treatment as Pillow/
+    BUG-10). Implements `DEMAND_FORECASTING.md`'s current (not original
+    3-tier) pipeline: `HistGradientBoostingRegressor`, chronological
+    train/test split, category_id + stockout_flag features, the
+    corrected multi-step lag rotation, backtest-residual confidence,
+    `backfill_actual_demand()`. Found and fixed 6 real bugs while
+    building against pandas 3.0.5 (a major version, installed here) and
+    this project's real seeded data — none anticipated by the doc, all
+    disclosed in §13: a silently-discarded datetime conversion in
+    `get_sales_dataframe()`, a tz-aware/tz-naive merge failure in
+    `get_stockout_flags()`, pandas 3.0's removal of the bare `'M'`
+    resample alias, Phase 9.5's stockout cohort needing more pre-stockout
+    runway (a seed-data fix, not a pipeline one), `run_full_forecast()`
+    needing independent per-period training (a real robustness gap found
+    by testing, not documented), and a cosmetic sklearn feature-name
+    warning. Reclassification-equivalent wiring: none needed this
+    phase — forecasting has no per-sale hook, only the manual Run.
+    `forecasting.html` now renders real `DemandForecast` data (was a
+    static `TREND_DATA`/table mock); Run button POSTs for real via the
+    same `row-actions.js` + extended `async-run-button.js` pattern
+    Phase 10 established; "How this forecast works" corrected from the
+    stale 3-tier copy to the real 2-tier (skip / pooled model). Phase
+    8.99j's `SupervisorRequiredMixin` gate confirmed intact, not
+    re-added. DRF: the second slice Phase 9 pre-committed
+    (`ForecastListAPIView`/`ForecastSummaryAPIView`), reusing Phase 10's
+    one permission class — no new one added. Verified live against Phase
+    9.5's cohorts: short-history and never-sold products correctly
+    skipped (no row, no error), the stockout cohort's `stockout_flag`
+    confirmed surviving into training features, `predict_demand()`'s
+    auto-train-on-missing-file fallback proven end-to-end, backfill
+    correctly leaves not-yet-elapsed forecasts alone, the Reports "AI
+    Forecast" export produces real rows for the first time, and
+    `manage.py test` 333/333 (312 + 21 new).
+65. **Phase 11.5: expanded the Phase 9.5 seed for model quality — 20 → 43
+    products, ~30 → ~55 weeks of history on every forecastable cohort, 4
+    new demand-pattern cohorts (`trending_down`, `seasonal`, `steady`,
+    `spiky`) added and `trending` grown from 2 → 5 products, each built
+    from an explicit shape (base + trend and/or sinusoidal seasonal term +
+    bounded noise) rather than a random walk.** Same seed-only ledger-
+    backdating mechanism as Phase 9.5, extended not re-disclosed (§13); a
+    new `_stock_and_sell()` helper replaced the old fixed two-receive
+    schedule (receives now sized off each shaped series' own total
+    demand). No `forecasting.py`/`classification.py`/service/model changes
+    — seed data only, per this phase's explicit scope. Verified live: all
+    8 original Phase 9.5 cohorts unchanged (same classification outcomes,
+    same coherence/idempotency guarantees across two full flush+reseed
+    runs), 40 of 43 products now forecast vs. Phase 11's 17 of 20 (the 3
+    remaining skips are the same *kind* of gap — 2 never-sold, 1 short-
+    history — not a new one), every patterned cohort's single-step-ahead
+    forecast recovers its intended direction (trending-up/down land at/
+    near their own recent average in the right direction; steady stays
+    tight; spiky comes in elevated but bounded), and average confidence is
+    higher for steady (0.73) than spiky (0.68), matching the residual-std
+    confidence machinery's intent. `manage.py test` still 333/333 (seed
+    command isn't exercised by the suite, so nothing needed updating).
+    One real, unfixed finding reported separately (§13, not silently
+    patched): `predict_demand()`'s recursive multi-step loop never
+    advances `period_num` past the first forecasted step, which plausibly
+    explains non-monotonic multi-period sequences for trending/seasonal
+    products — distinct from Phase 11's already-documented tree-
+    extrapolation ceiling, and only made visible by this phase's wider
+    variety of longer-running patterned cohorts.
 
 ---
 
@@ -5078,3 +5566,81 @@ check`/tests can't validate in isolation — used one comprehensive commit
 sanctioned fallback. Pushed `c2807e9..7a7272b` to `origin/main` with
 nothing else queued behind it (fetch showed local exactly 1 ahead, no
 divergence).
+
+## Phase 8.99k — Real Logo + Landing Page Cleanup (2026-08-17)
+
+Replaced the placeholder `.brand-mark` gradient box (indigo→amber CSS
+gradient) with the real logo everywhere: `frontend/static/images/logo.png`
+(240×272 RGBA, chroma-keyed transparent from the source PNG which had no
+alpha channel — verified the source's near-white background was cleanly
+separable from the artwork colors before keying, no halo). All 8 template
+occurrences (`sidebar.html`, `navbar.html`, `footer.html`, `login.html`,
+4×`password_reset_*.html`) now use `<img class="brand-mark" src="{% static
+%}" alt="">`; the 5 auth-page duplicates were consolidated into one new
+`includes/auth_brand.html` include. `.brand-mark` in `components.css` lost
+its gradient background (now sizes/positions the `<img>` only). Confirmed
+via `collectstatic` under `DJANGO_DEBUG=False` that `images/logo.png`
+resolves through WhiteNoise's hashed manifest. Two unrelated gradients
+(`.avatar-stack`, `.avatar` initials) use the same indigo→amber pattern —
+left alone, they're fake-user/initials avatars, not the brand mark.
+
+Removed all "Request a demo" content from the landing page (hero CTA,
+navbar, and the whole `#contact` cta-band section + its now-orphaned
+`.cta-band` CSS and the footer's dead `#contact` link) — no view/route
+existed for it, so no backend cleanup was needed. Sole remaining CTAs
+("See how it works", "Log in") promoted from secondary/ghost to primary
+styling since they no longer sit beside a demo button.
+
+Found and fixed a real contrast bug while assessing the "dark sections
+don't fit" complaint: `--c-slate-200` (`#2d3c66`, documented in
+`tokens.css` as a *border* color) was being reused as *text* color on the
+ink-dark sections (ledger ticker, AI-split card, footer) — measured
+contrast ~1.66:1 against `--c-ink`, far below WCAG AA. Replaced with
+`color-mix(in srgb, var(--c-white) 72%, transparent)` (~9-10:1) everywhere
+it was used as text-on-dark; left it alone everywhere it's used as an
+actual border. This, not the dark backgrounds themselves, was the
+"doesn't fit the page style" issue — the ink-dark sections use the same
+token consistently and read as intentional once legible.
+
+**User follow-up, same day**: the "keep it dark, just fix contrast" call
+above was overridden — user wanted the footer and `#ai` section actually
+light, the fake user-avatar circles in the hero gone, and "Contact us"
+kept (using the user's real email, not a placeholder). Changes: removed
+`.avatar-stack` (hero-proof circles) entirely, now-orphaned CSS deleted.
+`.ai-split` background changed `--c-ink` → `--c-indigo-tint`, its "Reorder
+recommendation" card reverted from translucent-dark overlay styling to
+the plain light `.feature-card` treatment, all internal text back to
+`--c-ink`/`--c-slate`. `.site-footer` background changed `--c-ink` →
+`--c-mist` (page bg) with a `--c-slate-200` top border for separation;
+footer text/links back to `--c-slate`, hover to `--c-indigo` (matching
+`base.css`'s global link-hover convention). The ledger ticker's dark
+background was deliberately left alone (not part of the complaint, still
+a legible signature element after the earlier contrast fix). Re-added
+"Contact us" as a plain `mailto:` link in both the navbar (`nav-links`,
+not a button — no CTA-button demo replacement) and the footer's Company
+list, addressed to the user's real email — no `#contact` section was
+rebuilt, since the task only asked for a link, not the removed CTA band.
+
+**Second follow-up, same day**: footer called "flat," navbar's "Contact
+us" needed to scroll to the footer (not fire `mailto:` directly), and the
+footer needed visible contact info, not just a buried link. Changes:
+`footer.html` gets `id="contact"`; navbar's "Contact us" now links to
+`{% url 'frontend:landing' %}#contact` instead of `mailto:`. Added a new
+`icon-mail` symbol to `includes/icons.html` (reused the exact envelope
+path already used inline on the login form's username field, for
+consistency). Added a visible `.footer-contact-card` in the footer's
+brand column — white card, mail icon, "Get in touch" + the real email as
+clickable text — and removed the now-redundant "Contact us" li from the
+Company link list. For "eye-catching, not flat": `.site-footer` background
+changed `--c-mist` → `--c-indigo-tint` (footer no longer blends into the
+page background) plus a 4px `::before` gradient accent bar
+(`--c-indigo`→`--c-amber`, a callback to the original brand-mark gradient,
+now repurposed as decoration). Added `scroll-margin-top: var(--header-h)`
+to the general `section` rule and to `.site-footer` so anchor-scrolling
+(to `#features`/`#ai`/`#contact`) isn't obscured by the sticky navbar —
+this was a pre-existing gap for `#features`/`#ai` too, fixed for free.
+Verified the click-to-scroll behavior with Playwright: clicking "Contact
+us" lands on a fully-visible footer (it's the last element on the page,
+so the browser clamps to max-scroll rather than the full scroll-margin
+offset — expected, not a bug, confirmed by checking `document.scrollHeight`
+against the resulting `scrollY`).

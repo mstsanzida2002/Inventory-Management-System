@@ -25,6 +25,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from frontend import audit
+from frontend.classification import classify_product
 from frontend.models import (
     AdjustmentStatus,
     AdjustmentType,
@@ -38,6 +39,7 @@ from frontend.models import (
     SaleItem,
     SaleStatus,
     SaleTransaction,
+    SystemSettings,
 )
 from frontend.notifications import notify_supervisors, notify_user
 from frontend.pricing import calculate_line_total
@@ -485,6 +487,23 @@ class SaleService:
             link=f'/sales/',
         )
         audit.log_action(approved_by, audit.SALE_APPROVED, 'sales', affected_id=sale.pk, status='success')
+
+        # Phase 10 — explicit synchronous call, not the documented
+        # post_save(SaleTransaction) signal (docs/project_memory.md §13
+        # has the full rejection reasoning). This is the one real moment a
+        # sale changes a product's classification-relevant history: items
+        # already exist (fetched above) and stock has already moved
+        # (decrease_stock() already ran, above). One settings fetch shared
+        # across every line item, not one per item.
+        classification_settings = SystemSettings.get_settings()
+        for item in items:
+            classify_product(item.product, settings_obj=classification_settings)
+            audit.log_action(
+                approved_by, audit.AI_PRODUCT_RECLASSIFIED, 'ai_classification',
+                affected_id=item.product.pk, status='success',
+                details={'trigger': 'sale_approved', 'sale_id': sale.pk},
+            )
+
         return sale
 
     @classmethod
@@ -531,6 +550,21 @@ class SaleService:
         sale.cancelled_at = timezone.now()
         sale.save(update_fields=['status', 'cancelled_reason', 'cancelled_by', 'cancelled_at', 'updated_at'])
         audit.log_action(cancelled_by, audit.SALE_CANCELLED, 'sales', affected_id=sale.pk, status='success')
+
+        # Phase 10 — reclassify here too, per instruction. Functionally a
+        # no-op today: cancel_sale() only ever runs on DRAFT/PENDING sales
+        # (the docstring above), which never reached approve_sale(), so
+        # no stock has moved and no SaleItem here has ever counted toward
+        # get_last_sold_date()/calculate_turnover_rate() (both filter
+        # status=COMPLETED) — classify_product() will recompute the exact
+        # same result it already has. Included anyway: keeps classified_at
+        # a genuine "last touched" timestamp, costs one cheap query per
+        # line item, and needs no future code change if a classification
+        # signal ever does start reading non-completed sales.
+        classification_settings = SystemSettings.get_settings()
+        for item in sale.items.select_related('product').all():
+            classify_product(item.product, settings_obj=classification_settings)
+
         return sale
 
 

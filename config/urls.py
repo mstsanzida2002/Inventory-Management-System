@@ -14,6 +14,12 @@ urlpatterns = [
     # (verified via a full-repo grep — only a code comment in views.py
     # mentioned it), so nothing breaks.
     path("", include(("frontend.urls", "frontend"), namespace="frontend")),
+    # Phase 10 — the one DRF slice Phase 9 pre-committed (see
+    # docs/project_memory.md §13): read-only AI classification data only.
+    # Own top-level "api" namespace, not nested under "frontend" — the
+    # frontend.urls include above already claims "frontend" as both its
+    # app_namespace and instance namespace; reusing it here would collide.
+    path("api/v1/", include(("frontend.api_urls", "api"), namespace="api")),
 ]
 
 if settings.DEBUG or settings.SERVE_MEDIA_IN_PRODUCTION:

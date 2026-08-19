@@ -31,14 +31,6 @@
 .hero .lede { font-size: var(--fs-md); max-width: 46ch; margin-bottom: var(--sp-6); }
 .hero-cta { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-6); }
 .hero-proof { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); color: var(--c-slate); }
-.avatar-stack { display: flex; }
-.avatar-stack span {
-  width: 32px; height: 32px; border-radius: 50%;
-  border: 2px solid var(--c-white);
-  margin-left: -10px;
-  background: linear-gradient(135deg, var(--c-indigo), var(--c-amber));
-}
-.avatar-stack span:first-child { margin-left: 0; }
 
 /* ---- Dashboard preview mock (right side of hero) ---- */
 .preview-panel {
@@ -117,7 +109,7 @@
 .ticker-item {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  color: var(--c-slate-200);
+  color: color-mix(in srgb, var(--c-white) 72%, transparent);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -160,8 +152,7 @@
 
 /* ------------------------------------------------------------- AI split */
 .ai-split {
-  background: var(--c-ink);
-  color: var(--c-white);
+  background: var(--c-indigo-tint);
   border-radius: var(--radius-lg);
   padding: var(--sp-10);
   display: grid;
@@ -169,22 +160,11 @@
   gap: var(--sp-10);
   align-items: center;
 }
-.ai-split h2, .ai-split p { color: var(--c-white); }
-.ai-split .lede { color: var(--c-slate-200); }
+.ai-split h2 { color: var(--c-ink); }
+.ai-split .lede { color: var(--c-slate); }
 .ai-metric-row { display: flex; gap: var(--sp-5); margin-top: var(--sp-6); }
-.ai-metric .num { font-family: var(--font-mono); font-size: var(--fs-2xl); font-weight: 700; color: var(--c-amber); }
-.ai-metric .label { font-size: var(--fs-xs); color: var(--c-slate-200); }
-
-/* -------------------------------------------------------------- CTA band */
-.cta-band {
-  background: linear-gradient(135deg, var(--c-indigo), var(--c-indigo-deep));
-  border-radius: var(--radius-lg);
-  padding: var(--sp-10);
-  text-align: center;
-  color: var(--c-white);
-}
-.cta-band h2, .cta-band p { color: var(--c-white); }
-.cta-band .lede { color: rgba(255,255,255,0.85); margin-inline: auto; }
+.ai-metric .num { font-family: var(--font-mono); font-size: var(--fs-2xl); font-weight: 700; color: var(--c-indigo); }
+.ai-metric .label { font-size: var(--fs-xs); color: var(--c-slate); }
 
 @media (max-width: 900px) {
   .hero-grid, .ai-split { grid-template-columns: 1fr; }

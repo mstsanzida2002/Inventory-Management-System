@@ -4,24 +4,19 @@
   <div class="container nav">
 
     <a href="{% url 'frontend:landing' %}" class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
+      <img class="brand-mark" src="{% static 'images/logo.png' %}" alt="" aria-hidden="true">
       Stockwell
     </a>
 
     <ul class="nav-links" data-nav-links>
       <li><a href="{% url 'frontend:landing' %}#features">Features</a></li>
       <li><a href="{% url 'frontend:landing' %}#ai">AI Forecasting</a></li>
-    
-      <li><a href="{% url 'frontend:landing' %}#contact">Contact</a></li>
+      <li><a href="{% url 'frontend:landing' %}#contact">Contact us</a></li>
     </ul>
 
     <div class="nav-actions">
-      <a href="{% url 'frontend:login' %}" class="btn btn-ghost">
+      <a href="{% url 'frontend:login' %}" class="btn btn-primary">
         Log in
-      </a>
-
-      <a href="{% url 'frontend:landing' %}#contact" class="btn btn-primary">
-        Request a demo
       </a>
 
       <button

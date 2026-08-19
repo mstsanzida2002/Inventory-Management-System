@@ -81,7 +81,7 @@ textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
   clip: rect(0,0,0,0); white-space: nowrap; border: 0;
 }
 
-section { padding-block: var(--sp-12); }
+section { padding-block: var(--sp-12); scroll-margin-top: var(--header-h); }
 
 @media (max-width: 960px) {
   h1 { font-size: var(--fs-3xl); }

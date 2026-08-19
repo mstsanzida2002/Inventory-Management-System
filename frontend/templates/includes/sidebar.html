@@ -1,3 +1,4 @@
+{% load static %}
 {% comment %}
   includes/sidebar.html
   Expects `active_nav` (string) from the including page, e.g. active_nav="dashboard".
@@ -7,7 +8,7 @@
 <aside class="sidebar" id="sidebar">
 
   <div class="sidebar-brand">
-    <span class="brand-mark"></span>
+    <img class="brand-mark" src="{% static 'images/logo.png' %}" alt="">
     <div>
       <div class="sidebar-brand-name">Stockwell</div>
       <div class="sidebar-brand-sub">Smart Inventory</div>

@@ -1,14 +1,24 @@
-<footer class="site-footer">
+{% load static %}
+<footer class="site-footer" id="contact">
   <div class="container">
     <div class="footer-grid">
       <div class="footer-col">
-        <div class="brand" style="color:#fff;">
-          <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand">
+          <img class="brand-mark" src="{% static 'images/logo.png' %}" alt="" aria-hidden="true">
           Stockwell
         </div>
-        <p style="color:var(--c-slate-200); font-size:var(--fs-sm); max-width:32ch; margin-top:var(--sp-3);">
+        <p style="color:var(--c-slate); font-size:var(--fs-sm); max-width:32ch; margin-top:var(--sp-3);">
           Real-time inventory records and AI-driven forecasting for teams who can't afford to guess.
         </p>
+        <a href="mailto:mst.sanzida02@gmail.com" class="footer-contact-card">
+          <span class="footer-contact-icon" aria-hidden="true">
+            <svg class="icon" width="20" height="20" viewBox="0 0 24 24"><use href="#icon-mail"></use></svg>
+          </span>
+          <span>
+            <span class="footer-contact-label">Get in touch</span>
+            <span class="footer-contact-email">mst.sanzida02@gmail.com</span>
+          </span>
+        </a>
       </div>
       <div class="footer-col">
         <h4>Product</h4>
@@ -22,7 +32,6 @@
         <h4>Company</h4>
         <ul>
           <li><a href="#">About</a></li>
-          <li><a href="#contact">Contact</a></li>
         </ul>
       </div>
       <div class="footer-col">

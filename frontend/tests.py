@@ -1607,6 +1607,24 @@ class ProductCreateViewTests(TestCase):
         product = Product.objects.get(name='Test Gadget')
         self.assertEqual(product.current_stock, 0)
 
+    def test_blank_reorder_level_uses_system_settings_default_not_hardcoded_ten(self):
+        """BUG-67 (docs/bugsfound.md) — ProductForm.clean_reorder_level()
+        used to hard-code 10 regardless of SystemSettings.
+        default_reorder_level, so changing the admin-facing "Default
+        reorder level" setting had zero effect on new products. Proves
+        the fix by actually changing the setting away from 10 — the one
+        value that would pass even under the old, broken behaviour."""
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.default_reorder_level = 37
+        settings_obj.save()
+
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload())
+        self.assertEqual(response.status_code, 200)
+
+        product = Product.objects.get(name='Test Gadget')
+        self.assertEqual(product.reorder_level, 37)
+
 
 class ProductUpdateDeactivateViewTests(TestCase):
     """Phase 8.99e — this project's first per-entity update route.

@@ -94,8 +94,15 @@ class ProductForm(forms.ModelForm):
         return self.cleaned_data.get("unit") or UnitOfMeasurement.PIECE
 
     def clean_reorder_level(self):
+        # BUG-67 (docs/bugsfound.md) — was hardcoded to 10 (the model
+        # field's own default), completely bypassing
+        # SystemSettings.default_reorder_level: an admin could set the
+        # system-wide default to e.g. 25 and every new product left
+        # blank would still silently get 10. Now genuinely closes REQ
+        # 17.3 — the admin-configured value is what a blank field
+        # actually gets.
         value = self.cleaned_data.get("reorder_level")
-        return value if value is not None else 10
+        return value if value is not None else SystemSettings.get_settings().default_reorder_level
 
     def clean_purchase_price(self):
         value = self.cleaned_data.get("purchase_price")

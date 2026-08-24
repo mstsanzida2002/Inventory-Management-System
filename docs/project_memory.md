@@ -6884,3 +6884,236 @@ that scans every `frontend/templates/**/*.html` file for a `{#...#}`
 span containing a newline and fails the build if one is found, rather
 than relying on each session's own git-push audit to catch it after the
 fact.
+
+## Phase — Close the Audit-Log Gaps, Doc Corrections, Recovered-REQ Audit (2026-08-24)
+
+Four-part pass against `docs/bugsfound.md` BUG-65 → BUG-71's own findings.
+Full detail for every item in `docs/bugsfound.md` (BUG-65/67 updated in
+place to Closed; BUG-68/69/70 updated to Closed; BUG-75 → BUG-81 new);
+this entry covers the reasoning and the parts that didn't fit in the log.
+
+**PART A — audit-log gaps.** 4 of the 6 genuine gaps closed with one
+`log_action()` call each at an existing call site (`INVENTORY_VIEWED`,
+`SALE_INVOICE_PRINTED`, `LOW_STOCK_ALERT_SENT`, `OUT_OF_STOCK_ALERT_SENT`
+— see BUG-65). The remaining 2 (`USER_UPDATED`/`USER_ROLE_CHANGED`)
+deliberately NOT closed, per instruction — no user-edit/role-change view
+exists to log from, and building one was out of scope. Disclosed instead:
+a comment block in `frontend/audit.py` states plainly that both
+constants are unreachable, and `docs/13_AUDIT.md`'s REQ 16.3 should read
+as PARTIAL, not silently implied-complete by a defined constant that
+never fires. The 3 DRIFTED constants got the same disclosure treatment
+(comments in `audit.py`, not new code) rather than being touched.
+**Checked, not fixed:** does any settings change get audited? Yes —
+`SETTINGS_UPDATED` fires on every save, but carries no `details=` payload,
+so REQ 17.10's "configuration history" is PARTIAL — an event log exists
+(who changed settings, when), a field-level diff does not. Reported per
+instruction, not built — the user didn't ask for this one closed, only
+checked.
+
+**PART B — doc corrections (no code).** `API_CONTRACTS.md` rewritten to
+the 4 real endpoints (full serializer fields, query params, verified
+pagination shape) plus the one honest sentence. `TECH_STACK.md`'s
+Bootstrap section replaced with a "Frontend Design System" section
+documenting the real hand-built vanilla-CSS system — framed deliberately
+as the stronger claim, not an apology, per instruction. `INDEX.md`
+rebuilt from an actual `docs/` directory listing: flat file map (no
+subdirectories), the 4 named non-existent module files gone (replaced
+with a note on where those 4 features' real code lives), and 3 MORE
+non-existent files caught in the rebuild that weren't in the original
+finding (`MIGRATIONS.md`/`SERIALIZERS.md`/`PERMISSIONS.md`) — worth
+noting: "rebuild from an actual directory listing" caught more than the
+named list, which is exactly the point of doing it that way instead of
+patching the 4 named entries in place. Scheduler claim corrected
+consistently across all 5 files (`11_NOTIFICATIONS.md`,
+`DEAD_STOCK_DETECTION.md` — already done in an earlier pass —
+`DEMAND_FORECASTING.md`, `DEPLOYMENT.md`, `TECH_STACK.md`): a short
+header note in each plus the literal `CELERY_BEAT_SCHEDULE` dict removed
+from `DEMAND_FORECASTING.md` (the only file that had the literal block —
+the others only had `@shared_task`/worker-service references, corrected
+with a note rather than a full strip, since that reference code still
+has value as "here's the shape if you built it"). Single-app-divergence
+note added once, at the top of `INDEX.md`, ahead of every `apps/<name>/`
+example a reader would otherwise hit cold — not repeated per-file.
+
+**PART C — two settings phantoms.** `default_reorder_level` closed:
+`ProductForm.clean_reorder_level()` now reads
+`SystemSettings.get_settings().default_reorder_level` instead of a
+hardcoded `10` — genuinely closes REQ 17.3. Test deliberately changes
+the setting to a non-default value (37) so it would fail under the old
+behaviour, not pass by coincidence (the setting's own default happens to
+equal the old hardcoded value). `forecast_retrain_days` — already
+disclosed as BUG-66, unclosable without a scheduler (which doesn't exist
+and wasn't asked for) — left alone, not deleted, matching instruction:
+deleting hides the gap, disclosing shows it was found.
+
+**PART D — recovered-requirements audit.** `RECOVERED_REQUIREMENTS.md`
+does not exist anywhere in the accessible filesystem — same class of gap
+as BUG-71's missing `.docx` (BUG-75). Proceeded anyway on the six
+highest-suspicion items' own concrete claims, each independently
+verifiable against code regardless of the exact REQ wording:
+
+- **REQ 11.9/11.10 (dashboard AI content) — PHANTOM, confirmed, cost
+  reported, not built (per instruction).** The dashboard's own Phase
+  8.96 comment already promised this ("returns once Phase 10/11 populate
+  ... for real") and `09_DASHBOARD.md` §4d already specced the exact
+  query shape. Phase 10/11 are done; nothing came back to close it.
+  **Cost estimate**, by direct analogy to the three widgets already on
+  the page (Stock Alerts/Pending Approvals/Recent Activity, each ~15-25
+  lines of view code + a `widget-list` block in the template):
+  `DashboardView.get()` needs two more queries
+  (`DemandForecast.objects.order_by('-created_at')[:DASHBOARD_PREVIEW_ROWS]`,
+  `InventoryClassification.objects.order_by('-classified_at')[:DASHBOARD_PREVIEW_ROWS]`
+  — both already written in §4d, no design work needed) plus two more
+  `widget-list` blocks in `dashboard.html` following the exact markup
+  pattern the other three widgets already use. Realistic estimate: half
+  a day including a live-server check, most of it template markup, not
+  logic — the two queries are one-liners against tables that now have
+  real rows. Left for the user to decide whether to slot in, per
+  instruction.
+- **REQ 14.1 (global search) — PHANTOM, confirmed.** No topbar search,
+  no dedicated search view/URL, anywhere. 11 separate per-page
+  client-side filters (`table-filter.js`) exist instead, each scoped to
+  its own page only.
+- **REQ 4.7 (supplier performance) — PHANTOM, confirmed.** No
+  performance fields on `Supplier`, no `SupplierDetailView` at all to
+  hang one on.
+- **REQ 8.12 (adjustment history in inventory reports) — DRIFTED, not
+  phantom.** The capability is real (`build_adjustment_report()`, one of
+  the 9 report types), just not embedded in `build_inventory_report()`
+  specifically — a sibling report, not a merged one.
+- **REQ 18.12 (icon consistency, Reject/Cancel) — mostly already fixed.**
+  Verified directly: `icon-circle-slash` (Reject) vs `icon-x` (Cancel)
+  are distinct everywhere now, matching the already-committed BUG-55-class
+  fix from earlier in this session. Smaller residual finding: `icon-x` is
+  also shared with "Deactivate" across 4 pages — lower severity than the
+  originally-flagged confusion, reported as its own item (BUG-80).
+- **REQ 18.7 (loading indicators) — PARTIAL, confirmed.** AI run buttons
+  (`AsyncRunButton`) have real loading state; report PDF/CSV exports
+  (`reports.js`) are a bare `window.location.href` navigation with zero
+  visual feedback.
+
+**Verification.** New tests added alongside the 4 audit-log fixes and
+the `default_reorder_level` fix (both existing test classes extended
+in-place with new assertions, plus one new dedicated test) — full suite
+run after all code changes; see `docs/bugsfound.md` for the pass/fail
+count. Live dev server: performed each of the 4 newly-audited actions
+for real (visited `/inventory/`, downloaded a sale PDF, approved a real
+sale that dropped a test product to its reorder level) and confirmed all
+4 new action types render on the actual `/audit-log/` list page, not
+just exist in the DB.
+
+## Phase — REQ 11.9/11.10: Dashboard AI Insights (2026-08-24)
+
+Closed the highest-priority phantom from the built-vs-designed audit
+(`docs/bugsfound.md` BUG-76): the dashboard, "the first page an examiner
+opens," had no AI content despite the project's own "AI-assisted
+inventory management" framing. Full technical detail in
+`docs/09_DASHBOARD.md` §4d (now the authoritative spec, superseding its
+own struck-through original) and `docs/bugsfound.md` BUG-76; this entry
+covers the verification/design decisions that don't fit either.
+
+**Discovery caught the spec being wrong, not just stale.** `09_DASHBOARD.md`
+§4d's own re-add query shape (`DemandForecast.objects.order_by(
+'-created_at')[:4]`, `InventoryClassification.objects.order_by(
+'-classified_at')[:4]`) was written back when neither table had a single
+row and was never re-verified once they did. Both queries run without
+error — every field name is real — but neither means what a reader would
+assume: `run_full_classification()` updates every active product's
+`classified_at` in the same batch, so "most recently classified" is a
+near-arbitrary tie-break, not a priority ordering; `DemandForecast` rows
+accumulate by design (REQ 9.9), so "most recently created" returns
+whatever a handful of products happened to be re-forecast last, not
+products that need reordering. This is exactly the risk the task called
+out explicitly ("that file documents features that were never built,
+treat its specification as a proposal, not a contract") — confirmed
+concretely rather than taken on faith either way.
+
+**Reuse, not duplication — three separate places this mattered:**
+1. `frontend.forecasting.latest_forecast_batch()` (new) extracted
+   directly out of `DemandForecastingView._latest_batch()` (the class
+   lost that private method entirely, now calls the shared function) —
+   the dedup-by-latest-created-per-(product, period, period_start) logic
+   now lives in exactly one place, so the dashboard widget and the
+   forecasting page's own HTML table can never define "current forecast"
+   two different ways.
+2. Classification counts use the same `.values('classification').
+   annotate(count=Count('id'))` shape `ClassificationSummaryAPIView`
+   already uses, and a new test (`test_classification_counts_match_
+   slow_moving_page`) asserts the dashboard's counts are literally equal
+   to `/ai/slow-moving/`'s own per-classification counts, not just
+   independently plausible.
+3. Deliberately did NOT consume `ForecastSummaryAPIView` — its BUG-64
+   aggregation defect (no dedup by run) stays open and now has zero
+   consumers on the HTML side; both real UI surfaces (forecasting page,
+   dashboard widget) go through `latest_forecast_batch()` instead.
+
+**One design decision worth flagging: "needs replenishment" is weekly-only,
+not both periods.** First implementation checked `forecasted_demand >
+current_stock` across every latest-batch forecast regardless of period.
+Live-verifying against the real 43-product seed data caught this: the
+condition never fired (0 products), which on inspection wasn't a bug in
+the query, it was the query being *broader* than the concept it was
+supposed to represent. `run_full_forecast()`'s own `replenish_alerts`
+logic — the thing that already fires a real notification for this exact
+signal — restricts to weekly forecasts only, because a monthly forecast
+exceeding current stock is a routine, healthy pattern for anything
+restocked more than once a month, not a signal. Narrowed the widget to
+match that existing, already-justified definition rather than inventing
+a broader one (still legitimately "0 products need reorder" on this
+seed data after the fix — verified that's the real data, not a bug, by
+querying a sample directly: stock levels in this dataset are generously
+above weekly demand across the board).
+
+**Role gating**: both widgets use the identical condition Recent Activity
+already established (`request.user.role in (ADMIN, SUPERVISOR)`) — chosen
+specifically because both widgets link to pages already gated the same
+way (`SupervisorRequiredMixin` on both `DemandForecastingView`/
+`SlowMovingDeadStockView`); showing a Staff user a widget linking
+somewhere they can't go would be a dead end, not an insight.
+
+**Slot left for Step 4** (capital-at-risk ranking, per instruction): the
+classification widget's priority list is a plain queryset with one sort
+key (`-stagnation_index`); a comment in `DashboardView.get()` marks
+exactly where a risk-value annotation or blended sort key drops in
+without restructuring the widget or its template.
+
+**Multi-line `{# #}` check** (this bug's third recurrence, most recently
+in `settings.html`): grepped the one touched template
+(`dashboard/dashboard.html`) with the same DOTALL regex used for the
+last two checks — clean. The two new prose comments in this template use
+`{% comment %}/{% endcomment %}`, not `{# #}`, specifically because they
+span multiple lines; the one genuine single-line `{# #}` note (about
+`flagged_by_rule`) stays on one line.
+
+**Performance**: dashboard timed on the live dev server, 5 requests each,
+warm cache, before any code changes and again after: ~0.20-0.30s ->
+~0.30-0.39s. A real increase (4 more queries, all against small tables —
+191 `DemandForecast` rows, 44 `InventoryClassification` rows on this
+dataset) but nowhere near the 3-second budget (REQ 11.2) — not cached or
+deferred, since there was nothing to justify that complexity against.
+
+**Tests**: 401 -> 406 (net +5: one stale test retired —
+`test_ai_insights_section_dropped_entirely`, whose premise was no longer
+true even though its literal string assertions happened to still pass
+against the new widgets' actual copy, which is worse than a clean
+failure would have been — plus 6 new tests, minus the 1 retired). Full
+suite passing. Live dev server: loaded the dashboard as all three roles
+(Admin/Supervisor both show both widgets with real seed data; Staff
+shows neither, no error) with a fresh single `runserver` each time a code
+change required a restart (`--noreload`, so the process must be
+restarted after every edit — caught once, when a `runserver` still
+serving a pre-fix build would have quietly given a "before" reading for
+an "after" check).
+
+**Recorded for Step 4, not built now**: REQ 17.10 ("configuration
+history") is PARTIAL — `SETTINGS_UPDATED` fires on every settings save
+but carries no `details=` diff payload (docs/bugsfound.md BUG-65's "also
+checked" note). Step 4 is expected to add
+`AI_CLASSIFIER_WEIGHTS_CHANGED` with old/new values for the classifier's
+own weight changes specifically. If that pattern proves out there, the
+natural follow-up is extending `SETTINGS_UPDATED` itself to carry a
+field-level diff (`SystemSettingsForm.changed_data`/`cleaned_data` vs.
+the pre-save instance is the obvious source) — closing REQ 17.10 for
+every settings field, not just classifier weights. Explicitly not built
+in this pass — the plan is recorded so it isn't rediscovered from
+scratch when Step 4 starts.

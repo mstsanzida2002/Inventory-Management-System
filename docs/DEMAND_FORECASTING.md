@@ -2,8 +2,16 @@
 # AI-Powered Smart Inventory Management System
 
 > **Claude Code:** Read this when building the forecasting pipeline, training
-> the Scikit-learn model, writing Celery tasks, or exposing forecast results
+> the Scikit-learn model, or exposing forecast results
 > through API/dashboard endpoints.
+>
+> **Corrected (docs/bugsfound.md):** no Celery exists anywhere in this
+> project — the Celery task and Celery Beat Schedule sections below are
+> reference material only. Forecasting runs synchronously: on demand via
+> the "Run forecast now" button (`DemandForecastingView.post()`), never
+> on a periodic schedule. REQ 9.7 (and REQ 17.4, periodic retraining) are
+> consequently PHANTOM, not implemented — disclosed here rather than left
+> implied by the reference code below.
 
 ---
 
@@ -425,36 +433,19 @@ def backfill_actual_demand():
 
 ---
 
-## Celery Beat Schedule
+## Celery Beat Schedule — REMOVED (docs/bugsfound.md)
 
-Add to `config/settings/base.py`:
-
-```python
-from celery.schedules import crontab
-
-CELERY_BEAT_SCHEDULE = {
-    'retrain-forecast-model': {
-        'task': 'ai.retrain_forecast_model',
-        'schedule': crontab(hour=2, minute=0, day_of_week=1),   # Every Monday 2am
-    },
-    'run-demand-forecasts': {
-        'task': 'ai.run_demand_forecasts',
-        'schedule': crontab(hour=3, minute=0, day_of_week=1),   # Every Monday 3am
-    },
-    'backfill-actual-demand': {
-        'task': 'ai.backfill_actual_demand',
-        'schedule': crontab(hour=5, minute=0),                  # Every day 5am
-    },
-    'run-stock-classification': {
-        'task': 'ai.run_stock_classification',
-        'schedule': crontab(hour=4, minute=0),                   # Every day 4am
-    },
-    'send-low-stock-alerts': {
-        'task': 'inventory.send_low_stock_alerts',
-        'schedule': crontab(minute=0, hour='*/6'),              # Every 6 hours
-    },
-}
-```
+This section used to show a `CELERY_BEAT_SCHEDULE` dict wiring 5 periodic
+tasks (weekly retrain, weekly forecast run, daily backfill, daily
+classification, 6-hourly low-stock alerts). No Celery, no Celery Beat,
+and no scheduler of any kind exists anywhere in this project — none of
+these five jobs run periodically. Real triggers instead: forecasting and
+classification both run on demand via their own "Run now" buttons, or
+synchronously as a side effect of a real event (a sale approval
+reclassifies the products it touched); low-stock/out-of-stock alerts
+fire synchronously inside `InventoryService.decrease_stock()`. REQ 9.7
+and REQ 17.4 (periodic retraining specifically) are PHANTOM — disclosed,
+not built.
 
 ---
 

@@ -3,6 +3,21 @@
 
 > **Claude Code:** Read this when setting up the project for the first time,
 > installing packages, or resolving dependency issues.
+>
+> **Corrected against the actual codebase (docs/bugsfound.md BUG-69):**
+> the Frontend CSS row below no longer claims Bootstrap — the real
+> frontend is a 100% custom vanilla-CSS design system, no framework
+> dependency at all (see "Frontend Design System" below). The Task
+> Queue/Message Broker rows describe reference material only: **no
+> Celery, no Redis, no scheduler of any kind actually runs in this
+> project** — `requirements.txt` has no `celery`/`redis` dependency, and
+> every AI/notification task that this stack section shows as a
+> background job runs synchronously instead, triggered by a real event
+> (a sale approval, a manual "Run now" button) — see
+> `docs/DEAD_STOCK_DETECTION.md` and `docs/DEMAND_FORECASTING.md` for the
+> details, and `docs/bugsfound.md` for the full history of this
+> correction (REQ 9.7 and REQ 17.4, periodic retraining, are consequently
+> PHANTOM).
 
 ---
 
@@ -13,18 +28,32 @@
 | Backend Framework | Django | 5.x | Web framework, ORM, admin, sessions |
 | REST API | Django REST Framework | 3.15+ | API views, serializers, authentication |
 | Database | PostgreSQL | 15+ | Primary data store |
-| Task Queue | Celery | 5.x | Background AI tasks, email, scheduled jobs |
-| Message Broker | Redis | 7+ | Celery broker + Django cache backend |
+| Task Queue | ~~Celery~~ | — | **Not installed.** Reference material only — see header note |
+| Message Broker | ~~Redis~~ | — | **Not installed.** Reference material only — see header note |
 | AI / ML | Scikit-learn | 1.4+ | Demand forecasting models |
 | Data Processing | Pandas | 2.x | Sales data aggregation for AI |
 | Numerical | NumPy | 1.26+ | Array operations for forecasting |
 | Password Hashing | django[argon2] | — | Argon2 via django.contrib.auth |
 | Static Files | WhiteNoise | 6.x | Serve static files in production |
 | WSGI Server | Gunicorn | 22+ | Production app server |
-| Frontend CSS | Bootstrap | 5.3 | Responsive UI components |
+| Frontend CSS | Custom vanilla CSS | — | Hand-built design system — `tokens.css`/`components.css`/`dashboard.css`/`landing.css`, no framework dependency |
 | Charts | Chart.js | 4.x | Interactive dashboard charts |
 | PDF Export | ReportLab or WeasyPrint | latest | Report PDF generation |
 | CSV Export | Python built-in `csv` | — | Report CSV generation |
+
+---
+
+## Frontend Design System (corrected — not Bootstrap)
+
+The frontend is 100% hand-built vanilla CSS, not a framework. Design
+tokens (`frontend/static/css/tokens.css`: colors, type scale, spacing,
+radius/shadow/motion), components (`components.css`: buttons, cards,
+badges, form fields, modals), and shell layout (`dashboard.css`: sidebar,
+topbar, KPI cards, panels) — no Bootstrap, no build step, no CDN CSS
+framework of any kind. `docs/frontend_work.md` has the full component
+inventory. This is a stronger engineering claim than the framework this
+file used to document, not a weaker one — a hand-built design system
+demonstrates CSS architecture the way pulling in Bootstrap would not.
 
 ---
 
@@ -264,13 +293,10 @@ __all__ = ('celery_app',)
 Add to `templates/base.html`:
 
 ```html
-<!-- Bootstrap 5.3 -->
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-
 <!-- Chart.js 4 -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
-<!-- Bootstrap Icons -->
-<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
 ```
+
+No Bootstrap, no Bootstrap Icons CDN link — the design system and its
+own inline SVG icon set (`frontend/templates/includes/icons.html`) are
+both hand-built; see "Frontend Design System" above.

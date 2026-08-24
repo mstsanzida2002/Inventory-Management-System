@@ -2,7 +2,12 @@
 # AI-Powered Smart Inventory Management System
 
 > **Claude Code:** Read this when deploying to Render or configuring
-> production settings, Procfile, Celery workers, or static file serving.
+> production settings or static file serving.
+>
+> **Corrected (docs/bugsfound.md):** the Celery worker/beat services and
+> Redis service in the table below are reference material only — no
+> Celery, no Redis, no scheduler exists anywhere in this project. A real
+> deployment of this codebase needs only the web service and PostgreSQL.
 
 ---
 

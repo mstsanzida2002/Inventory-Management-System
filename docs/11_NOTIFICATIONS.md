@@ -4,6 +4,12 @@
 > **Claude Code:** Use `notify_user()` and `notify_supervisors()` from
 > `apps/notifications/services.py` everywhere you need to send a notification.
 > Never create Notification objects directly in other modules.
+>
+> **Corrected (docs/bugsfound.md):** this file's `@shared_task(name=
+> 'notifications.send_email')` reference code below is unbuilt — no
+> Celery exists anywhere in this project. Email sends run synchronously,
+> in the same request, from `frontend/notifications.py`'s own
+> `_maybe_send_email()`, not as a queued background task.
 
 ---
 

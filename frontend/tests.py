@@ -7,10 +7,12 @@ frontend/notifications.py). Phase 4 adds tests for real auth (login/logout/
 profile, frontend/views.py) and the RBAC decorator/mixin (frontend/decorators.py,
 frontend/mixins.py).
 """
+import base64
 import json
 import os
 import re
 import tempfile
+import zlib
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 from unittest.mock import patch
@@ -47,8 +49,12 @@ from frontend.forecasting import (
     train_model,
 )
 from frontend.models import (
+    AdjustmentReason,
     AdjustmentStatus,
     AdjustmentType,
+    ApprovalOutcome,
+    ApprovalPolicy,
+    ApprovalTxType,
     AuditLog,
     Category,
     DemandForecast,
@@ -73,8 +79,15 @@ from frontend.models import (
     SystemSettings,
     UserRole,
 )
+from frontend.approvals import (
+    can_approve,
+    ensure_default_policies,
+    resolve_adjustment_with_cumulative_cap,
+    resolve_required_level,
+)
 from frontend.services import (
     AdjustmentService,
+    ApprovalAuthorityError,
     InsufficientStockError,
     InventoryService,
     PurchaseService,
@@ -233,27 +246,47 @@ class PurchaseServiceTests(ServiceTestCase):
             PurchaseService.submit_for_approval(po, self.user)
 
     def test_approve_moves_pending_to_approved(self):
+        # Phase 12 — approve() now enforces can_approve() (ApprovalTxType.
+        # PURCHASE_ORDER) at the service layer: self.user is STAFF, never
+        # a valid approver regardless of self-approval, so the approver
+        # here must be self.supervisor (a role this fixture already
+        # provides). self.user still creates the PO — no self-approval
+        # conflict either way.
         po, _ = self.make_po(status=POStatus.PENDING)
-        PurchaseService.approve(po, self.user)
+        PurchaseService.approve(po, self.supervisor)
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.APPROVED)
-        self.assertEqual(po.approved_by, self.user)
+        self.assertEqual(po.approved_by, self.supervisor)
         self.assertIsNotNone(po.approved_at)
 
     def test_approve_does_not_touch_stock(self):
         """Proves the critical rule: stock increases ONLY on receipt, never
         on approval."""
         po, _ = self.make_po(status=POStatus.PENDING)
-        PurchaseService.approve(po, self.user)
+        PurchaseService.approve(po, self.supervisor)
         self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
         self.assertEqual(InventoryMovement.objects.filter(product=self.product).count(), 0)
 
     def test_reject_moves_pending_to_rejected_with_reason(self):
+        # BUG-57 close-out — reject() now enforces a supervisor-or-admin
+        # role check at the service layer (self.user is STAFF).
         po, _ = self.make_po(status=POStatus.PENDING)
-        PurchaseService.reject(po, self.user, 'Price mismatch')
+        PurchaseService.reject(po, self.supervisor, 'Price mismatch')
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.REJECTED)
         self.assertEqual(po.rejected_reason, 'Price mismatch')
+
+    def test_reject_raises_for_unauthorised_staff(self):
+        """BUG-57 close-out: before this fix, PurchaseService.reject()
+        would execute for ANY caller — the only thing stopping a STAFF
+        user from rejecting a PO was PurchaseRejectView's own
+        SupervisorRequiredMixin. Calling the service directly, bypassing
+        the view entirely, used to succeed silently."""
+        po, _ = self.make_po(status=POStatus.PENDING)
+        with self.assertRaises(ApprovalAuthorityError):
+            PurchaseService.reject(po, self.user, 'Price mismatch')
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.PENDING, 'a denied rejection must not change status')
 
     def test_receive_full_quantity_marks_received_and_increases_stock(self):
         po, item = self.make_po(ordered_qty=10, status=POStatus.APPROVED)
@@ -412,6 +445,19 @@ class SaleServiceTests(ServiceTestCase):
         self.assertEqual(sale.status, SaleStatus.REJECTED)
         self.assertEqual(sale.rejected_reason, 'Customer cancelled order')
 
+    def test_reject_raises_for_unauthorised_staff(self):
+        """BUG-57 close-out: before this fix, SaleService.reject_sale()
+        would execute for ANY caller — the only thing stopping a STAFF
+        user from rejecting a sale was SaleRejectView's own
+        SupervisorRequiredMixin. Calling the service directly, bypassing
+        the view entirely, used to succeed silently."""
+        sale = self.make_draft_sale(quantity=1)
+        SaleService.submit_for_approval(sale, self.user)
+        with self.assertRaises(ApprovalAuthorityError):
+            SaleService.reject_sale(sale, self.user, 'Customer cancelled order')
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.PENDING, 'a denied rejection must not change status')
+
     def test_reject_rejects_non_pending(self):
         sale = self.make_draft_sale(quantity=1)
         with self.assertRaises(ValueError):
@@ -426,15 +472,19 @@ class SaleServiceTests(ServiceTestCase):
         self.assertEqual(record.current_stock, 20)
 
     def test_cancel_draft_leaves_stock_untouched(self):
+        # Phase 12 — cancel_sale() now enforces can_approve()
+        # (ApprovalTxType.SALE_CANCEL): self.user is STAFF, never a valid
+        # canceller regardless of self-approval, so self.supervisor cancels
+        # here (a role this fixture already provides).
         self.give_stock(20)
         sale = self.make_draft_sale(quantity=5)
-        SaleService.cancel_sale(sale, self.user, 'Customer changed their mind')
+        SaleService.cancel_sale(sale, self.supervisor, 'Customer changed their mind')
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 20, "nothing was ever deducted, so there is nothing to restore")
         sale.refresh_from_db()
         self.assertEqual(sale.status, SaleStatus.CANCELLED)
         self.assertEqual(sale.cancelled_reason, 'Customer changed their mind')
-        self.assertEqual(sale.cancelled_by, self.user)
+        self.assertEqual(sale.cancelled_by, self.supervisor)
         self.assertIsNotNone(sale.cancelled_at)
         self.assertEqual(InventoryMovement.objects.filter(reference_id=sale.pk).count(), 0)
 
@@ -442,7 +492,7 @@ class SaleServiceTests(ServiceTestCase):
         self.give_stock(20)
         sale = self.make_draft_sale(quantity=5)
         SaleService.submit_for_approval(sale, self.user)
-        SaleService.cancel_sale(sale, self.user, 'Duplicate entry')
+        SaleService.cancel_sale(sale, self.supervisor, 'Duplicate entry')
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 20)
         sale.refresh_from_db()
@@ -464,10 +514,11 @@ class SaleServiceTests(ServiceTestCase):
         self.assertEqual(sale.status, SaleStatus.COMPLETED)
 
     def test_cancel_already_cancelled_sale_raises(self):
+        # Phase 12 — same self.supervisor swap as the two tests above.
         sale = self.make_draft_sale(quantity=1)
-        SaleService.cancel_sale(sale, self.user, 'first cancel')
+        SaleService.cancel_sale(sale, self.supervisor, 'first cancel')
         with self.assertRaises(ValueError):
-            SaleService.cancel_sale(sale, self.user, 'second cancel')
+            SaleService.cancel_sale(sale, self.supervisor, 'second cancel')
 
 
 class AdjustmentServiceTests(ServiceTestCase):
@@ -483,19 +534,25 @@ class AdjustmentServiceTests(ServiceTestCase):
         self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
 
     def test_approve_increase_adjustment_increases_stock(self):
+        # Phase 12 — approve() now enforces can_approve() (ApprovalTxType.
+        # ADJUSTMENT) at the service layer: self.user is STAFF, never a
+        # valid approver, so self.supervisor approves (requested_by stays
+        # self.user, no self-approval conflict). This adjustment has no
+        # reason_code match and no cumulative-cap-eligible AUTO match, so
+        # it resolves via the seeded catch-all (Supervisor).
         self.give_stock(10)
         adjustment = self.make_adjustment(AdjustmentType.INCREASE, 5)
-        AdjustmentService.approve(adjustment, self.user)
+        AdjustmentService.approve(adjustment, self.supervisor)
         adjustment.refresh_from_db()
         self.assertEqual(adjustment.status, AdjustmentStatus.APPROVED)
-        self.assertEqual(adjustment.approved_by, self.user)
+        self.assertEqual(adjustment.approved_by, self.supervisor)
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 15)
 
     def test_approve_decrease_adjustment_decreases_stock(self):
         self.give_stock(10)
         adjustment = self.make_adjustment(AdjustmentType.DECREASE, 4)
-        AdjustmentService.approve(adjustment, self.user)
+        AdjustmentService.approve(adjustment, self.supervisor)
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 6)
 
@@ -508,28 +565,43 @@ class AdjustmentServiceTests(ServiceTestCase):
         self.give_stock(3)
         adjustment = self.make_adjustment(AdjustmentType.DECREASE, 10)
         with self.assertRaises(InsufficientStockError):
-            AdjustmentService.approve(adjustment, self.user)
+            AdjustmentService.approve(adjustment, self.supervisor)
         adjustment.refresh_from_db()
         self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 3)
 
     def test_reject_adjustment_does_not_touch_stock(self):
+        # BUG-57 close-out — reject() now enforces a supervisor-or-admin
+        # role check at the service layer (self.user is STAFF).
         self.give_stock(10)
         adjustment = self.make_adjustment(AdjustmentType.DECREASE, 4)
-        AdjustmentService.reject(adjustment, self.user, 'Count looks wrong, redo it')
+        AdjustmentService.reject(adjustment, self.supervisor, 'Count looks wrong, redo it')
         adjustment.refresh_from_db()
         self.assertEqual(adjustment.status, AdjustmentStatus.REJECTED)
         self.assertEqual(adjustment.rejected_reason, 'Count looks wrong, redo it')
         record = InventoryRecord.objects.get(product=self.product)
         self.assertEqual(record.current_stock, 10)
 
+    def test_reject_raises_for_unauthorised_staff(self):
+        """BUG-57 close-out: before this fix, AdjustmentService.reject()
+        would execute for ANY caller — the only thing stopping a STAFF
+        user from rejecting an adjustment was AdjustmentRejectView's own
+        SupervisorRequiredMixin. Calling the service directly, bypassing
+        the view entirely, used to succeed silently."""
+        self.give_stock(10)
+        adjustment = self.make_adjustment(AdjustmentType.DECREASE, 4)
+        with self.assertRaises(ApprovalAuthorityError):
+            AdjustmentService.reject(adjustment, self.user, 'Count looks wrong, redo it')
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.status, AdjustmentStatus.PENDING, 'a denied rejection must not change status')
+
     def test_approve_already_approved_adjustment_raises(self):
         self.give_stock(10)
         adjustment = self.make_adjustment(AdjustmentType.INCREASE, 5)
-        AdjustmentService.approve(adjustment, self.user)
+        AdjustmentService.approve(adjustment, self.supervisor)
         with self.assertRaises(ValueError):
-            AdjustmentService.approve(adjustment, self.user)
+            AdjustmentService.approve(adjustment, self.supervisor)
 
 
 class PurchaseCancelTests(ServiceTestCase):
@@ -546,12 +618,14 @@ class PurchaseCancelTests(ServiceTestCase):
         return po, item
 
     def test_cancel_from_draft_leaves_stock_untouched(self):
+        # BUG-57 close-out — cancel() now enforces a supervisor-or-admin
+        # role check at the service layer (self.user is STAFF).
         po, _ = self.make_po(status=POStatus.DRAFT)
-        PurchaseService.cancel(po, self.user, 'Ordered by mistake')
+        PurchaseService.cancel(po, self.supervisor, 'Ordered by mistake')
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.CANCELLED)
         self.assertEqual(po.cancelled_reason, 'Ordered by mistake')
-        self.assertEqual(po.cancelled_by, self.user)
+        self.assertEqual(po.cancelled_by, self.supervisor)
         self.assertIsNotNone(po.cancelled_at)
         self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
         self.product.refresh_from_db()
@@ -559,11 +633,23 @@ class PurchaseCancelTests(ServiceTestCase):
 
     def test_cancel_from_pending_leaves_stock_untouched(self):
         po, _ = self.make_po(status=POStatus.PENDING)
-        PurchaseService.cancel(po, self.user, 'Supplier no longer needed')
+        PurchaseService.cancel(po, self.supervisor, 'Supplier no longer needed')
         po.refresh_from_db()
         self.assertEqual(po.status, POStatus.CANCELLED)
         self.assertEqual(po.cancelled_reason, 'Supplier no longer needed')
         self.assertFalse(InventoryRecord.objects.filter(product=self.product).exists())
+
+    def test_cancel_raises_for_unauthorised_staff(self):
+        """BUG-57 close-out: before this fix, PurchaseService.cancel()
+        would execute for ANY caller — the only thing stopping a STAFF
+        user from cancelling a PO was PurchaseCancelView's own
+        SupervisorRequiredMixin. Calling the service directly, bypassing
+        the view entirely, used to succeed silently."""
+        po, _ = self.make_po(status=POStatus.DRAFT)
+        with self.assertRaises(ApprovalAuthorityError):
+            PurchaseService.cancel(po, self.user, 'Ordered by mistake')
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.DRAFT, 'a denied cancel must not change status')
 
     def test_cancel_rejects_approved(self):
         """Phase 8.99c: an approved PO is a commitment already made to the
@@ -609,7 +695,7 @@ class PurchaseCancelTests(ServiceTestCase):
 
     def test_cancel_rejects_already_cancelled(self):
         po, _ = self.make_po(status=POStatus.DRAFT)
-        PurchaseService.cancel(po, self.user, 'first cancel')
+        PurchaseService.cancel(po, self.supervisor, 'first cancel')
         with self.assertRaises(ValueError):
             PurchaseService.cancel(po, self.user, 'second cancel')
 
@@ -730,14 +816,16 @@ class PurchaseAuditNotificationTests(ServiceTestCase):
         self.assertEqual(Notification.objects.count(), notif_count_before)
 
     def test_cancel_logs_but_does_not_notify(self):
-        """No 'po_cancelled' notification type is documented — see BUG-25."""
+        """No 'po_cancelled' notification type is documented — see BUG-25.
+        BUG-57 close-out: self.supervisor cancels here since self.user
+        (STAFF) is no longer a valid caller at the service layer."""
         po, _ = self.make_po(status=POStatus.DRAFT)
         notif_count_before = Notification.objects.count()
 
-        PurchaseService.cancel(po, self.user, 'reason')
+        PurchaseService.cancel(po, self.supervisor, 'reason')
 
         entry = AuditLog.objects.get(action=audit.PO_CANCELLED)
-        self.assertEqual(entry.user, self.user)
+        self.assertEqual(entry.user, self.supervisor)
         self.assertEqual(Notification.objects.count(), notif_count_before)
 
 
@@ -761,6 +849,8 @@ class SaleAuditTests(ServiceTestCase):
         self.assertEqual(Notification.objects.count(), notif_count_before)
 
     def test_cancel_sale_logs_and_does_not_notify(self):
+        # Phase 12 — cancel_sale()'s can_approve() gate: self.user is
+        # STAFF, never a valid canceller, so self.supervisor cancels here.
         self.give_stock(20)
         sale = SaleService.create_sale(
             {}, [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00')}],
@@ -768,10 +858,10 @@ class SaleAuditTests(ServiceTestCase):
         )
         notif_count_before = Notification.objects.count()
 
-        SaleService.cancel_sale(sale, self.user, 'reason')
+        SaleService.cancel_sale(sale, self.supervisor, 'reason')
 
         entry = AuditLog.objects.get(action=audit.SALE_CANCELLED)
-        self.assertEqual(entry.user, self.user)
+        self.assertEqual(entry.user, self.supervisor)
         self.assertEqual(entry.affected_id, sale.pk)
         self.assertEqual(Notification.objects.count(), notif_count_before)
 
@@ -797,7 +887,14 @@ class AdjustmentAuditNotificationTests(ServiceTestCase):
         entry = AuditLog.objects.get(action=audit.ADJUSTMENT_APPROVED)
         self.assertEqual(entry.user, self.supervisor)
         self.assertEqual(entry.affected_id, adjustment.pk)
-        self.assertEqual(entry.details, {'quantity': 5, 'type': AdjustmentType.INCREASE})
+        # Phase 12 — details now also carries policy_id/required_level
+        # (§6's own instruction: prove *why* this approver was permitted
+        # to approve). Not asserting an exact policy_id here — that's a
+        # real primary key, not a value this test should hardcode.
+        self.assertEqual(entry.details['quantity'], 5)
+        self.assertEqual(entry.details['type'], AdjustmentType.INCREASE)
+        self.assertEqual(entry.details['required_level'], ApprovalOutcome.SUPERVISOR)
+        self.assertIsNotNone(entry.details['policy_id'])
 
     def test_reject_logs_but_does_not_notify(self):
         """No 'adj_rejected' notification type is documented in
@@ -2949,10 +3046,15 @@ class AdjustmentWorkflowViewTests(TestCase):
         )
 
     def create_pending_adjustment(self, adjustment_type='decrease', quantity=5):
+        # Phase 12 — reason_code is now required (AdjustmentForm), and
+        # 'count_correction' (rather than the AUTO-eligible thresholds'
+        # own combination) keeps this landing on the SUPERVISOR catch-all
+        # policy — the PENDING state every test in this class assumes.
         self.client.login(username='adjstaff', password='x')
         response = self.client.post(reverse('frontend:adjustments'), {
             'product': self.product.pk, 'adjustment_type': adjustment_type,
-            'quantity': quantity, 'reason': 'Verification test reason',
+            'quantity': quantity, 'reason_code': AdjustmentReason.COUNT_CORRECTION,
+            'reason': 'Verification test reason',
         })
         self.assertEqual(response.status_code, 200, response.content)
         self.client.logout()
@@ -3026,6 +3128,34 @@ class AdjustmentWorkflowViewTests(TestCase):
 
         adjustment.refresh_from_db()
         self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
+
+
+def _extract_pdf_text(pdf_bytes):
+    """Phase 13 — ReportLab's default content-stream encoding is
+    [ASCII85Decode, FlateDecode] (confirmed empirically, not assumed —
+    the raw bytes start '%PDF-1.4' and every content stream ends in the
+    Adobe ASCII85 '~>' terminator). Undoing both, per stream, turns the
+    binary PDF back into its literal PDF-operator text — every string
+    drawn with drawString()/Paragraph() appears as literal ASCII inside
+    parentheses, e.g. '(Zylotech Distribution Ltd) Tj' — searchable with
+    a plain `in` check. Good enough for this project's own generated
+    PDFs (a controlled format); not a general-purpose PDF text
+    extractor and never used to parse third-party PDFs."""
+    text = b""
+    for raw in re.findall(rb"stream\n(.*?)endstream", pdf_bytes, re.S):
+        raw = raw.strip(b"\r\n")
+        if raw.endswith(b"~>"):
+            raw = raw[:-2]
+        try:
+            decoded = base64.a85decode(raw)
+        except Exception:
+            continue
+        try:
+            decoded = zlib.decompress(decoded)
+        except Exception:
+            pass
+        text += decoded
+    return text
 
 
 class PerRecordPDFViewTests(TestCase):
@@ -3105,6 +3235,197 @@ class PerRecordPDFViewTests(TestCase):
         self.client.login(username='pdfstaff', password='x')
         response = self.client.get(reverse('frontend:sale_pdf', args=[999999]))
         self.assertEqual(response.status_code, 404)
+
+    def test_staff_can_download_adjustment_pdf(self):
+        """Phase 13 — new: no per-adjustment PDF existed before this."""
+        adjustment = InventoryAdjustment.objects.create(
+            product=self.product, adjustment_type=AdjustmentType.DECREASE, quantity=2,
+            reason_code=AdjustmentReason.DAMAGE, reason='Damaged in transit.', requested_by=self.staff,
+        )
+        self.client.login(username='pdfstaff', password='x')
+        response = self.client.get(reverse('frontend:adjustment_pdf', args=[adjustment.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+
+    def test_adjustment_pdf_404_for_unknown_pk(self):
+        self.client.login(username='pdfstaff', password='x')
+        response = self.client.get(reverse('frontend:adjustment_pdf', args=[999999]))
+        self.assertEqual(response.status_code, 404)
+
+
+class PDFCompanyBrandingTests(TestCase):
+    """Phase 13 Task 2's own acceptance test: 'change the company name
+    and address in settings, regenerate any PDF, and the new values
+    appear' — through the real SystemSettingsForm/SettingsView POST, not
+    just a direct model .save(), so this proves the whole chain
+    (form -> SystemSettings -> get_company_profile() -> frontend/pdf.py)
+    actually works end to end, not just that the model field changed."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='brandadmin', email='brandadmin@example.com', password='x',
+            employee_id='EMP-9601', full_name='Brand Admin', role=UserRole.ADMIN,
+        )
+        self.staff = User.objects.create_user(
+            username='brandstaff', email='brandstaff@example.com', password='x',
+            employee_id='EMP-9602', full_name='Brand Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Brand Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Brand Supply', company_name='Brand Supply Co', contact_person='Jo',
+            email='brandsupply@example.com', phone='555-0600', address='1 Brand Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='BRAND-SKU-001', name='Brand Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+        self.po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.staff)
+        PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, ordered_qty=1, unit_price=Decimal('10.00'),
+        )
+
+    def test_settings_change_appears_in_generated_pdf(self):
+        self.client.login(username='brandadmin', password='x')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Zylotech Distribution Ltd',
+            'company_address': 'House 42, Road 7, Banani, Dhaka',
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+
+        from frontend import reports as report_lib
+        pdf_response = report_lib.generate_purchase_order_pdf(self.po)
+        text = _extract_pdf_text(pdf_response.content)
+        self.assertIn(b'Zylotech Distribution Ltd', text)
+        self.assertIn(b'Banani, Dhaka', text)
+
+    def test_pdf_renders_with_no_logo_and_blank_optional_company_fields(self):
+        """Every optional company field left blank (the model's own
+        default state) must still produce a valid PDF — no broken image
+        box, no crash — falling back to the company name in type."""
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.company_logo = None
+        settings_obj.company_address = ''
+        settings_obj.company_email = ''
+        settings_obj.company_phone = ''
+        settings_obj.company_tax_number = ''
+        settings_obj.company_website = ''
+        settings_obj.save()
+
+        from frontend import reports as report_lib
+        response = report_lib.generate_purchase_order_pdf(self.po)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        self.assertGreater(len(response.content), 500, "a real document, not an empty/broken stub")
+
+    def test_completely_blank_company_name_falls_back_to_placeholder_text(self):
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.company_name = ''
+        settings_obj.save()
+
+        from frontend import reports as report_lib
+        response = report_lib.generate_purchase_order_pdf(self.po)
+        text = _extract_pdf_text(response.content)
+        self.assertIn(b'Company name not set', text)
+
+
+class PDFDocumentQualityTests(TestCase):
+    """Phase 13 Task 3 — totals reconciliation, status watermarks, and
+    multi-page pagination/repeating headers."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='qualitystaff', email='qualitystaff@example.com', password='x',
+            employee_id='EMP-9611', full_name='Quality Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Quality Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Quality Supply', company_name='Quality Supply Co', contact_person='Jo',
+            email='qualitysupply@example.com', phone='555-0700', address='1 Quality Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='QUAL-SKU-001', name='Quality Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+
+    def test_totals_reconcile_with_stored_record_total_cost(self):
+        """Subtotal - Discount + Tax must equal Grand Total exactly, and
+        Grand Total must equal the record's own stored total_cost — not
+        an approximation, no rounding drift."""
+        po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.staff)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, ordered_qty=10,
+            unit_price=Decimal('20.00'), discount=Decimal('5.00'), tax=Decimal('8.00'),
+        )
+        po.total_cost = po.items.get().line_total
+        po.save(update_fields=['total_cost'])
+
+        from frontend.pricing import calculate_totals_breakdown
+        items = list(po.items.all())
+        subtotal, discount_total, tax_total, grand_total = calculate_totals_breakdown(items)
+        self.assertEqual(subtotal - discount_total + tax_total, grand_total)
+        self.assertEqual(grand_total, po.total_cost)
+
+        from frontend import reports as report_lib
+        response = report_lib.generate_purchase_order_pdf(po)
+        text = _extract_pdf_text(response.content)
+        from frontend import pdf as pdf_lib
+        self.assertIn(pdf_lib.format_currency(grand_total).encode(), text)
+
+    def test_cancelled_purchase_order_pdf_shows_status_watermark(self):
+        po = PurchaseOrder.objects.create(
+            supplier=self.supplier, created_by=self.staff, status=POStatus.CANCELLED,
+            cancelled_reason='Test cancellation', cancelled_by=self.staff, cancelled_at=timezone.now(),
+        )
+        PurchaseOrderItem.objects.create(purchase_order=po, product=self.product, ordered_qty=1, unit_price=Decimal('10.00'))
+
+        from frontend import reports as report_lib
+        text = _extract_pdf_text(report_lib.generate_purchase_order_pdf(po).content)
+        self.assertIn(b'CANCELLED', text)
+
+    def test_approved_purchase_order_pdf_has_no_watermark(self):
+        po = PurchaseOrder.objects.create(
+            supplier=self.supplier, created_by=self.staff, status=POStatus.APPROVED,
+            approved_by=self.staff, approved_at=timezone.now(),
+        )
+        PurchaseOrderItem.objects.create(purchase_order=po, product=self.product, ordered_qty=1, unit_price=Decimal('10.00'))
+
+        from frontend import reports as report_lib
+        text = _extract_pdf_text(report_lib.generate_purchase_order_pdf(po).content)
+        self.assertNotIn(b'CANCELLED', text)
+        self.assertNotIn(b'REJECTED', text)
+
+    def test_rejected_adjustment_pdf_shows_status_watermark(self):
+        adjustment = InventoryAdjustment.objects.create(
+            product=self.product, adjustment_type=AdjustmentType.DECREASE, quantity=1,
+            reason_code=AdjustmentReason.OTHER, reason='test', requested_by=self.staff,
+            status=AdjustmentStatus.REJECTED, rejected_reason='Recount needed',
+        )
+        from frontend import reports as report_lib
+        text = _extract_pdf_text(report_lib.generate_adjustment_pdf(adjustment).content)
+        self.assertIn(b'REJECTED', text)
+
+    def test_multi_page_report_repeats_table_header_and_numbers_pages(self):
+        """A report table long enough to force pagination must repeat
+        the column header row on every page and carry a correct
+        'Page N of M' with M > 1 — not just a single unnumbered page."""
+        from frontend import pdf as pdf_lib
+        headers = ['Date', 'Product', 'Type', 'Qty Change', 'Stock Before', 'Stock After', 'Reference', 'Performed By']
+        rows = [
+            ['2026-08-20 10:00', f'Widget {i}', 'Sale', '-2', '10', '8', f'SaleTransaction #{i}', 'Jane Doe']
+            for i in range(120)
+        ]
+        response = pdf_lib.render_tabular_report(filename='t.pdf', title='Inventory Movement Report', headers=headers, rows=rows)
+        text = _extract_pdf_text(response.content)
+        self.assertIn(b'Page 1 of ', text)
+        # Every page repeats the table header — "Performed By" (the last
+        # column header) appears once per page, not once for the whole document.
+        self.assertGreater(text.count(b'Performed By'), 1, "the table header must repeat on more than one page")
+        # And the real total must be greater than 1 — this dataset does
+        # not fit on a single page.
+        match = re.search(rb'Page 1 of (\d+)', text)
+        self.assertIsNotNone(match)
+        self.assertGreater(int(match.group(1)), 1)
 
 
 # --------------------------------------------------------------- Phase 8
@@ -3632,6 +3953,131 @@ class SettingsViewTests(TestCase):
         self.assertNotEqual(SystemSettings.get_settings().company_name, 'Hacked Co')
 
 
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class CompanyLogoUploadTests(TestCase):
+    """Phase 13 Task 2 — company_logo is a plain FileField (not
+    ImageField) specifically so SVG can be accepted; validate_company_logo
+    (frontend/validators.py) does the type/size checking that would
+    otherwise be lost, PNG/JPG included (Pillow-verified, unlike
+    validate_product_image which only checks the extension)."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='logoadmin', email='logoadmin@example.com', password='x',
+            employee_id='EMP-9620', full_name='Logo Admin', role=UserRole.ADMIN,
+        )
+
+    def _real_png_bytes(self):
+        from io import BytesIO
+        from PIL import Image
+        buf = BytesIO()
+        Image.new('RGB', (4, 4), color='red').save(buf, format='PNG')
+        return buf.getvalue()
+
+    def test_valid_png_logo_accepted(self):
+        self.client.login(username='logoadmin', password='x')
+        logo = SimpleUploadedFile('logo.png', self._real_png_bytes(), content_type='image/png')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Logo Co', 'company_logo': logo,
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        settings_obj = SystemSettings.get_settings()
+        self.assertTrue(settings_obj.company_logo)
+
+    def test_valid_svg_logo_accepted(self):
+        """The one thing switching company_logo off ImageField exists
+        for — Pillow can't open SVG at all, so an ImageField would
+        reject this outright regardless of any custom validator."""
+        self.client.login(username='logoadmin', password='x')
+        svg_bytes = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>'
+        logo = SimpleUploadedFile('logo.svg', svg_bytes, content_type='image/svg+xml')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Logo Co', 'company_logo': logo,
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        settings_obj = SystemSettings.get_settings()
+        self.assertTrue(settings_obj.company_logo)
+        self.assertTrue(settings_obj.company_logo.name.endswith('.svg'))
+
+    def test_invalid_extension_rejected(self):
+        self.client.login(username='logoadmin', password='x')
+        bad_file = SimpleUploadedFile('logo.gif', b'GIF89a', content_type='image/gif')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Logo Co', 'company_logo': bad_file,
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_file_pretending_to_be_svg_rejected(self):
+        self.client.login(username='logoadmin', password='x')
+        bad_file = SimpleUploadedFile('logo.svg', b'not actually svg content', content_type='image/svg+xml')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Logo Co', 'company_logo': bad_file,
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_oversized_logo_rejected(self):
+        self.client.login(username='logoadmin', password='x')
+        big_file = SimpleUploadedFile('logo.png', self._real_png_bytes() + b'\x00' * (5 * 1024 * 1024 + 1), content_type='image/png')
+        response = self.client.post(reverse('frontend:settings'), {
+            'company_name': 'Logo Co', 'company_logo': big_file,
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_uploaded_logo_actually_embeds_into_generated_pdf(self):
+        """Not just 'the file saved' — the PDF header must actually draw
+        it, not silently fall back to text-only the way a missing or
+        unreadable logo does."""
+        self.client.login(username='logoadmin', password='x')
+        logo = SimpleUploadedFile('logo.png', self._real_png_bytes(), content_type='image/png')
+        self.client.post(reverse('frontend:settings'), {'company_name': 'Logo Co', 'company_logo': logo})
+
+        category = Category.objects.create(name='Logo Widgets')
+        supplier = Supplier.objects.create(
+            supplier_name='Logo Supply', company_name='Logo Supply Co', contact_person='Jo',
+            email='logosupply@example.com', phone='555-0800', address='1 Logo Way', is_active=True,
+        )
+        product = Product.objects.create(
+            sku='LOGO-SKU-001', name='Logo Widget', category=category, supplier=supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+        po = PurchaseOrder.objects.create(supplier=supplier, created_by=self.admin)
+        PurchaseOrderItem.objects.create(purchase_order=po, product=product, ordered_qty=1, unit_price=Decimal('10.00'))
+
+        from frontend import reports as report_lib
+        response = report_lib.generate_purchase_order_pdf(po)
+        self.assertIn(b'/Subtype /Image', response.content)
+
+    def test_svg_logo_falls_back_to_text_only_header_in_pdf(self):
+        """Disclosed limitation (frontend/pdf.py's own module docstring):
+        ReportLab has no SVG rasterizer and adding one (svglib et al.)
+        would be a new dependency the standing rules forbid — an SVG
+        logo must render the same graceful text-only header a missing
+        logo does, not a broken image box or a crash."""
+        self.client.login(username='logoadmin', password='x')
+        svg_bytes = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>'
+        logo = SimpleUploadedFile('logo.svg', svg_bytes, content_type='image/svg+xml')
+        self.client.post(reverse('frontend:settings'), {'company_name': 'SVG Logo Co', 'company_logo': logo})
+
+        category = Category.objects.create(name='SVG Widgets')
+        supplier = Supplier.objects.create(
+            supplier_name='SVG Supply', company_name='SVG Supply Co', contact_person='Jo',
+            email='svgsupply@example.com', phone='555-0900', address='1 SVG Way', is_active=True,
+        )
+        product = Product.objects.create(
+            sku='SVG-SKU-001', name='SVG Widget', category=category, supplier=supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+        po = PurchaseOrder.objects.create(supplier=supplier, created_by=self.admin)
+        PurchaseOrderItem.objects.create(purchase_order=po, product=product, ordered_qty=1, unit_price=Decimal('10.00'))
+
+        from frontend import reports as report_lib
+        response = report_lib.generate_purchase_order_pdf(po)
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        self.assertNotIn(b'/Subtype /Image', response.content, "SVG can't be rasterized by ReportLab, must not attempt it")
+        text = _extract_pdf_text(response.content)
+        self.assertIn(b'SVG Logo Co', text)
+
+
 class ReportsViewTests(TestCase):
 
     def setUp(self):
@@ -3713,6 +4159,35 @@ class ReportsViewTests(TestCase):
         self.client.login(username='repsuper', password='x')
         response = self.client.get(reverse('frontend:report_export', args=['inventory']) + '?format=csv')
         self.assertIn(b'REP-SKU-001', response.content)
+
+    def test_sales_report_panel_no_longer_renders_the_detailed_transaction_table(self):
+        """Phase 13 Task 4 — the raw per-transaction table is gone from
+        the page (already available from Movement History); the panel
+        now shows the aggregate breakdown + chart instead."""
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:reports'))
+        self.assertNotContains(response, 'salesReportTableBody')
+        self.assertContains(response, 'salesRevenueChart')
+        self.assertContains(response, 'Total revenue')
+
+    def test_sales_pdf_export_uses_summary_shape_not_the_old_transaction_dump(self):
+        """The Sales Report's own PDF export must reflect the same
+        aggregate structure the on-page panel now shows."""
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=pdf')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        text = _extract_pdf_text(response.content)
+        self.assertIn(b'Total revenue', text)
+        self.assertIn(b'Transactions', text)
+
+    def test_sales_csv_export_still_has_the_detailed_per_transaction_data(self):
+        """CSV wasn't part of Task 4's ask — build_sales_report()'s
+        per-transaction rows must still be exportable there."""
+        self.client.login(username='repsuper', password='x')
+        response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=csv')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'Invoice', response.content)
 
 
 class TimeZoneConfigTests(TestCase):
@@ -4156,12 +4631,19 @@ class MovementHistoryViewTests(TestCase):
         """Phase 8.99d: movement_type is now server-side, not
         table-filter.js. AdjustmentService.approve() is the only real path
         that produces an ADJUSTMENT-type movement."""
+        # Phase 12 — approve() now enforces can_approve(): self.user here
+        # is STAFF (this class's own setUp), never a valid approver, so a
+        # real supervisor is created just for this one call.
+        supervisor = User.objects.create_user(
+            username='movsuper', email='movsuper@example.com', password='x',
+            employee_id='EMP-7002', full_name='Movement Supervisor', role=UserRole.SUPERVISOR,
+        )
         purchase_movement = self.make_movement_on(timezone.now(), reference_id=1)
         adjustment = InventoryAdjustment.objects.create(
             product=self.product, adjustment_type=AdjustmentType.INCREASE, quantity=2,
             reason='Recount', requested_by=self.user,
         )
-        AdjustmentService.approve(adjustment, self.user)
+        AdjustmentService.approve(adjustment, supervisor)
 
         self.client.login(username='movstaff', password='x')
         response = self.client.get(reverse('frontend:movement_history'), {'movement_type': 'adjustment'})
@@ -4586,9 +5068,11 @@ class ReclassificationHookTests(ServiceTestCase):
         history changed), so the call is a same-result no-op by design,
         not a correctness gap. Included per this phase's own instruction
         anyway; this proves it's genuinely harmless, not just present."""
+        # Phase 12 — cancel_sale()'s can_approve() gate: self.supervisor
+        # cancels (self.user is STAFF, never a valid canceller).
         InventoryService.initialize_for_product(self.product)
         sale = self._draft_sale()
-        SaleService.cancel_sale(sale, self.user, 'Customer changed their mind.')
+        SaleService.cancel_sale(sale, self.supervisor, 'Customer changed their mind.')
         record = InventoryClassification.objects.get(product=self.product)
         self.assertEqual(record.classification, StockClassification.DEAD)
         self.assertEqual(record.days_since_last_sale, 0)
@@ -5144,3 +5628,429 @@ class ForecastAPITests(TestCase):
         self.assertEqual(payload['total_forecasts'], 1)
         self.assertEqual(payload['products_forecasted'], 1)
         self.assertEqual(payload['latest_model_version'], 'test')
+
+
+# ============================================================ Phase 12 ===
+# Approval Authority Matrix.
+
+class ApprovalTestCase(TestCase):
+    """Shared fixtures for Phase 12 tests. clear_policies() wipes whatever
+    the 0007 data migration seeded so each test starts from an explicit,
+    fully-controlled ruleset — resolver ordering tests especially need no
+    interference from the real starting ruleset's own rows."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='apradmin', email='apradmin@example.com', password='x',
+            employee_id='EMP-9001', full_name='Approval Admin', role=UserRole.ADMIN,
+        )
+        self.supervisor = User.objects.create_user(
+            username='aprsuper', email='aprsuper@example.com', password='x',
+            employee_id='EMP-9002', full_name='Approval Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.other_supervisor = User.objects.create_user(
+            username='aprsuper2', email='aprsuper2@example.com', password='x',
+            employee_id='EMP-9003', full_name='Second Approval Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.staff = User.objects.create_user(
+            username='aprstaff', email='aprstaff@example.com', password='x',
+            employee_id='EMP-9004', full_name='Approval Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Approval Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Approval Supply', company_name='Approval Supply Co',
+            contact_person='Jo', email='aprsupply@example.com', phone='555-0500',
+            address='1 Approval Way',
+        )
+        self.product = Product.objects.create(
+            sku='APR-SKU-001', name='Approval Widget', category=self.category,
+            supplier=self.supplier, purchase_price=Decimal('10.00'),
+            selling_price=Decimal('20.00'), reorder_level=5,
+        )
+        InventoryService.initialize_for_product(self.product)
+
+    def clear_policies(self):
+        ApprovalPolicy.objects.all().delete()
+
+    def make_policy(self, **kwargs):
+        defaults = {
+            'name': 'test policy', 'transaction_type': ApprovalTxType.PURCHASE_ORDER,
+            'required_level': ApprovalOutcome.SUPERVISOR, 'priority': 10,
+        }
+        defaults.update(kwargs)
+        return ApprovalPolicy.objects.create(**defaults)
+
+    def make_po(self, total_cost, created_by=None, status=POStatus.PENDING):
+        return PurchaseOrder.objects.create(
+            supplier=self.supplier, created_by=created_by or self.staff,
+            status=status, total_cost=total_cost,
+        )
+
+
+class ApprovalResolverTests(ApprovalTestCase):
+    """§10: first-match-wins ordering; no-match falls through to admin;
+    inactive policies ignored; boundary values (exactly at max_value)
+    resolve as expected."""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_policies()
+
+    def test_no_active_policy_returns_none(self):
+        self.assertIsNone(resolve_required_level(
+            transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('100'),
+        ))
+
+    def test_can_approve_fails_closed_to_admin_when_no_policy_matches(self):
+        po = self.make_po(Decimal('100'))
+        allowed, reason = can_approve(self.supervisor, po)
+        self.assertFalse(allowed)
+        self.assertIn('administrator', reason.lower())
+        allowed_admin, _ = can_approve(self.admin, po)
+        self.assertTrue(allowed_admin)
+
+    def test_first_match_wins_lower_priority_number_checked_first(self):
+        self.make_policy(name='specific', priority=1, min_value=0, max_value=Decimal('50'), required_level=ApprovalOutcome.ADMIN)
+        self.make_policy(name='catch-all', priority=99, required_level=ApprovalOutcome.SUPERVISOR)
+        matched = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('10'))
+        self.assertEqual(matched.name, 'specific')
+        matched2 = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('500'))
+        self.assertEqual(matched2.name, 'catch-all')
+
+    def test_inactive_policy_is_ignored(self):
+        self.make_policy(name='inactive-blocker', priority=1, required_level=ApprovalOutcome.ADMIN, is_active=False)
+        self.make_policy(name='active-fallback', priority=2, required_level=ApprovalOutcome.SUPERVISOR)
+        matched = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('10'))
+        self.assertEqual(matched.name, 'active-fallback')
+
+    def test_boundary_value_exactly_at_max_value_matches(self):
+        self.make_policy(name='up-to-50000', priority=1, max_value=Decimal('50000.00'), required_level=ApprovalOutcome.SUPERVISOR)
+        self.make_policy(name='above-50000', priority=2, required_level=ApprovalOutcome.ADMIN)
+        at_boundary = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('50000.00'))
+        self.assertEqual(at_boundary.name, 'up-to-50000')
+        one_cent_over = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('50000.01'))
+        self.assertEqual(one_cent_over.name, 'above-50000')
+
+    def test_boundary_value_exactly_at_min_value_matches(self):
+        self.make_policy(name='low', priority=1, min_value=Decimal('100.00'), max_value=Decimal('200.00'), required_level=ApprovalOutcome.SUPERVISOR)
+        matched = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('100.00'))
+        self.assertEqual(matched.name, 'low')
+        below = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('99.99'))
+        self.assertIsNone(below)
+
+
+class CanApproveTests(ApprovalTestCase):
+    """§10: can_approve() — each role against each outcome level;
+    self-approval blocked for supervisor, permitted for admin."""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_policies()
+
+    def test_auto_outcome_allows_anyone(self):
+        self.make_policy(required_level=ApprovalOutcome.AUTO)
+        po = self.make_po(Decimal('10'))
+        for user in (self.staff, self.supervisor, self.admin):
+            allowed, reason = can_approve(user, po)
+            self.assertTrue(allowed, f'{user.username} should be allowed under AUTO')
+            self.assertEqual(reason, '')
+
+    def test_supervisor_outcome_allows_supervisor_and_admin_denies_staff(self):
+        self.make_policy(required_level=ApprovalOutcome.SUPERVISOR, block_self_approval=False)
+        po = self.make_po(Decimal('10'))
+        self.assertFalse(can_approve(self.staff, po)[0])
+        self.assertTrue(can_approve(self.other_supervisor, po)[0])
+        self.assertTrue(can_approve(self.admin, po)[0])
+
+    def test_admin_outcome_denies_supervisor_and_staff(self):
+        self.make_policy(required_level=ApprovalOutcome.ADMIN, block_self_approval=False)
+        po = self.make_po(Decimal('10'))
+        self.assertFalse(can_approve(self.staff, po)[0])
+        self.assertFalse(can_approve(self.supervisor, po)[0])
+        self.assertTrue(can_approve(self.admin, po)[0])
+
+    def test_self_approval_blocked_for_supervisor(self):
+        self.make_policy(required_level=ApprovalOutcome.SUPERVISOR, block_self_approval=True)
+        po = self.make_po(Decimal('10'), created_by=self.supervisor)
+        allowed, reason = can_approve(self.supervisor, po)
+        self.assertFalse(allowed)
+        self.assertIn('own request', reason.lower())
+        # A different supervisor (not the requester) is still fine.
+        self.assertTrue(can_approve(self.other_supervisor, po)[0])
+
+    def test_self_approval_permitted_for_admin(self):
+        self.make_policy(required_level=ApprovalOutcome.ADMIN, block_self_approval=True)
+        po = self.make_po(Decimal('10'), created_by=self.admin)
+        allowed, reason = can_approve(self.admin, po)
+        self.assertTrue(allowed)
+        self.assertEqual(reason, '')
+
+    def test_block_self_approval_false_allows_requester_to_approve(self):
+        self.make_policy(required_level=ApprovalOutcome.SUPERVISOR, block_self_approval=False)
+        po = self.make_po(Decimal('10'), created_by=self.supervisor)
+        self.assertTrue(can_approve(self.supervisor, po)[0])
+
+
+class ApprovalAuthorityServiceLayerTests(ApprovalTestCase):
+    """§10: the service layer raises ApprovalAuthorityError when called
+    directly by an unauthorised user, bypassing the view entirely — the
+    service layer is the boundary that must hold regardless of caller."""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_policies()
+        self.make_policy(transaction_type=ApprovalTxType.PURCHASE_ORDER, required_level=ApprovalOutcome.ADMIN, priority=1)
+        self.make_policy(transaction_type=ApprovalTxType.ADJUSTMENT, required_level=ApprovalOutcome.ADMIN, priority=1)
+        self.make_policy(transaction_type=ApprovalTxType.SALE_CANCEL, required_level=ApprovalOutcome.ADMIN, priority=1)
+
+    def test_purchase_service_approve_raises_for_unauthorised_supervisor(self):
+        po = self.make_po(Decimal('10'), status=POStatus.PENDING)
+        with self.assertRaises(ApprovalAuthorityError):
+            PurchaseService.approve(po, self.supervisor)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.PENDING, 'a denied approval must not change status')
+
+    def test_adjustment_service_approve_raises_for_unauthorised_supervisor(self):
+        adjustment = InventoryAdjustment.objects.create(
+            product=self.product, adjustment_type=AdjustmentType.INCREASE, quantity=5,
+            reason_code=AdjustmentReason.OTHER, reason='test', requested_by=self.staff,
+        )
+        with self.assertRaises(ApprovalAuthorityError):
+            AdjustmentService.approve(adjustment, self.supervisor)
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.status, AdjustmentStatus.PENDING)
+
+    def test_sale_service_cancel_raises_for_unauthorised_supervisor(self):
+        sale = SaleService.create_sale(
+            {}, [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00')}],
+            self.staff,
+        )
+        with self.assertRaises(ApprovalAuthorityError):
+            SaleService.cancel_sale(sale, self.supervisor, 'reason')
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, SaleStatus.DRAFT)
+
+    def test_admin_succeeds_where_supervisor_was_denied(self):
+        po = self.make_po(Decimal('10'), status=POStatus.PENDING)
+        PurchaseService.approve(po, self.admin)
+        po.refresh_from_db()
+        self.assertEqual(po.status, POStatus.APPROVED)
+
+
+class AdjustmentAutoApproveTests(ApprovalTestCase):
+    """§10: the AUTO-outcome create path posts stock and writes exactly
+    one movement, with no pending record ever created."""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_policies()
+        InventoryService.increase_stock(
+            product=self.product, quantity=100, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+
+    def test_auto_policy_posts_immediately_no_pending_state(self):
+        self.make_policy(
+            transaction_type=ApprovalTxType.ADJUSTMENT, required_level=ApprovalOutcome.AUTO,
+            max_value=Decimal('1000.00'), priority=1,
+        )
+        adjustment = InventoryAdjustment(
+            product=self.product, adjustment_type=AdjustmentType.DECREASE, quantity=5,
+            reason_code=AdjustmentReason.COUNT_CORRECTION, reason='small auto-posted correction',
+        )
+        result = AdjustmentService.create(adjustment, self.staff)
+
+        self.assertEqual(result.status, AdjustmentStatus.APPROVED)
+        self.assertEqual(result.approved_by, self.staff, 'AUTO attributes the post to the creator, no human approver')
+        self.assertIsNotNone(result.approved_at)
+
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 95)
+
+        movements = InventoryMovement.objects.filter(
+            reference_type='InventoryAdjustment', reference_id=result.pk,
+        )
+        self.assertEqual(movements.count(), 1, 'exactly one movement, not a pending-then-approved pair')
+
+        # Never went through a PENDING state at all — no separate
+        # ADJUSTMENT_REQUESTED entry, no ADJUSTMENT_APPROVED entry (a real
+        # human-approval event that never happened here); one AUTO-posted
+        # audit entry only.
+        self.assertFalse(AuditLog.objects.filter(action=audit.ADJUSTMENT_REQUESTED, affected_id=result.pk).exists())
+        self.assertFalse(AuditLog.objects.filter(action=audit.ADJUSTMENT_APPROVED, affected_id=result.pk).exists())
+        auto_entry = AuditLog.objects.get(action=audit.ADJUSTMENT_AUTO_POSTED, affected_id=result.pk)
+        self.assertEqual(auto_entry.details['policy_name'], 'test policy')
+
+    def test_non_auto_policy_creates_pending_record_instead(self):
+        self.make_policy(
+            transaction_type=ApprovalTxType.ADJUSTMENT, required_level=ApprovalOutcome.SUPERVISOR, priority=1,
+        )
+        adjustment = InventoryAdjustment(
+            product=self.product, adjustment_type=AdjustmentType.DECREASE, quantity=5,
+            reason_code=AdjustmentReason.COUNT_CORRECTION, reason='needs a human',
+        )
+        result = AdjustmentService.create(adjustment, self.staff)
+        self.assertEqual(result.status, AdjustmentStatus.PENDING)
+        self.assertIsNone(result.approved_by)
+        record = InventoryRecord.objects.get(product=self.product)
+        self.assertEqual(record.current_stock, 100, 'a pending adjustment must not touch stock yet')
+
+
+class DefaultApprovalPoliciesTests(TestCase):
+    """§9/§10: the migration-seeded starting ruleset behaves as
+    configured — the ৳50,000 purchase-order supervisor/admin split
+    (confirmed with the user; there was no pre-existing ceiling to
+    migrate byte-identically from, see docs/project_memory.md §13)."""
+
+    def test_nine_policies_seeded(self):
+        # Phase 12.2 — was 10; the ABC-matching "Class-A product, high
+        # variance" row (priority 20) is removed along with ABC as an
+        # approval-routing input entirely (docs/project_memory.md §13).
+        self.assertEqual(ApprovalPolicy.objects.count(), 9)
+
+    def test_purchase_order_ceiling_is_fifty_thousand(self):
+        under = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('50000.00'))
+        self.assertEqual(under.required_level, ApprovalOutcome.SUPERVISOR)
+        over = resolve_required_level(transaction_type=ApprovalTxType.PURCHASE_ORDER, value=Decimal('50000.01'))
+        self.assertEqual(over.required_level, ApprovalOutcome.ADMIN)
+
+    def test_unexplained_shrinkage_always_requires_admin(self):
+        policy = resolve_required_level(
+            transaction_type=ApprovalTxType.ADJUSTMENT, value=Decimal('1.00'),
+            reason_code=AdjustmentReason.SHRINKAGE_UNKNOWN,
+        )
+        self.assertEqual(policy.required_level, ApprovalOutcome.ADMIN)
+
+    def test_small_low_variance_adjustment_auto_approves(self):
+        policy = resolve_required_level(
+            transaction_type=ApprovalTxType.ADJUSTMENT, value=Decimal('50.00'), variance_pct=Decimal('1.00'),
+        )
+        self.assertEqual(policy.required_level, ApprovalOutcome.AUTO)
+
+
+# ========================================================== Phase 12.1 ===
+# Approval Authority Matrix hardening. §3 (the "record unlock" re-
+# resolution contract) and its tests are deliberately NOT implemented —
+# no such system exists anywhere in this codebase (models, services,
+# views, all 7 migrations, all 66 §15 timeline entries checked); see
+# docs/project_memory.md §13 for the full discovery writeup and the
+# user's own explicit choice (report the gap, don't build a new
+# subsystem to attach hardening to).
+
+class CumulativeCapTests(ApprovalTestCase):
+    """§8: cumulative cap on the AUTO adjustment path (§4) — N
+    sub-threshold adjustments auto-post, the one crossing the cap
+    escalates instead; adjustments outside the trailing window don't
+    count toward the total."""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_policies()
+        InventoryService.increase_stock(
+            product=self.product, quantity=1000, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+        # self.product.purchase_price = 10.00 (ApprovalTestCase fixture),
+        # so quantity 5 -> value 50, quantity 6 -> value 60.
+        self.auto_policy = self.make_policy(
+            transaction_type=ApprovalTxType.ADJUSTMENT, required_level=ApprovalOutcome.AUTO,
+            max_value=Decimal('500.00'), priority=1, name='auto under cap',
+            cumulative_window_days=30, cumulative_value_cap=Decimal('100.00'),
+        )
+        self.make_policy(
+            transaction_type=ApprovalTxType.ADJUSTMENT, required_level=ApprovalOutcome.SUPERVISOR,
+            priority=2, name='catch-all',
+        )
+
+    def _post_adjustment(self, quantity):
+        adjustment = InventoryAdjustment(
+            product=self.product, adjustment_type=AdjustmentType.DECREASE, quantity=quantity,
+            reason_code=AdjustmentReason.OTHER, reason='cumulative cap test',
+        )
+        return AdjustmentService.create(adjustment, self.staff)
+
+    def test_sub_threshold_adjustments_auto_post_until_cap(self):
+        # 50 + 50 = 100, at-or-below the ৳100 cap both times.
+        first = self._post_adjustment(5)
+        self.assertEqual(first.status, AdjustmentStatus.APPROVED)
+        self.assertTrue(first.was_auto_posted)
+
+        second = self._post_adjustment(5)
+        self.assertEqual(second.status, AdjustmentStatus.APPROVED)
+        self.assertTrue(second.was_auto_posted)
+
+    def test_adjustment_crossing_cap_escalates_instead_of_auto_posting(self):
+        self._post_adjustment(5)   # running total 50
+        self._post_adjustment(5)   # running total 100 (still <= cap)
+        third = self._post_adjustment(5)  # would be 150 > 100 -> deflected
+
+        self.assertEqual(third.status, AdjustmentStatus.PENDING)
+        self.assertFalse(third.was_auto_posted)
+        deflection = AuditLog.objects.get(action=audit.ADJUSTMENT_AUTO_DEFLECTED, affected_id=third.pk)
+        self.assertEqual(deflection.details['deflected_from_policy_id'], self.auto_policy.pk)
+        self.assertEqual(Decimal(deflection.details['existing_cumulative_total']), Decimal('100'))
+        self.assertEqual(deflection.details['new_required_level'], ApprovalOutcome.SUPERVISOR)
+
+    def test_window_expiry_excludes_old_adjustments_from_total(self):
+        old = self._post_adjustment(6)  # value 60, AUTO (existing total 0)
+        self.assertTrue(old.was_auto_posted)
+        InventoryAdjustment.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=31),
+        )
+        # If the now-outside-window adjustment still counted, 60+60=120
+        # would exceed the ৳100 cap and deflect this one to PENDING. It
+        # doesn't count -> this one AUTO-posts too (60 <= 100).
+        fresh = self._post_adjustment(6)
+        self.assertEqual(fresh.status, AdjustmentStatus.APPROVED)
+        self.assertTrue(fresh.was_auto_posted)
+
+
+class FailClosedDefaultsTests(ApprovalTestCase):
+    """§8: the fail-open default closed in §5a. (Two sibling tests for
+    §5b — the ABC unclassified-resolves-as-'A' fallback — lived here too
+    until Phase 12.2 removed ABC from approval routing entirely; deleted
+    along with that fallback, not left behind asserting a rule that no
+    longer exists. See docs/project_memory.md §13.)"""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_policies()
+
+    def test_variance_none_at_zero_stock_matches_admin_variance_rule(self):
+        """§5a: current_stock is 0 (no InventoryService call in this
+        test) -> variance_pct is None. Must be treated as EXCEEDING the
+        threshold (escalate), never as an absent signal that falls
+        through to a lower-authority catch-all."""
+        self.make_policy(
+            transaction_type=ApprovalTxType.ADJUSTMENT, required_level=ApprovalOutcome.ADMIN,
+            max_variance_pct=Decimal('1.00'), priority=1, name='escalate on undefined variance',
+        )
+        adjustment = InventoryAdjustment(
+            product=self.product, adjustment_type=AdjustmentType.INCREASE, quantity=50,
+            reason_code=AdjustmentReason.OTHER, reason='phantom stock found in overflow storage',
+            requested_by=self.staff,
+        )
+        policy, required_level, _, _ = resolve_adjustment_with_cumulative_cap(adjustment)
+        self.assertIsNotNone(policy, 'None variance must MATCH an ADMIN-outcome variance rule, not fall through')
+        self.assertEqual(required_level, ApprovalOutcome.ADMIN)
+
+
+class EnsureDefaultPoliciesIdempotencyTests(TestCase):
+    """§8: reseed idempotency for the one table Phase 12.1's §6 sweep
+    actually found (ApprovalPolicy — no siblings exist; the other 6
+    migrations are pure schema, no RunPython at all)."""
+
+    def test_calling_twice_does_not_duplicate_existing_rows(self):
+        count_before = ApprovalPolicy.objects.count()
+        ensure_default_policies()
+        ensure_default_policies()
+        self.assertEqual(ApprovalPolicy.objects.count(), count_before)
+
+    def test_restores_all_nine_rows_after_a_flush_style_wipe(self):
+        # Phase 12.2 — was 10; see test_nine_policies_seeded's own comment.
+        ApprovalPolicy.objects.all().delete()
+        self.assertEqual(ApprovalPolicy.objects.count(), 0)
+        ensure_default_policies()
+        self.assertEqual(ApprovalPolicy.objects.count(), 9)
+        ensure_default_policies()
+        self.assertEqual(ApprovalPolicy.objects.count(), 9)

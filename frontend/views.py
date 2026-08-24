@@ -1488,6 +1488,12 @@ class SaleTransactionPDFView(AnyStaffMixin, View):
 
     def get(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
+        # BUG-65 (docs/bugsfound.md) — SALE_INVOICE_PRINTED was defined
+        # but never fired anywhere; this is the one real trigger.
+        audit.log_action(
+            request.user, audit.SALE_INVOICE_PRINTED, "sales",
+            affected_id=sale.pk, status="success", request=request,
+        )
         return report_lib.generate_sale_transaction_pdf(sale)
 
 
@@ -1533,6 +1539,12 @@ class InventoryListView(AnyStaffMixin, View):
                 counts["low_stock"] += 1
             elif record.status == InventoryStatus.OUT_OF_STOCK:
                 counts["out_of_stock"] += 1
+
+        # BUG-65 (docs/bugsfound.md) — INVENTORY_VIEWED was defined in
+        # 13_AUDIT.md's constant list but never fired anywhere; this is
+        # that page. Same "view = auditable" precedent ReportsView's own
+        # REPORT_GENERATED calls already establish in this codebase.
+        audit.log_action(request.user, audit.INVENTORY_VIEWED, "inventory", status="success", request=request)
 
         context = {"active_nav": "inventory", "records": records, "counts": counts}
         return render(request, "inventory/inventory.html", context)

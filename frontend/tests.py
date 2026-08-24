@@ -947,6 +947,10 @@ class LowStockNotificationTests(ServiceTestCase):
                           "every active supervisor/admin must be notified, and only active ones")
         self.assertNotIn(inactive_supervisor.pk, recipients)
         self.assertNotIn(self.user.pk, recipients, "the sale's creator is not a supervisor")
+        # BUG-65 (docs/bugsfound.md) — LOW_STOCK_ALERT_SENT was defined
+        # but never audit-logged; the Notification above fired correctly,
+        # the audit trail did not.
+        self.assertTrue(AuditLog.objects.filter(action=audit.LOW_STOCK_ALERT_SENT, affected_id=self.product.pk).exists())
 
     def test_sale_dropping_stock_to_zero_sends_out_of_stock_not_low_stock(self):
         self.give_stock(5)
@@ -955,6 +959,9 @@ class LowStockNotificationTests(ServiceTestCase):
             recipient=self.supervisor, type=NotificationType.OUT_OF_STOCK,
         ).exists())
         self.assertFalse(Notification.objects.filter(type=NotificationType.LOW_STOCK).exists())
+        # BUG-65 — OUT_OF_STOCK_ALERT_SENT, same gap, same fix.
+        self.assertTrue(AuditLog.objects.filter(action=audit.OUT_OF_STOCK_ALERT_SENT, affected_id=self.product.pk).exists())
+        self.assertFalse(AuditLog.objects.filter(action=audit.LOW_STOCK_ALERT_SENT).exists())
 
     def test_sale_leaving_stock_above_reorder_level_sends_no_low_or_out_of_stock_notification(self):
         self.give_stock(20)
@@ -3232,6 +3239,9 @@ class PerRecordPDFViewTests(TestCase):
         self.assertEqual(response['Content-Type'], 'application/pdf')
         self.assertIn(self.sale.invoice_number, response['Content-Disposition'])
         self.assertTrue(response.content.startswith(b'%PDF'))
+        # BUG-65 (docs/bugsfound.md) — SALE_INVOICE_PRINTED was defined
+        # but never audit-logged.
+        self.assertTrue(AuditLog.objects.filter(action=audit.SALE_INVOICE_PRINTED, affected_id=self.sale.pk).exists())
 
     def test_sale_pdf_404_for_unknown_pk(self):
         self.client.login(username='pdfstaff', password='x')
@@ -4303,6 +4313,9 @@ class InventoryListViewTests(TestCase):
         self.assertContains(response, 'Low Stock Widget')
         self.assertContains(response, 'Out of Stock Widget')
         self.assertContains(response, 'INV-LOW-001')
+        # BUG-65 (docs/bugsfound.md) — INVENTORY_VIEWED was defined but
+        # never audit-logged.
+        self.assertTrue(AuditLog.objects.filter(action=audit.INVENTORY_VIEWED).exists())
 
     def test_counts_reflect_real_aggregates(self):
         self.client.login(username='invstaff', password='x')

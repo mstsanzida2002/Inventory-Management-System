@@ -202,18 +202,29 @@ class InventoryService:
         # decrease_stock (never from increase_stock) — check low/out-of-
         # stock and notify.
         if record.status in (InventoryStatus.LOW_STOCK, InventoryStatus.OUT_OF_STOCK):
-            cls._send_low_stock_notification(product, record)
+            cls._send_low_stock_notification(product, record, performed_by)
 
         return record
 
     @classmethod
-    def _send_low_stock_notification(cls, product, record):
+    def _send_low_stock_notification(cls, product, record, performed_by=None):
         if record.status == InventoryStatus.OUT_OF_STOCK:
             notify_supervisors(
                 notification_type=NotificationType.OUT_OF_STOCK,
                 title=f'Out of Stock: {product.name}',
                 message=f'{product.name} [{product.sku}] is now out of stock.',
                 link=f'/inventory/{product.id}/',
+            )
+            # BUG-65 (docs/bugsfound.md) — OUT_OF_STOCK_ALERT_SENT was
+            # defined but never fired anywhere; this is the real trigger
+            # (the Notification above already fires correctly, this was
+            # simply never also written to the audit log). `performed_by`
+            # is the sale/adjustment actor whose stock movement crossed
+            # the threshold, not a system actor — there's a real human
+            # behind every one of these.
+            audit.log_action(
+                performed_by, audit.OUT_OF_STOCK_ALERT_SENT, "inventory",
+                affected_id=product.pk, status="success",
             )
         else:
             notify_supervisors(
@@ -224,6 +235,11 @@ class InventoryService:
                     f'units remaining (reorder level: {record.reorder_level}).'
                 ),
                 link=f'/inventory/{product.id}/',
+            )
+            # BUG-65 — LOW_STOCK_ALERT_SENT, same gap, same fix.
+            audit.log_action(
+                performed_by, audit.LOW_STOCK_ALERT_SENT, "inventory",
+                affected_id=product.pk, status="success",
             )
 
 

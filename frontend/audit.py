@@ -52,11 +52,26 @@ LOGOUT = 'LOGOUT'
 PROFILE_UPDATED = 'PROFILE_UPDATED'
 PASSWORD_CHANGED = 'PASSWORD_CHANGED'
 ACCOUNT_LOCKED = 'ACCOUNT_LOCKED'
+# BUG-65 (docs/bugsfound.md) — DRIFTED, not dead: a password reset via
+# the emailed link genuinely is audited
+# (StockwellPasswordResetConfirmView.form_valid() -> _record_password_
+# change()), just consolidated under the more general PASSWORD_CHANGED
+# below rather than these two dedicated constants. Left defined-but-
+# unused deliberately rather than removed: 13_AUDIT.md still names them,
+# and consolidating under PASSWORD_CHANGED is a disclosed decision, not
+# an oversight — see docs/project_memory.md for the write-up.
 PASSWORD_RESET_REQUESTED = 'PASSWORD_RESET_REQUESTED'
 PASSWORD_RESET_COMPLETED = 'PASSWORD_RESET_COMPLETED'
 
 # User Management
 USER_CREATED = 'USER_CREATED'
+# BUG-65 — PHANTOM, not just unused: no view exists anywhere to edit an
+# existing user's fields or change their role after creation
+# (frontend/urls.py's users/ routes are List/Create/Deactivate/
+# Reactivate/Delete/Resend-credentials only). Not building that view for
+# this pass (out of scope) — these two constants stay defined, genuinely
+# unreachable, and disclosed as such (docs/13_AUDIT.md REQ 16.3 is
+# PARTIAL, not fully closed, until/unless that view exists).
 USER_UPDATED = 'USER_UPDATED'
 USER_DEACTIVATED = 'USER_DEACTIVATED'
 USER_REACTIVATED = 'USER_REACTIVATED'
@@ -115,12 +130,22 @@ SALE_SUBMITTED = 'SALE_SUBMITTED'
 SALE_APPROVED = 'SALE_APPROVED'
 SALE_REJECTED = 'SALE_REJECTED'
 SALE_CANCELLED = 'SALE_CANCELLED'
+# BUG-65 (docs/bugsfound.md) — now fired (SaleTransactionPDFView.get()).
 SALE_INVOICE_PRINTED = 'SALE_INVOICE_PRINTED'
 
 # Inventory
+# BUG-65 (docs/bugsfound.md) — INVENTORY_VIEWED/LOW_STOCK_ALERT_SENT/
+# OUT_OF_STOCK_ALERT_SENT are now fired (InventoryListView.get() and
+# InventoryService._send_low_stock_notification(), respectively).
 INVENTORY_VIEWED = 'INVENTORY_VIEWED'
 LOW_STOCK_ALERT_SENT = 'LOW_STOCK_ALERT_SENT'
 OUT_OF_STOCK_ALERT_SENT = 'OUT_OF_STOCK_ALERT_SENT'
+# BUG-65 — DRIFTED, not dead: physical counts are real, handled through
+# InventoryAdjustment's COUNT_CORRECTION reason code and logged under
+# ADJUSTMENT_REQUESTED/ADJUSTMENT_APPROVED instead of this dedicated
+# constant, because the feature was folded into the general adjustment
+# workflow rather than built as its own flow. Left defined-but-unused
+# deliberately — see docs/project_memory.md for the write-up.
 PHYSICAL_COUNT_PERFORMED = 'PHYSICAL_COUNT_PERFORMED'
 
 # Adjustments

@@ -40,6 +40,7 @@ from datetime import timedelta
 from django.db.models import Max, Sum
 from django.utils import timezone
 
+from frontend.approvals import recompute_abc_classes
 from frontend.models import (
     InventoryClassification,
     InventoryMovement,
@@ -231,5 +232,13 @@ def run_full_classification():
     for product in products:
         cls = classify_product(product, settings_obj)
         results[cls] += 1
+
+    # Phase 12 — recompute_abc_classes() folded in here rather than its
+    # own scheduled task (no Celery exists in this project, see that
+    # function's own docstring in frontend/approvals.py): every product
+    # above just got a fresh classify_product() row, so this always has
+    # somewhere real to write abc_class onto, and every manual "Run
+    # classification now" click keeps ABC ranking current too.
+    recompute_abc_classes()
 
     return results

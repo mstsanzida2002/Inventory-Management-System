@@ -93,6 +93,7 @@ from django.db import IntegrityError
 from django.db.models import Max, Min
 from django.utils import timezone
 
+from frontend.approvals import ensure_default_policies
 from frontend.classification import run_full_classification
 from frontend.models import (
     AdjustmentType,
@@ -242,6 +243,17 @@ class Command(BaseCommand):
 
         self.staff = User.objects.get(username="verify_user")
         self.supervisor = User.objects.get(username="verify_super")
+
+        # Phase 12 — flush truncates every table, including the
+        # ApprovalPolicy rows a one-time data migration seeded (found
+        # empirically: this command's first post-Phase-12 run failed
+        # every PurchaseService.approve()/AdjustmentService.approve()/
+        # SaleService.cancel_sale() call below with "no matching policy"
+        # -> fails closed to Admin -> verify_super, a supervisor, denied).
+        # ensure_default_policies() is idempotent and restores exactly
+        # the same starting ruleset the migration would have.
+        self.stdout.write("Restoring default approval policies (flush wiped them)...")
+        ensure_default_policies()
 
         self.stdout.write("Disabling email notifications for the bulk seed run...")
         settings_obj = SystemSettings.get_settings()
@@ -685,7 +697,15 @@ class Command(BaseCommand):
 
         cancelled = 0
         draft_cancel = self._new_sale(oil, 2, Decimal("0"))
-        SaleService.cancel_sale(draft_cancel, self.staff, "Customer changed their mind before checkout.")
+        # Phase 12 — cancel_sale() now enforces ApprovalTxType.SALE_CANCEL
+        # (can_approve()) inside the service layer itself, not only via
+        # SaleCancelView's SupervisorRequiredMixin. self.staff was never
+        # actually able to reach this action in the real app (the view's
+        # mixin already required supervisor+) — this only ever "worked"
+        # here because the seed calls the service directly, bypassing the
+        # view layer. Using self.supervisor now matches what was already
+        # true everywhere a real user hits this.
+        SaleService.cancel_sale(draft_cancel, self.supervisor, "Customer changed their mind before checkout.")
         cancelled += 1
         pending_cancel = self._new_sale(bottle, 3, Decimal("0"))
         SaleService.submit_for_approval(pending_cancel, self.staff)

@@ -108,10 +108,11 @@
                     {# PurchaseSubmitView: AnyStaffMixin — every logged-in role may submit, no gate needed #}
                     <button class="pill-btn po-submit-btn" type="button" aria-label="Submit for approval" title="Submit for approval"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                   {% elif po.status == 'pending' %}
-                    {# PurchaseApproveView/PurchaseRejectView: SupervisorRequiredMixin #}
+                    {# PurchaseApproveView/PurchaseRejectView: SupervisorRequiredMixin is the floor; Phase 12's can_approve() narrows further per-PO — shown-but-disabled-with-reason, never hidden (§8b). #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
-                      <button class="pill-btn approve po-approve-btn" type="button" aria-label="Approve PO"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                      <button class="pill-btn reject po-reject-btn" type="button" aria-label="Reject PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                      {% if po.required_level == 'admin' %}<span class="badge badge-danger" title="Requires administrator approval">Admin</span>{% endif %}
+                      <button class="pill-btn approve po-approve-btn" type="button" aria-label="Approve PO" {% if not po.can_approve %}disabled title="{{ po.approve_denied_reason }}"{% endif %}><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                      <button class="pill-btn reject po-reject-btn" type="button" aria-label="Reject PO"><svg class="icon icon-sm"><use href="#icon-circle-slash"></use></svg></button>
                     {% endif %}
                   {% elif po.status == 'approved' or po.status == 'partial' %}
                     {# PurchaseReceiveView: AnyStaffMixin — every logged-in role may receive, no gate needed #}

@@ -111,13 +111,14 @@
                     {# SaleApproveView/SaleRejectView: SupervisorRequiredMixin #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
                       <button class="pill-btn approve sale-approve-btn" type="button" aria-label="Approve sale"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                      <button class="pill-btn reject sale-reject-btn" type="button" aria-label="Reject sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                      <button class="pill-btn reject sale-reject-btn" type="button" aria-label="Reject sale"><svg class="icon icon-sm"><use href="#icon-circle-slash"></use></svg></button>
                     {% endif %}
                   {% endif %}
                   {% if sale.cancellable %}
-                    {# SaleCancelView: SupervisorRequiredMixin #}
+                    {# SaleCancelView: SupervisorRequiredMixin is the floor; Phase 12's can_approve() (ApprovalTxType.SALE_CANCEL) narrows further per-sale — shown-but-disabled-with-reason, never hidden (§8b). #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
-                      <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                      {% if sale.required_level == 'admin' %}<span class="badge badge-danger" title="Requires administrator approval">Admin</span>{% endif %}
+                      <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale" {% if not sale.can_cancel %}disabled title="{{ sale.cancel_denied_reason }}"{% endif %}><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
                     {% endif %}
                   {% endif %}
                   <a class="pill-btn" href="{% url 'frontend:sale_pdf' sale.pk %}" aria-label="Download PDF" title="Download PDF">

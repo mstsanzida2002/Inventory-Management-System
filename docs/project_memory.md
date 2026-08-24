@@ -6567,3 +6567,67 @@ us" lands on a fully-visible footer (it's the last element on the page,
 so the browser clamps to max-scroll rather than the full scroll-margin
 offset — expected, not a bug, confirmed by checking `document.scrollHeight`
 against the resulting `scrollY`).
+
+## Phase — Built-vs-Designed Documentation Audit (2026-08-24)
+
+Report-only pass, pre-viva: grep-driven audit of every `docs/*.md` claim
+against actual code, focused on the task's named suspicion areas
+(scheduled/periodic claims, model fields nothing writes to, notification
+types never emitted, audit constants never logged, settings fields never
+read, API endpoints with no route). No code changed. Full findings in
+`docs/bugsfound.md` BUG-65 → BUG-71; full detail there, not repeated here.
+
+**Source material gap**: `requirement_analysis_doc_2.docx` doesn't exist
+anywhere on the filesystem — REQ ranges were reconstructed from each doc
+file's own "Requirements Coverage" header instead (REQ 4/8/11/14/17/18
+unmapped — BUG-71).
+
+**Baseline phantoms (all already fully disclosed above, this pass just
+re-confirmed each is still accurate)**: PO approval ceiling — was
+phantom, now real via the Phase 12 Approval Authority Matrix (§13).
+Record unlock system — confirmed still fully phantom, nothing built it
+(§13, "record unlock" search). `abc_class` — nuanced, not pure phantom:
+real and computed for analytics (`recompute_abc_classes()`), deliberately
+scoped out of approval-policy routing only (Phase 12.2, §13).
+`CELERY_BEAT_SCHEDULE`/scheduled-task claims — confirmed phantom across
+5 doc files (`11_NOTIFICATIONS.md`, `DEAD_STOCK_DETECTION.md`,
+`DEMAND_FORECASTING.md`, `DEPLOYMENT.md`, `TECH_STACK.md`); no Celery
+dependency, no `@shared_task`, no scheduler anywhere — everything AI/email
+runs manually or synchronously (§2, §13 throughout).
+
+**New findings this pass**: 9 of 66 `frontend/audit.py` action constants
+are defined but never logged (BUG-65) — 2 are DRIFTED (consolidated into
+a broader constant), 1 is DRIFTED (folded into the adjustment audit
+trail), 6 are genuine gaps (`USER_UPDATED`/`USER_ROLE_CHANGED` because no
+edit-user/change-role view exists at all; `INVENTORY_VIEWED`,
+`SALE_INVOICE_PRINTED`, `LOW_STOCK_ALERT_SENT`, `OUT_OF_STOCK_ALERT_SENT`
+because the real features were never wired to also write an audit row).
+`SystemSettings.forecast_retrain_days` (BUG-66) and `default_reorder_level`
+(BUG-67) are both admin-editable and stored but read by nothing —
+changing either has zero effect. `docs/API_CONTRACTS.md` (BUG-68)
+documents ~30+ REST endpoints; only 4 read-only AI endpoints actually
+exist in `frontend/api_urls.py` (already known at the code level, but the
+doc file itself was never corrected). `docs/TECH_STACK.md` (BUG-69)
+still names Bootstrap 5.3 as the CSS framework; the real frontend is 100%
+custom vanilla CSS. `docs/INDEX.md` (BUG-70) references 4 module files
+and a `modules/`/`ai/`/`api/`/etc. subdirectory layout that don't exist —
+every real doc file is flat under `docs/`.
+
+**Pervasive, not re-flagged per-instance**: nearly every `docs/*.md` code
+example references a multi-app `apps/<name>/` Django layout; the actual
+project is a single `frontend` app throughout (already the subject of
+explicit call-outs in `frontend/audit.py`'s and `frontend/approvals.py`'s
+own docstrings) — a standing, deliberate divergence, not a bug.
+
+**Prioritized recommendation (fix / remove / disclose before viva)**:
+- *Fix if time allows*: BUG-65's 6 genuine audit gaps (cheap — each is
+  one more `audit.log_action()` call at an existing call site).
+- *Remove from docs*: BUG-68 (`API_CONTRACTS.md`'s unbuilt endpoint
+  list), BUG-69 (`TECH_STACK.md`'s Bootstrap section), BUG-70
+  (`INDEX.md`'s dead file/subdirectory references) — all cheap doc edits,
+  no code risk.
+- *Disclose as known limitation*: everything Celery/scheduler-shaped
+  (already thoroughly disclosed here), `forecast_retrain_days`/
+  `default_reorder_level` (BUG-66/67, cheap to fix but low-value —
+  could go either way), the missing source `.docx` (BUG-71, not
+  fixable by this project).

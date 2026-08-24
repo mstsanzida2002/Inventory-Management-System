@@ -30,7 +30,7 @@
 .hero h1 { margin-bottom: var(--sp-4); }
 .hero .lede { font-size: var(--fs-md); max-width: 46ch; margin-bottom: var(--sp-6); }
 .hero-cta { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-6); }
-.hero-proof { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); color: var(--c-slate); }
+.hero-proof { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); color: var(--c-indigo-tint); }
 
 /* ---- Dashboard preview mock (right side of hero) ---- */
 .preview-panel {

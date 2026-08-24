@@ -22,7 +22,7 @@
 .sidebar {
   background: var(--c-white);
   color: var(--c-ink);
-  border-right: 1px solid rgba(16, 22, 43, 0.08);
+  border-right: 1px solid rgba(2, 20, 89, 0.08);
   position: sticky;
   top: 0;
   height: 100vh;
@@ -123,7 +123,7 @@
 }
 
 .sidebar-footer {
-  border-top: 1px solid rgba(16, 22, 43, 0.08);
+  border-top: 1px solid rgba(4, 15, 57, 0.08);
   padding: var(--sp-4) var(--sp-5);
   flex-shrink: 0;
 }
@@ -170,10 +170,10 @@
    pushes .app-main onto row 2 of the sidebar column. */
 .sidebar-scrim { display: none; }
 
-/* ----------------------------------------------------------------- Main */
+/* ---------------------------------------------------- Main */
 .app-main { min-width: 0;
    }
-/* ---------------------------------------------------------------- Topbar */
+/* --------------------------------------------------------- Topbar */
 .topbar {
   height: var(--topbar-h);
   position: sticky;
@@ -514,6 +514,17 @@
 .pill-btn.approve:hover { border-color: var(--c-success); color: var(--c-success); }
 .pill-btn.reject:hover { border-color: var(--c-danger); color: var(--c-danger); }
 .pill-btn .icon { width: 15px; height: 15px; }
+/* Phase 12 (§8b) — a control the current user's role technically reaches
+   but the resolved ApprovalPolicy denies: shown, disabled, with a
+   title="..." reason (set in the template) — never hidden, so the
+   hierarchy is visible rather than looking like a bug. */
+.pill-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  border-color: var(--c-slate-200);
+  color: var(--c-slate);
+}
+.pill-btn:disabled:hover { border-color: var(--c-slate-200); color: var(--c-slate); }
 
 /* ------------------------------------------------------------- Timeline */
 .timeline { display: flex; flex-direction: column; }

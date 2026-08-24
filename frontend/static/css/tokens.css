@@ -5,6 +5,7 @@
 
 :root {
   /* ---- Brand palette ---- */
+  
   --c-ink:          #10162B;   /* headings, dark surfaces, nav */
   --c-ink-soft:     #232A44;   /* dark surface, one step lighter */
   --c-indigo:       #3D4FE0;   /* primary brand / actions */

@@ -63,7 +63,7 @@
         <svg class="field-icon"><use href="#icon-search"></use></svg>
         <input type="search" class="input" id="productSearch" placeholder="Search products by name or SKU...">
       </div>
-      <div class="flex gap-3" style="flex-wrap:wrap;">
+      <div class="filter-group">
         <select class="input" id="productCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
           <option value="">All categories</option>
           {% for category in categories %}

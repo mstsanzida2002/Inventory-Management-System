@@ -5,8 +5,11 @@ single `frontend` app per current project structure. Cross-model references
 that SCHEMA.md writes as app-label strings (e.g. 'suppliers.Supplier') are
 written as direct class references instead, since there is only one app.
 """
+from decimal import Decimal
+
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -561,49 +564,52 @@ class StockClassification(models.TextChoices):
     FAST = 'fast', 'Fast-Moving'
     SLOW = 'slow', 'Slow-Moving'
     DEAD = 'dead', 'Dead Stock'
-
-
-class ABCClass(models.TextChoices):
-    """Phase 12 — cumulative-revenue-contribution class (80/15/5 split),
-    recomputed by frontend.approvals.recompute_abc_classes(). Lives on
-    this model, not Product or InventoryRecord: this is already the one
-    place a product's *derived, batch-recomputed, sales-history-driven*
-    classification lives (StockClassification/turnover_rate are the same
-    kind of field) — Product is static catalog data, InventoryRecord is
-    live per-movement stock state, neither is where a periodic analytics
-    pass belongs."""
-    A = 'A', 'A — Top revenue contributors'
-    B = 'B', 'B — Mid revenue contributors'
-    C = 'C', 'C — Low / no revenue contribution'
-    # No 'unclassified' member here — deliberately. The model field's own
-    # blank value ('') is that fourth state (Phase 12.1 §5b). Keeping it
-    # out of ABCClass.choices means a genuinely-computed class is always
-    # one of these three named values; blank can only ever mean "never
-    # computed."
+    # Prompt 2 (2026-08-24) — a product too young or too thinly-observed to
+    # trust any of the other three: see frontend/classification.py's own
+    # module docstring for the full gating rule. Deliberately not a
+    # "problem" state — never counted in total_flagged, never notified.
+    INSUFFICIENT_DATA = 'insufficient_data', 'Insufficient Data'
 
 
 class InventoryClassification(TimeStampedModel):
     product = models.OneToOneField(Product, on_delete=models.CASCADE, related_name='classification')
-    classification = models.CharField(max_length=10, choices=StockClassification.choices)
+    classification = models.CharField(max_length=20, choices=StockClassification.choices)
     turnover_rate = models.DecimalField(max_digits=8, decimal_places=4, default=0)
     last_sold_date = models.DateField(null=True, blank=True)
-    days_since_last_sale = models.PositiveIntegerField(default=0)
+    # Prompt 2 (2026-08-24) — BUG (see docs/bugsfound.md): nullable now,
+    # was PositiveIntegerField(default=0). A never-sold product used to
+    # store 0 here (from the old `days_since if days_since < 9999 else 0`
+    # sentinel-clamp) while last_sold_date stayed None — "0 days since
+    # last sale" read as "sold today" right next to a field saying no sale
+    # has ever happened. Fixed at the point of write: classify_product()
+    # now stores None whenever last_sold_date is None, never a numeric
+    # stand-in. Every reader (views.py/reports.py/serializers.py) either
+    # already branched on last_sold_date first or is fine surfacing a
+    # genuine null.
+    days_since_last_sale = models.PositiveIntegerField(null=True, blank=True)
     recommendation = models.TextField(blank=True)
     classified_at = models.DateTimeField(auto_now=True)
-    # Phase 12's own default was 'C' (never blank) — corrected in Phase
-    # 12.1 §5b, at the time because ABC was briefly an *approval-routing*
-    # input (ApprovalPolicy row 20) and defaulting to 'C' let a
-    # newly-stocked high-value product sit unescalated indefinitely.
-    # Phase 12.2 removed ABC from approval routing entirely (too much
-    # complexity for the value it added there — see frontend/approvals.py's
-    # module docstring), but the blank default stays: "never computed" is
-    # still a more honest state than a fabricated 'C' for analytics
-    # purposes too — an analyst asking "is this product low-value" should
-    # get "unknown" rather than a guess dressed up as a real answer.
-    # Not touched by classify_product()'s update_or_create() (its
-    # `defaults` dict deliberately omits this field) — recomputed only by
-    # recompute_abc_classes(), a separate pass on a separate cadence.
-    abc_class = models.CharField(max_length=1, choices=ABCClass.choices, blank=True, default='')
+    # Prompt 2 (2026-08-24) — the multi-criteria weighted expert system's
+    # composite score (0-100, higher = more stagnant) and its four
+    # 0.00-1.00 factor inputs, persisted individually so a supervisor can
+    # see *why* a product landed where it did, not just where it landed.
+    # Nullable: rows created before this migration (or a row whose product
+    # has never been through classify_product() since) carry no score
+    # until the next classification run recomputes them — see
+    # frontend/classification.py and docs/project_memory.md for the null-
+    # window disclosure.
+    stagnation_index = models.PositiveSmallIntegerField(null=True, blank=True)
+    confidence = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)  # 0.00 - 1.00
+    recency_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    turnover_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    coverage_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    frequency_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    # PROMPT_1B (2026-08-24) — set only when an override rule (not the
+    # weighted index) decided this row's classification, e.g. "No sales
+    # in 210 days". Blank for both the ordinary index path and
+    # insufficient_data — "worth more to a supervisor than an opaque
+    # 71.3" (see classify_product()'s own docstring for full precedence).
+    flagged_by_rule = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         db_table = 'inventory_classifications'
@@ -706,17 +712,33 @@ class SystemSettings(TimeStampedModel):
     forecast_retrain_days = models.PositiveIntegerField(default=7)
     slow_moving_threshold_days = models.PositiveIntegerField(default=60)
     dead_stock_threshold_days = models.PositiveIntegerField(default=180)
-    # Phase 12.1 §5b — a single global timestamp for the whole
-    # recompute_abc_classes() pass (it processes every product in one
-    # run, so one timestamp is accurate, not an approximation), since
-    # InventoryClassification.abc_class is updated via a bulk
-    # queryset .update() call that bypasses TimeStampedModel's own
-    # auto_now updated_at entirely — .update() never calls save(), so
-    # updated_at would silently never reflect an ABC recompute at all.
-    # ABC is now an authority input (policy row 20), so silent staleness
-    # here is worse than no ABC — surfaced on the policy screen and the
-    # classification page, warned past ~30 days.
-    abc_last_recomputed_at = models.DateTimeField(null=True, blank=True)
+    # Prompt 2 (2026-08-24) — the dead-stock classifier's knowledge base:
+    # admin-editable weights for the four stagnation-index factors
+    # (frontend/classification.py), the composite-score thresholds that
+    # replace the old single-factor day-count branch, and the
+    # confidence-gating inputs. See classification.py's module docstring
+    # for how each is used; see clean() below for why the four weights are
+    # validated, not silently normalised.
+    weight_recency = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.40'))
+    weight_turnover = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.30'))
+    weight_coverage = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.20'))
+    weight_frequency = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.10'))
+    slow_index_threshold = models.PositiveSmallIntegerField(default=40)
+    dead_index_threshold = models.PositiveSmallIntegerField(default=70)
+    target_days_of_cover = models.PositiveIntegerField(default=90)
+    min_observation_days = models.PositiveIntegerField(default=30)
+    # PROMPT_1B (2026-08-24) — min_sale_events no longer gates
+    # insufficient_data (that was conflating "unproven" with "dormant" —
+    # see classification.py's module docstring and docs/bugsfound.md);
+    # it now feeds confidence only, same as it should have from the
+    # start.
+    min_sale_events = models.PositiveIntegerField(default=2)
+    # PROMPT_1B (2026-08-24) — the ceiling both the Coverage factor's ramp
+    # and the Force-SLOW override use: at or above this many days of
+    # stock cover, a product is slow-moving regardless of how recently it
+    # last sold (a single bulk sale that won't run out for two years is
+    # not "fast" just because it happened last week).
+    extreme_coverage_days = models.PositiveIntegerField(default=730)
     # Session
     session_timeout_seconds = models.PositiveIntegerField(default=3600)
     # Notifications
@@ -737,6 +759,26 @@ class SystemSettings(TimeStampedModel):
         # instead of silently duplicating — either way, never a 2nd row.
         self.pk = 1
         super().save(*args, **kwargs)
+
+    def clean(self):
+        # Prompt 2 (2026-08-24) — the four stagnation-index weights must
+        # sum to exactly 1.00. Rejected here, not silently normalised: a
+        # classifier that quietly rescaled an admin's 0.40/0.30/0.20/0.05
+        # (summing to 0.95) to fractions the admin never entered would
+        # make the stored numbers and the numbers actually driving
+        # classification permanently diverge — unauditable. This runs via
+        # ModelForm.full_clean() for both SystemSettingsForm (the settings
+        # page) and Django admin's own form, so both surfaces reject a
+        # bad total the same way; nothing bypasses it except a raw
+        # .save() from trusted code, which never writes these fields.
+        super().clean()
+        total = (self.weight_recency or Decimal('0')) + (self.weight_turnover or Decimal('0')) \
+            + (self.weight_coverage or Decimal('0')) + (self.weight_frequency or Decimal('0'))
+        if total != Decimal('1.00'):
+            raise ValidationError(
+                f"Classification weights (Recency + Turnover + Coverage + Frequency) "
+                f"must sum to exactly 1.00 — currently {total}."
+            )
 
     @classmethod
     def get_settings(cls):
@@ -811,11 +853,12 @@ class ApprovalPolicy(TimeStampedModel):
 
     # --- matching conditions. Blank/null means "matches anything." ---
     # Phase 12.2 — abc_class was here (matched ApprovalPolicy against
-    # InventoryClassification.abc_class) and is removed: too much
-    # complexity for the value it added as an approval-routing input.
-    # ABC itself is untouched and still lives on InventoryClassification
-    # for inventory analysis/dead-stock work — see that model and
-    # frontend.approvals.recompute_abc_classes().
+    # InventoryClassification.abc_class) and was removed as an
+    # approval-routing input: too much complexity for the value it added.
+    # ABC classification itself (the field, recompute_abc_classes(),
+    # ABCClass) was later removed outright, Prompt 2 (2026-08-24) — never
+    # part of any documented requirement (docs/project_memory.md §13/§15
+    # has the full disclosure), so nothing here to route on any more.
     reason_code = models.CharField(max_length=40, blank=True)
     min_value = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     max_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)

@@ -63,32 +63,27 @@ Phase 12.2 — ABC class removed as an approval-routing input entirely
 (the matching condition, the seeded "Class-A product, high variance"
 policy, Phase 12.1 §5b's unclassified-resolves-as-'A' fallback, the
 rule simulator and cumulative-usage-panel UI that surfaced it here): too
-much complexity for the value it added. `ABCClass`/
-`recompute_abc_classes()` themselves are untouched — ABC remains a real,
-useful field on `InventoryClassification` for inventory analysis and
-dead-stock work, just no longer consulted anywhere in this module's own
-resolution logic.
+much complexity for the value it added. `ABCClass`/`recompute_abc_classes()`
+themselves stayed for a while as an analytics-only feature — Prompt 2
+(2026-08-24) removed them outright, along with `InventoryClassification.
+abc_class` and `SystemSettings.abc_last_recomputed_at`: ABC classification
+was never part of any documented requirement (confirmed by a full grep of
+docs/*.md, see docs/project_memory.md §13/§15), so this module no longer
+references it at all.
 """
 from decimal import Decimal
 
-from django.db.models import Sum
 from django.utils import timezone
 from datetime import timedelta
 
 from frontend.models import (
-    ABCClass,
     ApprovalOutcome,
     ApprovalPolicy,
     ApprovalTxType,
     InventoryAdjustment,
-    InventoryClassification,
     InventoryRecord,
-    Product,
     PurchaseOrder,
-    SaleItem,
-    SaleStatus,
     SaleTransaction,
-    SystemSettings,
 )
 
 # The starting ruleset (§9), also frozen as a snapshot inside
@@ -194,14 +189,6 @@ def ensure_default_policies():
         if was_created:
             created += 1
     return created
-
-
-# Trailing window for cumulative-revenue ABC ranking. Matches
-# frontend.classification.calculate_turnover_rate()'s own 90-day default —
-# same "recent, not lifetime" horizon, same reasoning: a product's
-# revenue-contribution class should track its recent behaviour, not
-# something it did a year ago.
-ABC_WINDOW_DAYS = 90
 
 
 def resolve_required_level(*, transaction_type, value, reason_code='',
@@ -395,92 +382,3 @@ def can_approve(user, tx):
 
 def created_by_id_equals(created_by, user):
     return created_by is not None and user is not None and created_by.pk == user.pk
-
-
-def recompute_abc_classes():
-    """Batch pass — cumulative revenue contribution over the trailing
-    ABC_WINDOW_DAYS, split 80/15/5 into A/B/C. Called from
-    frontend.classification.run_full_classification()'s own closing step:
-    no Celery task exists anywhere in this project to schedule this
-    alongside the existing AI tasks (requirements.txt has no celery
-    dependency; frontend/forecasting.py's own docstring already discloses
-    the same absence) — every AI/analytics pass here is a manual
-    synchronous run, so this follows that established pattern rather than
-    inventing background-task infrastructure.
-
-    Phase 12.2 note: ABC is no longer consulted by the approval resolver
-    (see this module's own docstring) — this function is unchanged and
-    still runs, purely for inventory analysis/dead-stock work.
-
-    Only UPDATEs existing InventoryClassification rows (never creates
-    one) — a product that has never been through classify_product() yet
-    has no row to update, and stays at whatever the model's own blank
-    default implies ("never computed") until its row is eventually
-    created; recompute_abc_classes() folding into run_full_classification()
-    (which classifies every active product first) means that gap only
-    matters for products with literally zero sales history. Returns the
-    count of rows updated."""
-    cutoff = timezone.localdate() - timedelta(days=ABC_WINDOW_DAYS)
-    revenue_by_product = dict(
-        SaleItem.objects.filter(
-            transaction__status=SaleStatus.COMPLETED,
-            transaction__transaction_date__gte=cutoff,
-        ).values('product_id').annotate(revenue=Sum('line_total')).values_list('product_id', 'revenue')
-    )
-
-    active_product_ids = list(Product.objects.filter(is_active=True).values_list('id', flat=True))
-    total_revenue = sum(revenue_by_product.values()) if revenue_by_product else Decimal('0')
-
-    ranked = sorted(
-        active_product_ids,
-        key=lambda pid: revenue_by_product.get(pid, Decimal('0')),
-        reverse=True,
-    )
-
-    cumulative = Decimal('0')
-    updated = 0
-    for pid in ranked:
-        revenue = revenue_by_product.get(pid, Decimal('0'))
-        if revenue <= 0 or total_revenue <= 0:
-            cls = ABCClass.C
-        else:
-            cumulative += revenue
-            pct = cumulative / total_revenue * 100
-            if pct <= 80:
-                cls = ABCClass.A
-            elif pct <= 95:
-                cls = ABCClass.B
-            else:
-                cls = ABCClass.C
-        rows = InventoryClassification.objects.filter(product_id=pid).update(abc_class=cls)
-        updated += rows
-
-    # A bulk queryset .update() (above) bypasses TimeStampedModel's
-    # auto_now updated_at entirely (.update() never calls save()), so
-    # without this, ABC's own recompute time would be silently
-    # unobservable — still tracked for analysts, even though (Phase
-    # 12.2) it no longer gates any approval.
-    settings_obj = SystemSettings.get_settings()
-    settings_obj.abc_last_recomputed_at = timezone.now()
-    settings_obj.save(update_fields=['abc_last_recomputed_at', 'updated_at'])
-
-    return updated
-
-
-# "Warning when it exceeds ~30 days" — still relevant on the Slow-Moving
-# & Dead Stock page (Phase 12.2 kept ABC for analytics there), no longer
-# surfaced on the Approval Policies page.
-ABC_STALENESS_WARNING_DAYS = 30
-
-
-def abc_staleness_info():
-    """Returns (last_recomputed_at_or_None, is_stale). is_stale is True
-    both when it's never been run at all and when it's older than
-    ABC_STALENESS_WARNING_DAYS — an analyst reading ABC-based inventory
-    recommendations off stale or never-computed data is the risk this
-    guards against."""
-    last = SystemSettings.get_settings().abc_last_recomputed_at
-    if last is None:
-        return None, True
-    is_stale = (timezone.now() - last) > timedelta(days=ABC_STALENESS_WARNING_DAYS)
-    return last, is_stale

@@ -423,6 +423,15 @@ class SystemSettingsForm(forms.ModelForm):
             "company_tax_number", "company_website",
             "default_reorder_level", "forecast_period_weeks", "forecast_retrain_days",
             "slow_moving_threshold_days", "dead_stock_threshold_days", "session_timeout_seconds",
+            # Prompt 2 (2026-08-24) — the dead-stock classifier's
+            # knowledge base. weight_* validated in SystemSettings.clean()
+            # (must sum to exactly 1.00, rejected not normalised — see
+            # that method's own docstring); everything else here is a
+            # plain admin-tunable number, same shape as the thresholds
+            # above.
+            "weight_recency", "weight_turnover", "weight_coverage", "weight_frequency",
+            "slow_index_threshold", "dead_index_threshold", "target_days_of_cover",
+            "min_observation_days", "min_sale_events", "extreme_coverage_days",
         ]
 
     # PositiveIntegerFields with no blank=True on the model (same shape as
@@ -438,6 +447,9 @@ class SystemSettingsForm(forms.ModelForm):
         "company_name", "default_reorder_level", "forecast_period_weeks",
         "forecast_retrain_days", "slow_moving_threshold_days",
         "dead_stock_threshold_days", "session_timeout_seconds",
+        "weight_recency", "weight_turnover", "weight_coverage", "weight_frequency",
+        "slow_index_threshold", "dead_index_threshold", "target_days_of_cover",
+        "min_observation_days", "min_sale_events", "extreme_coverage_days",
     ]
 
     def __init__(self, *args, **kwargs):
@@ -454,7 +466,14 @@ class SystemSettingsForm(forms.ModelForm):
     def clean(self):
         cleaned = super().clean()
         for name in self._FALLBACK_TO_INSTANCE_FIELDS:
-            if not cleaned.get(name):
+            # Prompt 2 (2026-08-24) — `is None`, not a falsy check: the
+            # weight_* fields just added to this list make 0.00 a
+            # perfectly legitimate value (an admin genuinely zeroing out
+            # one factor's contribution), and the old `not cleaned.get()`
+            # would have silently discarded that submitted 0 and fallen
+            # back to the row's stale value instead — only a truly
+            # missing/omitted field should fall back.
+            if cleaned.get(name) is None:
                 cleaned[name] = getattr(self.instance, name)
         return cleaned
 

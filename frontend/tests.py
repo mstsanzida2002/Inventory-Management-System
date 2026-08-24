@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import re
+import statistics
 import tempfile
 import zlib
 from datetime import datetime, timedelta, timezone as dt_timezone
@@ -20,6 +21,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core import mail
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
@@ -4882,64 +4884,264 @@ class ExportViewTests(TestCase):
 
 
 class ClassificationLogicTests(ServiceTestCase):
-    """Phase 10 — frontend/classification.py, unit-level. Every sale here
-    is constructed directly (bypassing SaleService) since these tests are
-    about classify_product()'s own logic against a known data shape, not
-    about the approve/cancel workflow — that's ReclassificationHookTests
-    below."""
+    """Phase 10 / Prompt 2 (2026-08-24) — frontend/classification.py,
+    unit-level. Every sale here is constructed directly (bypassing
+    SaleService) since these tests are about classify_product()'s own
+    logic against a known data shape, not about the approve/cancel
+    workflow — that's ReclassificationHookTests below.
 
-    def _completed_sale(self, transaction_date, quantity=1):
+    The multi-criteria weighted expert system needs two things most of
+    the old recency-only tests didn't: the product must be *old enough*
+    (>= SystemSettings.min_observation_days, default 30) and have
+    *enough sale events* (>= min_sale_events, default 2) to clear the
+    INSUFFICIENT_DATA gate before any of the four factors are scored at
+    all — _age_and_stock()/_make_product() below back-date
+    Product.created_at and every InventoryMovement.created_at (the stock
+    age anchor) directly, rather than mocking timezone.now() for every
+    test."""
+
+    def _sale_for(self, product, transaction_date, quantity=1):
         sale = SaleTransaction.objects.create(
             created_by=self.user, status=SaleStatus.COMPLETED, transaction_date=transaction_date,
         )
         SaleItem.objects.create(
-            transaction=sale, product=self.product, quantity=quantity,
-            unit_price=Decimal('20.00'), line_total=Decimal('20.00'),
+            transaction=sale, product=product, quantity=quantity,
+            unit_price=Decimal('20.00'), line_total=Decimal('20.00') * quantity,
         )
         return sale
 
-    def test_never_sold_is_dead_with_days_since_stored_as_zero_not_9999(self):
-        """The 9999 sentinel is an internal signal, never a stored/shown
-        value — matches this project's existing slow_moving.html precedent
-        (docs/project_memory.md §13)."""
-        InventoryService.initialize_for_product(self.product)
+    def _completed_sale(self, transaction_date, quantity=1):
+        return self._sale_for(self.product, transaction_date, quantity)
+
+    def _age_and_stock(self, days_old, stock_qty, product=None):
+        """Back-dates `product` (default self.product) and any
+        InventoryMovement rows so _stock_age_days() reports `days_old`,
+        then seeds `stock_qty` units via a single InventoryService call —
+        the movement is written at "now" and immediately back-dated too,
+        so it lands *before* the 90-day demand window whenever
+        days_old > 90 (calculate_average_stock()'s `before` branch: a
+        constant, predictable avg_stock == stock_qty for the whole
+        window)."""
+        product = product or self.product
+        past = timezone.now() - timedelta(days=days_old)
+        Product.objects.filter(pk=product.pk).update(created_at=past)
+        # .update() doesn't touch the in-memory instance — without this,
+        # _stock_age_days()'s Product.created_at fallback (no-movement
+        # case, e.g. stock_qty=0) would silently see the original,
+        # un-back-dated value.
+        product.refresh_from_db()
+        InventoryService.initialize_for_product(product)
+        if stock_qty:
+            InventoryService.increase_stock(
+                product=product, quantity=stock_qty, movement_type=MovementType.PURCHASE,
+                reference_type='TestSetup', reference_id=0, performed_by=self.user,
+            )
+        InventoryMovement.objects.filter(product=product).update(created_at=past)
+        return product
+
+    def _make_product(self, sku, days_old, stock_qty):
+        product = Product.objects.create(
+            sku=sku, name=sku, category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+        return self._age_and_stock(days_old, stock_qty, product=product)
+
+    def test_new_product_no_sales_is_insufficient_data_not_dead(self):
+        """The exact scenario the old single-factor branch got wrong:
+        `days_since = 9999 for never-sold` immediately satisfied
+        `days_since >= dead_threshold`, so a product created *yesterday*
+        classified as DEAD on its very first run. A product that hasn't
+        existed long enough to have a sales history isn't "dead" — it
+        simply hasn't been given the chance to prove otherwise."""
+        self._age_and_stock(days_old=1, stock_qty=50)
         classification = classify_product(self.product)
-        self.assertEqual(classification, StockClassification.DEAD)
+        self.assertEqual(classification, StockClassification.INSUFFICIENT_DATA)
         record = InventoryClassification.objects.get(product=self.product)
-        self.assertEqual(record.days_since_last_sale, 0)
+        self.assertIsNone(record.stagnation_index)
+        self.assertIsNone(record.recency_score)
         self.assertIsNone(record.last_sold_date)
-        self.assertNotIn('9999', record.recommendation)
-        self.assertIn('no recorded sales', record.recommendation.lower())
+        self.assertIsNone(record.days_since_last_sale)
 
-    def test_fast_when_sold_recently(self):
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=3))
+    def test_recent_sale_with_high_coverage_is_not_fast(self):
+        """Multi-factor proof: a sale 3 days ago alone would read "fast"
+        under the old recency-only branch. 1200 days of stock cover
+        (current_stock=1200, avg_daily_demand=1.0/day over the trailing
+        90 days) and correspondingly weak turnover pull the composite
+        stagnation index up past the slow threshold despite the fresh
+        sale — the weighted system, not recency alone, decides."""
+        self._age_and_stock(days_old=200, stock_qty=1200)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=80), quantity=45)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=3), quantity=45)
+        classification = classify_product(self.product)
+        self.assertNotEqual(classification, StockClassification.FAST)
+        record = InventoryClassification.objects.get(product=self.product)
+        self.assertIsNotNone(record.stagnation_index)
+        self.assertGreaterEqual(record.stagnation_index, SystemSettings.get_settings().slow_index_threshold)
+
+    def test_fast_when_sold_recently_with_low_stock_and_frequent_sales(self):
+        """The positive case: low stock relative to demand, sold
+        recently, sold more than once — every factor agrees this is
+        moving well."""
+        self._age_and_stock(days_old=200, stock_qty=5)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=3), quantity=5)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=10), quantity=5)
         self.assertEqual(classify_product(self.product), StockClassification.FAST)
 
-    def test_slow_at_exact_60_day_boundary(self):
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=60))
-        self.assertEqual(classify_product(self.product), StockClassification.SLOW)
+    def test_identical_recency_different_turnover_gives_different_index(self):
+        """Two products, same last-sold date, same sale pattern, but
+        very different stock levels behind it — turnover_score must
+        differ (and coverage/recency/frequency are held constant), so
+        the composite index must differ too. Proves Turnover is scored
+        independently, not folded into Recency."""
+        settings_obj = SystemSettings.get_settings()
+        self._age_and_stock(days_old=200, stock_qty=1000)  # low turnover
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=10), quantity=1)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=11), quantity=1)
+        classify_product(self.product, settings_obj=settings_obj)
+        low_turnover = InventoryClassification.objects.get(product=self.product)
 
-    def test_fast_at_59_days_one_below_slow_boundary(self):
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=59))
-        self.assertEqual(classify_product(self.product), StockClassification.FAST)
+        product_b = self._make_product('SKU-TURN-002', days_old=200, stock_qty=10)  # high turnover
+        self._sale_for(product_b, timezone.localdate() - timedelta(days=10), quantity=1)
+        self._sale_for(product_b, timezone.localdate() - timedelta(days=11), quantity=1)
+        classify_product(product_b, settings_obj=settings_obj)
+        high_turnover = InventoryClassification.objects.get(product=product_b)
 
-    def test_dead_at_exact_180_day_boundary(self):
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=180))
-        self.assertEqual(classify_product(self.product), StockClassification.DEAD)
+        self.assertEqual(low_turnover.recency_score, high_turnover.recency_score)
+        self.assertNotEqual(low_turnover.turnover_score, high_turnover.turnover_score)
+        self.assertNotEqual(low_turnover.stagnation_index, high_turnover.stagnation_index)
 
-    def test_slow_at_179_days_one_below_dead_boundary(self):
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=179))
-        self.assertEqual(classify_product(self.product), StockClassification.SLOW)
+    def test_changing_a_weight_changes_classification_outcome(self):
+        """Proves the knowledge base is live, not ornamental: the exact
+        same product data classifies differently once the admin-tunable
+        weights change, with no other input touched. Deliberately NOT
+        the extreme-coverage fixture used elsewhere in this class — days
+        of cover here (600) sits inside the ramp band (target=90,
+        extreme=730), so neither Force-FAST nor Force-SLOW ever fires,
+        and the classification is decided purely by the index — the
+        thing this test is actually about."""
+        self._age_and_stock(days_old=200, stock_qty=100)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=80), quantity=8)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=3), quantity=7)
+
+        settings_obj = SystemSettings.get_settings()
+        before = classify_product(self.product, settings_obj=settings_obj)
+        self.assertEqual(before, StockClassification.SLOW)
+        record_before = InventoryClassification.objects.get(product=self.product)
+        self.assertEqual(record_before.flagged_by_rule, '')  # index-decided, not an override
+        index_before = record_before.stagnation_index
+
+        settings_obj.weight_recency = Decimal('0.90')
+        settings_obj.weight_turnover = Decimal('0.05')
+        settings_obj.weight_coverage = Decimal('0.03')
+        settings_obj.weight_frequency = Decimal('0.02')
+        settings_obj.full_clean()
+        settings_obj.save()
+
+        after = classify_product(self.product, settings_obj=settings_obj)
+        record_after = InventoryClassification.objects.get(product=self.product)
+
+        self.assertEqual(after, StockClassification.FAST)
+        self.assertEqual(record_after.flagged_by_rule, '')
+        self.assertNotEqual(index_before, record_after.stagnation_index)
+
+    def test_weights_not_summing_to_one_rejected_on_save(self):
+        """Rejected, not silently normalised (SystemSettings.clean()) —
+        0.40 + 0.30 + 0.20 + 0.05 = 0.95, not 1.00."""
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.weight_recency = Decimal('0.40')
+        settings_obj.weight_turnover = Decimal('0.30')
+        settings_obj.weight_coverage = Decimal('0.20')
+        settings_obj.weight_frequency = Decimal('0.05')
+        with self.assertRaises(ValidationError):
+            settings_obj.full_clean()
+        # Confirms it's genuinely rejected, not partially applied: the
+        # stored row still has its original, valid weights.
+        self.assertEqual(SystemSettings.get_settings().weight_frequency, Decimal('0.10'))
+
+    def test_confidence_rises_with_longer_observation_window(self):
+        self._age_and_stock(days_old=5, stock_qty=10)
+        classify_product(self.product)
+        short = InventoryClassification.objects.get(product=self.product).confidence
+
+        product_b = self._make_product('SKU-CONF-002', days_old=20, stock_qty=10)
+        classify_product(product_b)
+        longer = InventoryClassification.objects.get(product=product_b).confidence
+
+        self.assertIsNotNone(short)
+        self.assertIsNotNone(longer)
+        self.assertLess(short, longer)
+
+    def test_never_sold_record_never_persists_contradictory_days_since_last_sale(self):
+        """BUG (docs/bugsfound.md): the old code stored
+        days_since_last_sale=0 (the 9999-sentinel clamp) beside
+        last_sold_date=None — "0 days since last sale" read as "sold
+        today" next to a field saying no sale ever happened. Fixed at
+        the point of write: the two must always agree."""
+        self._age_and_stock(days_old=200, stock_qty=10)
+        classify_product(self.product)
+        record = InventoryClassification.objects.get(product=self.product)
+        self.assertIsNone(record.last_sold_date)
+        self.assertIsNone(record.days_since_last_sale)
+
+    def test_coverage_factor_edges(self):
+        """min_sale_events temporarily 0 for this test only, to isolate
+        the coverage factor from the insufficient_data gate (both read
+        the same "sales in the last 90 days" signal) — a legitimate
+        admin configuration (age-only gating), not a workaround."""
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.min_sale_events = 0
+        settings_obj.full_clean()
+        settings_obj.save()
+
+        # current_stock == 0 -> coverage 0.0, regardless of demand.
+        self._age_and_stock(days_old=200, stock_qty=0)
+        classify_product(self.product, settings_obj=settings_obj)
+        zero_stock = InventoryClassification.objects.get(product=self.product)
+        self.assertEqual(zero_stock.coverage_score, Decimal('0.0000'))
+
+        # real stock, zero recent demand -> coverage 1.0 (core dead-stock signal).
+        product_b = self._make_product('SKU-COV-ZERODEM', days_old=200, stock_qty=500)
+        classify_product(product_b, settings_obj=settings_obj)
+        zero_demand = InventoryClassification.objects.get(product=product_b)
+        self.assertEqual(zero_demand.coverage_score, Decimal('1.0000'))
+
+        # huge stock vs. tiny demand: the ratio must be capped before
+        # normalising, not overflow the DecimalField (the same class of
+        # bug calculate_turnover_rate() already guards against).
+        product_c = self._make_product('SKU-COV-HUGE', days_old=200, stock_qty=10_000_000)
+        self._sale_for(product_c, timezone.localdate() - timedelta(days=5), quantity=1)
+        classify_product(product_c, settings_obj=settings_obj)
+        capped = InventoryClassification.objects.get(product=product_c)
+        self.assertEqual(capped.coverage_score, Decimal('1.0000'))
+
+    def test_run_full_classification_counts_sum_to_active_product_count(self):
+        """INVARIANT: every active product lands in exactly one of the
+        four buckets — nothing is dropped, nothing is double-counted."""
+        self._age_and_stock(days_old=200, stock_qty=5)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=5), quantity=5)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=6), quantity=5)
+
+        self._make_product('SKU-INVARIANT-YOUNG', days_old=1, stock_qty=10)  # insufficient_data
+
+        inactive = Product.objects.create(
+            sku='SKU-INVARIANT-INACTIVE', name='Retired Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'), is_active=False,
+        )
+        InventoryService.initialize_for_product(inactive)
+
+        results = run_full_classification()
+        self.assertEqual(sum(results.values()), Product.objects.filter(is_active=True).count())
+        self.assertFalse(InventoryClassification.objects.filter(product=inactive).exists())
 
     def test_pending_sale_excluded_from_last_sold_date(self):
-        """A product whose only sale is pending must classify as never-sold,
-        not fast — proves the status filter, not just that it exists."""
-        InventoryService.initialize_for_product(self.product)
+        """A product whose only sale is pending must be treated as
+        never-sold for classification purposes — proves the status
+        filter, not just that it exists. PROMPT_1B: aged 200 days with
+        real stock and genuinely zero completed sales, this is now
+        exactly the Force-DEAD "never sold, old enough" override case
+        (a pending sale doesn't change that), not insufficient_data —
+        the gate is age-only now."""
+        self._age_and_stock(days_old=200, stock_qty=5)
         sale = SaleService.create_sale(
             {'customer_name': 'Test'},
             [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00'), 'discount': 0}],
@@ -4947,14 +5149,18 @@ class ClassificationLogicTests(ServiceTestCase):
         )
         SaleService.submit_for_approval(sale, self.user)
         self.assertIsNone(get_last_sold_date(self.product))
-        self.assertEqual(classify_product(self.product), StockClassification.DEAD)
+        classification = classify_product(self.product)
+        self.assertEqual(classification, StockClassification.DEAD)
+        record = InventoryClassification.objects.get(product=self.product)
+        self.assertEqual(record.flagged_by_rule, 'Never sold, 200 days in stock')
 
     def test_rejected_and_cancelled_sales_excluded_but_older_completed_sale_still_counts(self):
         """The exclusion matters most when it could otherwise mask a real,
         older completed sale — proves the real (older) date still wins,
         not just that the non-completed rows are ignored in isolation."""
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=75))  # -> slow
+        self._age_and_stock(days_old=200, stock_qty=500)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=75), quantity=1)
+        self._sale_for(self.product, timezone.localdate() - timedelta(days=76), quantity=1)  # clears min_sale_events
 
         rejected = self._completed_sale(timezone.localdate())
         rejected.status = SaleStatus.REJECTED
@@ -4965,19 +5171,36 @@ class ClassificationLogicTests(ServiceTestCase):
         cancelled.save(update_fields=['status'])
 
         self.assertEqual(get_last_sold_date(self.product), timezone.localdate() - timedelta(days=75))
-        self.assertEqual(classify_product(self.product), StockClassification.SLOW)
+        classification = classify_product(self.product)
+        self.assertIn(classification, (StockClassification.SLOW, StockClassification.DEAD))
 
     @patch('django.utils.timezone.now')
     def test_classify_uses_dhaka_date_not_utc_date(self, mock_now):
         """Same class of bug as BUG-47: 2026-01-01 20:00 UTC is 2026-01-02
         in Asia/Dhaka. A sale dated 2025-11-03 is exactly 60 days before
-        the Dhaka day (SLOW) but only 59 before the UTC day (FAST) —
-        classify_product() must land on SLOW; a regression to
-        timezone.now().date() would silently flip this to FAST."""
+        the Dhaka day but only 59 before the UTC day — classify_product()
+        must compute days_since=60 (recency_score 60/180 = 0.3333), not
+        59; a regression to timezone.now().date() would silently shift
+        this by a full day. Checked against the persisted recency_score
+        directly rather than the composite classification, since the
+        composite is no longer a pure function of recency alone."""
         mock_now.return_value = datetime(2026, 1, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
+        backdate = mock_now.return_value - timedelta(days=200)
+        Product.objects.filter(pk=self.product.pk).update(created_at=backdate)
         InventoryService.initialize_for_product(self.product)
+        InventoryService.increase_stock(
+            product=self.product, quantity=500, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.user,
+        )
+        InventoryMovement.objects.filter(product=self.product).update(created_at=backdate)
         self._completed_sale(datetime(2025, 11, 3).date())
-        self.assertEqual(classify_product(self.product), StockClassification.SLOW)
+        self._completed_sale(datetime(2025, 11, 2).date())  # clears min_sale_events
+
+        classify_product(self.product)
+        record = InventoryClassification.objects.get(product=self.product)
+        self.assertEqual(record.last_sold_date, datetime(2025, 11, 3).date())
+        self.assertEqual(record.days_since_last_sale, 60)
+        self.assertEqual(record.recency_score, Decimal('0.3333'))
 
     @patch('django.utils.timezone.now')
     def test_average_stock_start_of_window_uses_first_movement_stock_before_not_current_stock(self, mock_now):
@@ -5012,20 +5235,183 @@ class ClassificationLogicTests(ServiceTestCase):
         avg = calculate_average_stock(self.product, period_start, period_end)
         self.assertAlmostEqual(avg, 40, delta=1)
 
-    def test_run_full_classification_counts_and_skips_inactive_products(self):
-        InventoryService.initialize_for_product(self.product)
-        self._completed_sale(timezone.localdate() - timedelta(days=3))  # fast
+    # ---------------------------------------------------------------
+    # PROMPT_1B (2026-08-24) — index calibration incident regression
+    # tests. See docs/bugsfound.md for the full incident: the first live
+    # run against real shaped seed data produced ZERO dead-stock
+    # classifications on data known to contain dead stock. These
+    # fixtures mirror the real diagnosed products by name and by their
+    # actual measured shape (age/stock/days_since_last_sale), rather
+    # than running the real seed_dev_data command inside a test.
+    # ---------------------------------------------------------------
 
-        inactive = Product.objects.create(
-            sku='SKU-INACTIVE', name='Retired Widget', category=self.category, supplier=self.supplier,
-            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'), is_active=False,
+    def test_anti_regression_all_five_diagnosed_dead_products_classify_dead(self):
+        """The exact five products the old 180-day rule called dead in
+        the real dev run, and the first version of the weighted index
+        lost entirely to insufficient_data. Asserted by name."""
+        never_sold_products = [
+            ('Laptop Stand', 90, 50),
+            ('Notebook (200 pages)', 90, 50),
+        ]
+        dormant_products = [
+            ('Desk Organizer Tray', 300, 30, 210),
+            ('Electric Kettle', 300, 33, 240),
+            ('Powdered Milk 1kg', 300, 32, 195),
+        ]
+        for name, age, stock in never_sold_products:
+            self._make_product(name, days_old=age, stock_qty=stock)
+        for name, age, stock, sold_days_ago in dormant_products:
+            product = self._make_product(name, days_old=age, stock_qty=stock)
+            self._sale_for(product, timezone.localdate() - timedelta(days=sold_days_ago), quantity=2)
+
+        for name, *_ in never_sold_products + [(n,) for n, *_ in dormant_products]:
+            product = Product.objects.get(name=name)
+            classification = classify_product(product)
+            self.assertEqual(
+                classification, StockClassification.DEAD,
+                msg=f"{name} should classify DEAD (anti-regression), got {classification}",
+            )
+
+    def test_age_20_with_stock_no_sales_is_insufficient_data(self):
+        product = self._make_product('SKU-AGE20', days_old=20, stock_qty=40)
+        self.assertEqual(classify_product(product), StockClassification.INSUFFICIENT_DATA)
+
+    def test_age_300_with_stock_no_sales_is_dead_not_insufficient_data(self):
+        """The gate is age-only now (PROMPT_1B) — a product old enough to
+        have had every opportunity to sell, and genuinely never has,
+        with real stock sitting idle, is dead, not "we don't know yet." """
+        product = self._make_product('SKU-AGE300', days_old=300, stock_qty=40)
+        classification = classify_product(product)
+        self.assertEqual(classification, StockClassification.DEAD)
+        record = InventoryClassification.objects.get(product=product)
+        self.assertEqual(record.flagged_by_rule, 'Never sold, 300 days in stock')
+
+    def test_overrides_evaluated_before_gate_dormant_product_never_reaches_insufficient_data(self):
+        """A 300-day dormant product (real stock, no recent sales) must
+        never land in insufficient_data — proves the override layer runs
+        BEFORE the gate, not after, so a genuinely dead product can never
+        be hidden behind "not enough data yet." """
+        product = self._make_product('SKU-DORMANT-ORDER', days_old=300, stock_qty=20)
+        self._sale_for(product, timezone.localdate() - timedelta(days=200), quantity=1)
+        classification = classify_product(product)
+        self.assertNotEqual(classification, StockClassification.INSUFFICIENT_DATA)
+        self.assertEqual(classification, StockClassification.DEAD)
+
+    def test_frequency_score_varies_across_the_catalogue(self):
+        """Guards the FIX 2 formula bug from ever returning: the old
+        formula was mathematically pinned at 0 for every scored product.
+        A steady weekly seller and a single-bulk-sale product must land
+        on different frequency_score values."""
+        steady = self._make_product('SKU-FREQ-STEADY', days_old=200, stock_qty=200)
+        for week in range(10):
+            self._sale_for(steady, timezone.localdate() - timedelta(days=week * 7 + 1), quantity=1)
+        classify_product(steady)
+        steady_freq = InventoryClassification.objects.get(product=steady).frequency_score
+
+        bulk = self._make_product('SKU-FREQ-BULK', days_old=200, stock_qty=200)
+        self._sale_for(bulk, timezone.localdate() - timedelta(days=5), quantity=10)
+        classify_product(bulk)
+        bulk_freq = InventoryClassification.objects.get(product=bulk).frequency_score
+
+        self.assertNotEqual(steady_freq, bulk_freq)
+        scores = [float(steady_freq), float(bulk_freq)]
+        self.assertGreater(statistics.pstdev(scores), 0)
+
+    def test_coverage_score_not_all_equal_to_one(self):
+        """Guards the FIX 3 saturation bug: the old ramp clamped to 1.00
+        the moment days_of_cover crossed target_days_of_cover, so nearly
+        every real product saturated. A product with modest cover (well
+        under target) and one with cover deep in the ramp band must
+        differ, and neither has to be 1.00."""
+        modest = self._make_product('SKU-COV-MODEST', days_old=200, stock_qty=20)
+        self._sale_for(modest, timezone.localdate() - timedelta(days=5), quantity=10)
+        self._sale_for(modest, timezone.localdate() - timedelta(days=12), quantity=10)
+        classify_product(modest)
+        modest_cov = InventoryClassification.objects.get(product=modest).coverage_score
+
+        ramped = self._make_product('SKU-COV-RAMP', days_old=200, stock_qty=300)
+        self._sale_for(ramped, timezone.localdate() - timedelta(days=5), quantity=15)
+        classify_product(ramped)
+        ramped_cov = InventoryClassification.objects.get(product=ramped).coverage_score
+
+        self.assertNotEqual(modest_cov, ramped_cov)
+        self.assertFalse(modest_cov == Decimal('1.0000') == ramped_cov)
+
+    def test_each_override_records_which_rule_fired(self):
+        dead_by_recency = self._make_product('SKU-RULE-DEAD-RECENCY', days_old=300, stock_qty=10)
+        self._sale_for(dead_by_recency, timezone.localdate() - timedelta(days=200), quantity=1)
+        classify_product(dead_by_recency)
+        self.assertIn(
+            'No sales in',
+            InventoryClassification.objects.get(product=dead_by_recency).flagged_by_rule,
         )
-        InventoryService.initialize_for_product(inactive)
+
+        dead_never_sold = self._make_product('SKU-RULE-DEAD-NEVERSOLD', days_old=250, stock_qty=10)
+        classify_product(dead_never_sold)
+        self.assertIn(
+            'Never sold',
+            InventoryClassification.objects.get(product=dead_never_sold).flagged_by_rule,
+        )
+
+        fast_recent = self._make_product('SKU-RULE-FAST', days_old=200, stock_qty=5)
+        self._sale_for(fast_recent, timezone.localdate() - timedelta(days=2), quantity=5)
+        self._sale_for(fast_recent, timezone.localdate() - timedelta(days=9), quantity=5)
+        classify_product(fast_recent)
+        self.assertIn(
+            'Sold',
+            InventoryClassification.objects.get(product=fast_recent).flagged_by_rule,
+        )
+
+        # Force-SLOW only applies when the index doesn't already call the
+        # product DEAD on its own (see classify_product()'s own
+        # docstring) — recent-ish sale, real turnover, just buried in
+        # extreme stock.
+        slow_extreme_cover = self._make_product('SKU-RULE-SLOW', days_old=200, stock_qty=2000)
+        self._sale_for(slow_extreme_cover, timezone.localdate() - timedelta(days=3), quantity=50)
+        self._sale_for(slow_extreme_cover, timezone.localdate() - timedelta(days=10), quantity=50)
+        classify_product(slow_extreme_cover)
+        record = InventoryClassification.objects.get(product=slow_extreme_cover)
+        self.assertEqual(record.classification, StockClassification.SLOW)
+        self.assertIn('days of stock on hand', record.flagged_by_rule)
+
+    def test_override_precedence_dead_beats_extreme_coverage_slow_candidate(self):
+        """A product matching BOTH a Force-DEAD condition (no sales in
+        >= dead_stock_threshold_days) AND the Force-SLOW candidate
+        condition (extreme days of cover) must classify DEAD — the
+        documented, higher-severity outcome — with the DEAD rule
+        recorded, not the SLOW one."""
+        product = self._make_product('SKU-PRECEDENCE', days_old=300, stock_qty=5000)
+        self._sale_for(product, timezone.localdate() - timedelta(days=200), quantity=1)
+        classification = classify_product(product)
+        record = InventoryClassification.objects.get(product=product)
+        self.assertEqual(classification, StockClassification.DEAD)
+        self.assertIn('No sales in', record.flagged_by_rule)
+        self.assertNotIn('days of stock on hand', record.flagged_by_rule)
+
+    def test_distribution_not_degenerate_across_a_mixed_catalogue(self):
+        """>= 1 fast, >= 1 dead, no single class above ~70% of a mixed
+        catalogue — the property the first (broken) run violated
+        outright (0 dead)."""
+        for i in range(8):
+            fast_product = self._make_product(f'SKU-DIST-FAST-{i}', days_old=200, stock_qty=5)
+            self._sale_for(fast_product, timezone.localdate() - timedelta(days=3), quantity=5)
+            self._sale_for(fast_product, timezone.localdate() - timedelta(days=10), quantity=5)
+
+        for i in range(3):
+            dead_product = self._make_product(f'SKU-DIST-DEAD-{i}', days_old=300, stock_qty=20)
+            self._sale_for(dead_product, timezone.localdate() - timedelta(days=200 + i), quantity=1)
+
+        young_product = self._make_product('SKU-DIST-YOUNG', days_old=5, stock_qty=10)
 
         results = run_full_classification()
-        self.assertEqual(results[StockClassification.FAST], 1)
-        self.assertFalse(InventoryClassification.objects.filter(product=inactive).exists())
-
+        total = sum(results.values())
+        self.assertGreaterEqual(results[StockClassification.FAST], 1)
+        self.assertGreaterEqual(results[StockClassification.DEAD], 1)
+        for cls, count in results.items():
+            self.assertLessEqual(
+                count / total, 0.70,
+                msg=f"{cls} is {count}/{total} ({count/total:.0%}) of the catalogue — too dominant",
+            )
 
 class ReclassificationHookTests(ServiceTestCase):
     """Phase 10 — the explicit synchronous call in SaleService.approve_sale()/
@@ -5047,7 +5433,13 @@ class ReclassificationHookTests(ServiceTestCase):
 
     def test_approving_a_pending_sale_reclassifies_immediately(self):
         """Live, no manual Run — proves the hook fires from approve_sale()
-        itself, not from a separate step the caller has to remember."""
+        itself, not from a separate step the caller has to remember. Not
+        a classification-*outcome* proof (self.product is freshly
+        created in setUp — age 0 — so this lands as insufficient_data
+        under the default gating; outcome-specific cases live in
+        ClassificationLogicTests): the row exists, was genuinely computed
+        from this sale, and the audit trail fired — that's what
+        "reclassifies immediately" means here."""
         self.give_stock(10)
         sale = self._draft_sale(quantity=2)
         SaleService.submit_for_approval(sale, self.user)
@@ -5056,7 +5448,6 @@ class ReclassificationHookTests(ServiceTestCase):
         SaleService.approve_sale(sale, self.supervisor)
 
         record = InventoryClassification.objects.get(product=self.product)
-        self.assertEqual(record.classification, StockClassification.FAST)
         self.assertEqual(record.last_sold_date, timezone.localdate())
         self.assertTrue(
             AuditLog.objects.filter(action=audit.AI_PRODUCT_RECLASSIFIED, affected_id=self.product.pk).exists()
@@ -5067,15 +5458,28 @@ class ReclassificationHookTests(ServiceTestCase):
         does is classification-relevant (no stock moved, no completed-sale
         history changed), so the call is a same-result no-op by design,
         not a correctness gap. Included per this phase's own instruction
-        anyway; this proves it's genuinely harmless, not just present."""
+        anyway; this proves it's genuinely harmless, not just present.
+        Also covers the missing-audit-log fix (docs/bugsfound.md):
+        cancel_sale() now logs AI_PRODUCT_RECLASSIFIED per item, matching
+        approve_sale()'s own equivalent call."""
         # Phase 12 — cancel_sale()'s can_approve() gate: self.supervisor
         # cancels (self.user is STAFF, never a valid canceller).
         InventoryService.initialize_for_product(self.product)
         sale = self._draft_sale()
         SaleService.cancel_sale(sale, self.supervisor, 'Customer changed their mind.')
         record = InventoryClassification.objects.get(product=self.product)
-        self.assertEqual(record.classification, StockClassification.DEAD)
-        self.assertEqual(record.days_since_last_sale, 0)
+        # Fresh product (age 0, zero completed sales) -> insufficient_data,
+        # never "dead" (BUG-fix invariant: last_sold_date is None, so
+        # days_since_last_sale must be None too, never a contradictory 0).
+        self.assertEqual(record.classification, StockClassification.INSUFFICIENT_DATA)
+        self.assertIsNone(record.last_sold_date)
+        self.assertIsNone(record.days_since_last_sale)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=audit.AI_PRODUCT_RECLASSIFIED, affected_id=self.product.pk,
+                details__trigger='sale_cancelled',
+            ).exists()
+        )
 
 
 class SlowMovingViewTests(TestCase):
@@ -5119,20 +5523,30 @@ class SlowMovingViewTests(TestCase):
         self.assertEqual(response.status_code, 302)  # staff -> bounced, not the run
 
     def test_run_button_classifies_and_returns_counts(self):
+        backdate = timezone.now() - timedelta(days=200)
+        Product.objects.filter(pk=self.product.pk).update(created_at=backdate)
         InventoryService.increase_stock(
-            product=self.product, quantity=10, movement_type=MovementType.PURCHASE,
+            product=self.product, quantity=20, movement_type=MovementType.PURCHASE,
             reference_type='TestSetup', reference_id=1, performed_by=self.admin,
         )
-        sale = SaleService.create_sale(
-            {'customer_name': 'Test'},
-            [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00'), 'discount': 0}],
-            self.admin,
-        )
-        SaleService.submit_for_approval(sale, self.admin)
-        SaleService.approve_sale(sale, self.admin)
-        # approve_sale() already reclassified this one product — reset so
-        # this test proves the *Run button's own* POST does a real,
-        # independent classification, not just reads what approval left.
+        InventoryMovement.objects.filter(product=self.product).update(created_at=backdate)
+
+        # Two completed sales, not one — clears min_sale_events so this
+        # product actually gets scored (not just gated to
+        # insufficient_data), proving the counts dict really reflects
+        # classify_product()'s own decision.
+        for _ in range(2):
+            sale = SaleService.create_sale(
+                {'customer_name': 'Test'},
+                [{'product_id': self.product.pk, 'quantity': 1, 'unit_price': Decimal('20.00'), 'discount': 0}],
+                self.admin,
+            )
+            SaleService.submit_for_approval(sale, self.admin)
+            SaleService.approve_sale(sale, self.admin)
+        # approve_sale() already reclassified this one product (twice) —
+        # reset so this test proves the *Run button's own* POST does a
+        # real, independent classification, not just reads what approval
+        # left.
         InventoryClassification.objects.all().delete()
 
         self.client.login(username='smsuper', password='x')
@@ -5140,16 +5554,22 @@ class SlowMovingViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload['success'])
-        self.assertEqual(payload['results']['fast'], 1)
+        self.assertEqual(sum(payload['results'].values()), 1)
         self.assertTrue(InventoryClassification.objects.filter(product=self.product).exists())
         self.assertTrue(AuditLog.objects.filter(action=audit.AI_CLASSIFICATION_RUN).exists())
 
-    def test_get_renders_real_counts_and_never_sold_copy(self):
-        classify_product(self.product)  # never sold -> dead
+    def test_get_renders_insufficient_data_copy_for_new_never_sold_product(self):
+        """self.product is freshly created in setUp (age 0, no sales) —
+        insufficient_data, not the old "no recorded sales -> dead" copy,
+        which is now unreachable for a genuinely never-sold product under
+        default settings (min_sale_events=2 gates it first). Proves
+        insufficient_data actually renders on the page, not just exists
+        in the DB."""
+        classify_product(self.product)
         self.client.login(username='smsuper', password='x')
         response = self.client.get(reverse('frontend:slow_moving'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'no recorded sales')
+        self.assertContains(response, 'Insufficient Data')
         self.assertNotContains(response, '9999')
 
 
@@ -5189,22 +5609,31 @@ class ClassificationAPITests(TestCase):
         self.assertEqual(self.client.get(url).status_code, 200)
 
     def test_list_returns_real_serialized_fields(self):
+        # Freshly created (age 0, no sales) -> insufficient_data under
+        # default gating, not dead (Prompt 2, 2026-08-24).
         self.client.login(username='apisuper', password='x')
         response = self.client.get(reverse('api:ai_classifications_list'))
         row = response.json()['results'][0]
         self.assertEqual(row['product_name'], 'API Widget')
         self.assertEqual(row['product_sku'], 'API-SKU-001')
-        self.assertEqual(row['classification'], StockClassification.DEAD)
+        self.assertEqual(row['classification'], StockClassification.INSUFFICIENT_DATA)
 
     def test_list_filter_query_param(self):
         self.client.login(username='apisuper', password='x')
         response = self.client.get(reverse('api:ai_classifications_list'), {'filter': 'fast'})
         self.assertEqual(response.json()['count'], 0)
 
+    def test_list_filter_accepts_insufficient_data(self):
+        """REQ 14.9 (filter products by AI classification) — the fourth
+        value must be in the whitelist too, not just the original three."""
+        self.client.login(username='apisuper', password='x')
+        response = self.client.get(reverse('api:ai_classifications_list'), {'filter': 'insufficient_data'})
+        self.assertEqual(response.json()['count'], 1)
+
     def test_summary_returns_real_counts(self):
         self.client.login(username='apisuper', password='x')
         response = self.client.get(reverse('api:ai_classifications_summary'))
-        self.assertEqual(response.json(), {'dead': 1})
+        self.assertEqual(response.json(), {'insufficient_data': 1})
 
 
 def _clear_forecast_model_files():

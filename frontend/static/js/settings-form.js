@@ -24,6 +24,16 @@
     forecast_retrain_days: "settings-forecast-retrain-days",
     slow_moving_threshold_days: "settings-slow-moving-threshold",
     dead_stock_threshold_days: "settings-dead-stock-threshold",
+    weight_recency: "settings-weight-recency",
+    weight_turnover: "settings-weight-turnover",
+    weight_coverage: "settings-weight-coverage",
+    weight_frequency: "settings-weight-frequency",
+    slow_index_threshold: "settings-slow-index-threshold",
+    dead_index_threshold: "settings-dead-index-threshold",
+    target_days_of_cover: "settings-target-days-of-cover",
+    min_observation_days: "settings-min-observation-days",
+    min_sale_events: "settings-min-sale-events",
+    extreme_coverage_days: "settings-extreme-coverage-days",
     session_timeout_seconds: "settings-session-timeout"
   };
 

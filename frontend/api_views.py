@@ -28,7 +28,7 @@ class ClassificationListAPIView(ListAPIView):
     def get_queryset(self):
         qs = InventoryClassification.objects.select_related('product').order_by('-classified_at')
         filter_by = self.request.query_params.get('filter')
-        if filter_by in ['fast', 'slow', 'dead']:
+        if filter_by in ['fast', 'slow', 'dead', 'insufficient_data']:
             qs = qs.filter(classification=filter_by)
         return qs
 

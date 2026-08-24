@@ -6631,3 +6631,256 @@ own docstrings) — a standing, deliberate divergence, not a bug.
   `default_reorder_level` (BUG-66/67, cheap to fix but low-value —
   could go either way), the missing source `.docx` (BUG-71, not
   fixable by this project).
+
+## Phase — Dead-Stock: Stagnation Index + Confidence Gating (2026-08-24)
+
+Upgraded `classify_product()` from a single-factor recency branch to a
+multi-criteria weighted expert system. Full detail in
+`docs/DEAD_STOCK_DETECTION.md`'s Design Note #5 and Classification Logic
+table (authoritative for the mechanism) and `docs/bugsfound.md` BUG-72/73;
+this entry covers the decisions that aren't visible from the code alone.
+
+**ABC classification removed entirely — a scope decision, not a bug.**
+`ABCClass`, `InventoryClassification.abc_class`,
+`SystemSettings.abc_last_recomputed_at`, `frontend.approvals.
+recompute_abc_classes()`/`abc_staleness_info()`, and the ABC column +
+staleness banner on `slow_moving.html` are gone, dropped in the same
+migration (`0013_stagnation_index_and_abc_removal.py`) as the new
+stagnation-index fields. Grepped every reference first (field,
+computation, call sites, serializers, templates, report/CSV/PDF columns,
+admin, tests, fixtures, seed data, docs) before deleting anything:
+confirmed zero test coverage, zero serializer/report/admin exposure, and
+— critically — zero mentions of "ABC" anywhere in the actual spec docs
+(`docs/*.md`, excluding this project's own session-generated
+`bugsfound.md`/`project_memory.md`/`CODEBASE_MAP.md`). No documented
+requirement depends on it, so removing it isn't a step backwards. The
+only live UI surface was the "ABC" column + staleness banner on the
+Slow-Moving page — replaced with a "Stagnation index" column (same table
+position), which is the honest, current answer to "why is this product
+classified this way."
+
+**Coverage factor, exactly as specified, not improvised**:
+`avg_daily_demand` and the Frequency factor's `sale_event_count` both
+read the same trailing-90-day window `calculate_turnover_rate()` already
+used (`_total_sold()`, extracted as a shared helper both call — the same
+window is now structural, not just documented). `current_stock == 0` ->
+coverage 0.00 regardless of demand; `current_stock > 0` and
+`avg_daily_demand == 0` -> coverage 1.00 (the core dead-stock signal);
+otherwise `days_of_cover` is capped at a large ceiling *before* dividing
+by `target_days_of_cover` — the same DecimalField-overflow class of bug
+`calculate_turnover_rate()`'s own cap already guards against (a real
+`DataError` from an earlier session).
+
+**Weight validation**: `SystemSettings.clean()` rejects a save where the
+four weights don't sum to exactly 1.00 — no silent normalisation, since a
+classifier that quietly rescaled an admin's entered numbers would make
+the stored weights and the weights actually driving classification
+permanently diverge. Runs via `ModelForm.full_clean()`, so both the
+Settings page form and Django admin's own form reject the same way with
+no separate code path. Verified live through the real HTTP stack, not
+just Django's test client: POSTing weights summing to 0.95 to `/settings/`
+returns 400 with `"...must sum to exactly 1.00 — currently 0.95."`;
+summing to 1.00 returns 200 and persists.
+
+**`INSUFFICIENT_DATA` gate**: `stock_age_days < min_observation_days OR
+sale_event_count < min_sale_events` — an OR, not an AND. Stock age
+anchor is the first `InventoryMovement.created_at`, falling back to
+`Product.created_at` for a product with no movement history yet. A
+genuinely never-sold product (0 completed sales) now *always* lands here
+under default settings (`min_sale_events=2`), never in `DEAD` — the exact
+bug the old sentinel (`days_since=9999` for never-sold, immediately
+`>= dead_threshold`) produced. `stagnation_index`/`confidence`/all four
+factor scores are `None` for these rows (nothing was scored), but
+`confidence` is still computed unconditionally — it's most informative
+exactly when data is thin.
+
+**Every surface updated for the fourth state**: `ClassificationListAPIView`
+filter whitelist, `ClassificationSummaryAPIView` needed no change (already
+value-driven), `SlowMovingDeadStockView`'s `_BADGE`/`counts`/`chart_data`,
+`slow-moving.js`'s doughnut (4th label/dataset value/color —
+`ChartColors.slate200`, muted grey, distinct from the three status
+colors), `slow_moving.html`'s 4th KPI card, 4th toggle button, and the
+"Classification rules" explainer panel (rewritten to describe the real
+multi-factor mechanism — the old panel would otherwise have kept
+describing day-threshold logic the system no longer runs, which the
+prompt specifically flagged as "the worst thing for an examiner to
+read"). New `.badge-neutral` CSS token (`--c-slate-100`/`--c-slate`) —
+deliberately not `badge-indigo` (the generic/AI-accent fallback):
+insufficient_data isn't a problem state and must not read as one.
+`InventoryClassificationSerializer` also gained the new fields
+(stagnation_index/confidence/four factor scores) for API-level "see why."
+
+**BUG-72 (contradictory `days_since_last_sale`) and BUG-73 (missing audit
+log on `cancel_sale()`)** — see `docs/bugsfound.md` for both; the first
+is fixed at the point of write (nullable field, real value or `None`,
+never a sentinel), the second mirrors `approve_sale()`'s existing
+`AI_PRODUCT_RECLASSIFIED` call exactly.
+
+**DEAD_STOCK_DETECTION.md header** now states plainly that no scheduler
+exists anywhere in this project (no Celery, no cron) and reclassification
+is event-driven — on sale approval/cancellation, plus manual "Run
+classification now" — framed as the deliberate architecture it is, with
+the honest limitation stated alongside it: nothing recomputes when a
+product simply *stops* selling, since no event fires for "time passed
+with no sale," so a classification can go stale between triggers. Design
+Note #2 (the old "turnover doesn't actually gate classification, flagged
+as a future enhancement" note) is retired as now implemented. Fixed only
+in this file, per instruction — the wider five-file Celery-claim cleanup
+(`11_NOTIFICATIONS.md`, `DEMAND_FORECASTING.md`, `DEPLOYMENT.md`,
+`TECH_STACK.md`) is separate, already logged as BUG-CELERY-related
+findings in the Task F audit above.
+
+**Tests**: 387 -> 391 (net +4; 8 old day-boundary/never-sold-is-dead
+tests removed as testing behavior that no longer exists, 12 new tests
+added — insufficient_data gating, multi-factor scoring proofs, weight-sum
+rejection, confidence-vs-observation-window, the BUG-72 persistence
+invariant, coverage edge cases including the overflow-cap, and the
+per-class-counts-sum-to-active-product-count invariant). Full suite: 391
+passed. Live dev server (fresh single `runserver`, stale PID from an
+earlier session killed first — same BUG-59 discipline): ran classification
+against the real 43-product backdated seed dataset (fast=2, slow=31,
+dead=0, insufficient_data=10, summing to 43), confirmed insufficient_data
+renders in the doughnut JSON, KPI card, toggle button, and table rows on
+`/ai/slow-moving/`; confirmed the Settings page renders all 9 new fields
+and both the reject (0.95 sum) and accept (1.00 sum) paths live; zero
+"ABC" references left on the rendered page; no 500s anywhere.
+
+## Phase — PROMPT_1B: Index Calibration (2026-08-24)
+
+The Prompt 2 stagnation index's first live run against real shaped seed
+data produced ZERO dead-stock classifications on data known to contain
+dead stock — a detection regression against the old day-threshold rule.
+Full incident, root cause, and fix in `docs/bugsfound.md` BUG-74 and
+`docs/DEAD_STOCK_DETECTION.md` Design Note #6 (both authoritative); this
+entry covers the diagnostic process and the decisions that aren't
+visible from either.
+
+**Diagnosis (Phase 1, no code)** — broke the composite down per-product
+against the live dev DB's real 43-product run: index distribution
+min=27/max=54/mean=43.58/stdev=4.82 (badly compressed); the 5 products
+the old 180-day rule called dead all landed in `insufficient_data`
+instead of being scored; per-factor stdev showed `frequency_score` at a
+literal, exact 0.000 across every scored product (mathematically
+incapable of varying — the gate required `sale_event_count >=
+min_sale_events` to reach that branch, and the formula was `1 -
+sale_event_count/min_sale_events`, so the term could never be positive)
+and `coverage_score` saturated at 1.0000 for 30/33 (clamped the instant
+`days_of_cover` crossed `target_days_of_cover`). Root cause wasn't
+"averaging compresses distributions" in the abstract — it was averaging
+two factors that were structurally *constants*, plus a gate
+(`min_sale_events`, windowed to the same 90 days as demand) that
+conflated "too new to judge" with "used to sell, went dormant," diverting
+every genuinely-dead product away from the index before it ever saw one.
+
+**Phase 3 fix, three mechanisms plus a new override layer** (see
+`docs/DEAD_STOCK_DETECTION.md` for the authoritative precedence table):
+gate is age-only now, `sale_event_count` feeds `confidence` only;
+`frequency_score` counts distinct weekly buckets (12, trailing 90 days)
+with a sale instead of the formula that contradicted its own gate;
+`coverage_score` ramps linearly between `target_days_of_cover` and a new
+`SystemSettings.extreme_coverage_days` (default 730) instead of clamping.
+Override rules (Force-DEAD/Force-SLOW/Force-FAST), evaluated on raw
+signals before both the gate and the index, preserve the old rule as an
+explicit floor — this is what actually guarantees no regression, not the
+index fix alone (two of the five anti-regression products, Laptop Stand
+and Notebook, do reach DEAD via the fixed index itself with no override
+needed, which was a useful independent confirmation the index fix is
+sound on its own, not just papered over by the override).
+
+**Design review mid-implementation**: the first version of Force-SLOW had
+no precondition beyond `days_of_cover >= extreme_coverage_days`, and on
+re-measurement it downgraded Bluetooth Speaker from a DEAD-by-index 75 to
+SLOW. Checked its actual four factor scores before accepting that as
+correct: recency 0.4167, turnover 0.9578, coverage 1.0000, frequency
+0.9167 — broadly stagnant on every factor, not "recent-selling-but-
+drowning-in-stock" (the case Force-SLOW is actually meant to catch).
+Added the precondition `stagnation_index < dead_index_threshold` to
+Force-SLOW specifically (not to Force-FAST, which had no such conflict
+in the diagnosed data) — a floor for extreme overstock the index might
+still call fast-ish, never a ceiling on a product already independently
+flagged dead. This required restructuring the override evaluation into
+two stages: Force-DEAD/Force-FAST (raw signals only, run before the
+index) and Force-SLOW (deferred until after the index is computed, since
+its precondition needs the index value) — `_evaluate_hard_overrides()`
+vs. the inline Force-SLOW check in `classify_product()`.
+
+**Weights examined, not carried forward blind, and deliberately NOT made
+variance-proportional.** Post-fix per-factor stdev: recency 0.331,
+turnover 0.135, coverage 0.338, frequency 0.299 — turnover now has the
+*lowest* variance despite the *second-highest* weight (0.30). Proposed
+keeping the weights as policy rather than re-deriving them from this
+run's statistics; user confirmed explicitly: weights encode business
+policy, not a fit against one 43-product seed catalogue — turnover's
+tight spread here reflects this catalogue's shape (a real SME with mixed
+durables/perishables would show far more), and deriving weights from one
+run's variance would be a weaker viva claim ("fit to synthetic data"),
+not a stronger one. The resulting class separation (fast 21-39 / slow
+43-48 / dead 75-100, both thresholds sitting cleanly in the gaps) was
+also judged too clean to perturb for an unproven statistical gain.
+Recorded in `docs/DEAD_STOCK_DETECTION.md` Design Note #6 as
+examined-and-retained, not silently inherited.
+
+**Re-measured distribution** (same 43-product seed set): `{fast: 28,
+slow: 5, dead: 9, insufficient_data: 1}` (was `{fast: 2, slow: 31, dead:
+0, insufficient_data: 10}`). Index stdev 4.82 -> 25.30. No class above
+~70% (fast is largest at 65%). `insufficient_data` 23.3% -> 2.3% (the one
+remaining case, Scented Candle Set, is genuinely age 20 — the intended
+behaviour).
+
+**Tests**: 391 -> 400 (net +9, all new — no renames or removals this
+pass; the two Phase-4 tests whose fixtures now hit the new override
+mechanism, `test_changing_a_weight_changes_classification_outcome` and
+`test_pending_sale_excluded_from_last_sold_date`, were updated in place
+rather than replaced). New: anti-regression by product name (all 5
+diagnosed dead products, built as test fixtures matching their real
+measured age/stock/days_since rather than invoking the seed script
+inside a test), age-20-vs-age-300 insufficient_data/dead split,
+frequency/coverage variance guards (directly re-testing the two
+structurally-constant factors from the incident), override-evaluated-
+before-gate, override rule text recorded, override precedence (a product
+matching both a Force-DEAD condition and the Force-SLOW candidate
+condition classifies DEAD, with the DEAD rule text, not the SLOW one),
+and catalogue-level non-degeneracy. Full suite: 400 passed.
+
+**Live dev server**: fresh single `runserver` (a stale PID from earlier
+in this same session was found still listening and killed first — same
+BUG-59 discipline, still needed even within one session). Re-ran
+classification against the real 43-product seed set via the actual
+"Run classification now" endpoint: `{fast: 28, slow: 5, dead: 9,
+insufficient_data: 1}`, matching the offline re-measurement exactly.
+`/ai/slow-moving/` renders correctly: doughnut JSON, KPI cards
+(`total_flagged` = 14 = 5+9, correct), toggle, and the "Classification
+rules" panel now documents both layers explicitly (override rules first,
+then the age-only gate, then the weighted index) — the old panel
+described only the index half, which would have been actively misleading
+now that overrides exist. `flagged_by_rule` text ("No sales in 210
+days") surfaces in both the main table and the "Needs attention" widget.
+No 500s.
+
+**Open item, not yet acted on**: on the current dev seed data,
+`insufficient_data` holds exactly one product (Scented Candle Set, age
+20). Honest — that is genuinely the only product too young to score
+under the current settings — but fragile for demo purposes: one seed-data
+change (a different `days_old` for that one product, or its removal)
+would empty the state entirely and hide the whole `insufficient_data`
+code path — badge, KPI card, toughest of the four doughnut slices,
+toggle filter — from view during a walkthrough, with nothing in the UI
+to indicate the path still exists. Worth widening the seed dataset later
+so at least 2-3 products land there durably, rather than depending on
+exactly one borderline case.
+
+**Standing process note — BUG-03/BUG-36 has now recurred three times**
+(three separate sessions each introduced a multi-line `{# #}` Django
+comment, which this project's own Django version does not support
+across lines and renders as visible leaked text). Most recently: Task E
+(2026-08-24), in `settings.html`, in the very panel added to expose the
+new weight fields — caught only because the git-push safety audit
+explicitly re-grepped every touched template rather than trusting that
+"I read the file, it looked fine." Reading is not sufficient for this
+class of bug — the multi-line span is easy to introduce during editing
+and easy to miss on a visual re-read, but trivial to catch with a
+one-line regex. Worth adding either a pre-commit hook or a standing test
+that scans every `frontend/templates/**/*.html` file for a `{#...#}`
+span containing a newline and fails the build if one is found, rather
+than relying on each session's own git-push audit to catch it after the
+fact.

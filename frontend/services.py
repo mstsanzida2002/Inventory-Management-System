@@ -664,6 +664,11 @@ class SaleService:
         classification_settings = SystemSettings.get_settings()
         for item in sale.items.select_related('product').all():
             classify_product(item.product, settings_obj=classification_settings)
+            audit.log_action(
+                cancelled_by, audit.AI_PRODUCT_RECLASSIFIED, 'ai_classification',
+                affected_id=item.product.pk, status='success',
+                details={'trigger': 'sale_cancelled', 'sale_id': sale.pk},
+            )
 
         return sale
 

@@ -61,7 +61,7 @@ from frontend.forms import (
     parse_line_items,
 )
 from frontend.mixins import AdminRequiredMixin, AnyStaffMixin, SupervisorRequiredMixin
-from frontend.approvals import abc_staleness_info, can_approve, resolve_for_transaction
+from frontend.approvals import can_approve, resolve_for_transaction
 from frontend.classification import run_full_classification
 from frontend.forecasting import backfill_actual_demand, run_full_forecast
 from frontend.models import (
@@ -1932,6 +1932,11 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
         StockClassification.FAST: "badge-success",
         StockClassification.SLOW: "badge-warning",
         StockClassification.DEAD: "badge-danger",
+        # Prompt 2 (2026-08-24) — deliberately not badge-indigo (the
+        # generic/AI-accent fallback): insufficient_data isn't a problem
+        # state, so it gets its own neutral/muted badge, not one that
+        # reads as "some other kind of alert."
+        StockClassification.INSUFFICIENT_DATA: "badge-neutral",
     }
 
     def get(self, request):
@@ -1940,10 +1945,15 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             InventoryClassification.objects.select_related("product", "product__category")
             .order_by("product__name")
         )
-        counts = {StockClassification.FAST: 0, StockClassification.SLOW: 0, StockClassification.DEAD: 0}
+        counts = {
+            StockClassification.FAST: 0,
+            StockClassification.SLOW: 0,
+            StockClassification.DEAD: 0,
+            StockClassification.INSUFFICIENT_DATA: 0,
+        }
         for c in classifications:
             counts[c.classification] = counts.get(c.classification, 0) + 1
-            c.badge = self._BADGE.get(c.classification, "badge-indigo")
+            c.badge = self._BADGE.get(c.classification, "badge-neutral")
             c.search_blob = f"{c.product.name} {c.product.sku}".lower()
             if c.last_sold_date is None:
                 c.last_sold_label = "Never sold"
@@ -1954,22 +1964,21 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             else:
                 c.last_sold_label = f"{c.days_since_last_sale} days ago"
 
+        # Prompt 2 — days_since_last_sale is now genuinely nullable (BUG
+        # fix, docs/bugsfound.md); the DEAD/SLOW branches below only ever
+        # see rows with a real integer here (INSUFFICIENT_DATA rows have
+        # no meaningful days_since_last_sale to rank by and are excluded
+        # from both watch lists — they're not a problem state to flag).
         dead_watch = sorted(
             (c for c in classifications if c.classification == StockClassification.DEAD),
-            key=lambda c: -c.days_since_last_sale,
+            key=lambda c: -(c.days_since_last_sale or 0),
         )[:2]
         slow_watch = sorted(
             (c for c in classifications if c.classification == StockClassification.SLOW),
-            key=lambda c: -c.days_since_last_sale,
+            key=lambda c: -(c.days_since_last_sale or 0),
         )[:1]
         for c in slow_watch:
-            c.days_to_dead = max(settings_obj.dead_stock_threshold_days - c.days_since_last_sale, 0)
-
-        # Phase 12.1 §5b — ABC is now an authority input (ApprovalPolicy
-        # row 20), and recompute is manual: silent staleness there is
-        # worse than no ABC at all, so it's surfaced here and on the
-        # Approval Policy screen, not just computed quietly.
-        abc_last_recomputed_at, abc_stale = abc_staleness_info()
+            c.days_to_dead = max(settings_obj.dead_stock_threshold_days - (c.days_since_last_sale or 0), 0)
 
         context = {
             "active_nav": "slow-moving",
@@ -1981,13 +1990,18 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             "slow_watch": slow_watch,
             "slow_threshold": settings_obj.slow_moving_threshold_days,
             "dead_threshold": settings_obj.dead_stock_threshold_days,
+            "slow_index_threshold": settings_obj.slow_index_threshold,
+            "dead_index_threshold": settings_obj.dead_index_threshold,
+            "min_observation_days": settings_obj.min_observation_days,
+            "min_sale_events": settings_obj.min_sale_events,
+            "target_days_of_cover": settings_obj.target_days_of_cover,
+            "extreme_coverage_days": settings_obj.extreme_coverage_days,
             "chart_data": {
                 "fast": counts[StockClassification.FAST],
                 "slow": counts[StockClassification.SLOW],
                 "dead": counts[StockClassification.DEAD],
+                "insufficient_data": counts[StockClassification.INSUFFICIENT_DATA],
             },
-            "abc_last_recomputed_at": abc_last_recomputed_at,
-            "abc_stale": abc_stale,
         }
         return render(request, "intelligence/slow_moving.html", context)
 

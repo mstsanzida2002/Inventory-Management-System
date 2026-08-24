@@ -15,11 +15,11 @@
 
   function readChartData() {
     var el = document.getElementById("classificationChartData");
-    if (!el) return { fast: 0, slow: 0, dead: 0 };
+    if (!el) return { fast: 0, slow: 0, dead: 0, insufficient_data: 0 };
     try {
       return JSON.parse(el.textContent);
     } catch (e) {
-      return { fast: 0, slow: 0, dead: 0 };
+      return { fast: 0, slow: 0, dead: 0, insufficient_data: 0 };
     }
   }
 
@@ -35,10 +35,14 @@
     new Chart(ctx, {
       type: "doughnut",
       data: {
-        labels: ["Fast-Moving", "Slow-Moving", "Dead Stock"],
+        labels: ["Fast-Moving", "Slow-Moving", "Dead Stock", "Insufficient Data"],
         datasets: [{
-          data: [data.fast, data.slow, data.dead],
-          backgroundColor: [COLORS.success, COLORS.warning, COLORS.danger],
+          data: [data.fast, data.slow, data.dead, data.insufficient_data],
+          // Prompt 2 (2026-08-24) — muted grey (slate200), visually
+          // distinct from the three status colors: insufficient_data
+          // isn't a problem state and shouldn't read as a fourth
+          // severity level.
+          backgroundColor: [COLORS.success, COLORS.warning, COLORS.danger, COLORS.slate200],
           borderWidth: 0
         }]
       },

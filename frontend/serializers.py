@@ -24,7 +24,9 @@ class InventoryClassificationSerializer(serializers.ModelSerializer):
         model = InventoryClassification
         fields = ['id', 'product', 'product_name', 'product_sku',
                   'classification', 'turnover_rate', 'last_sold_date',
-                  'days_since_last_sale', 'recommendation', 'classified_at']
+                  'days_since_last_sale', 'recommendation', 'classified_at',
+                  'stagnation_index', 'confidence', 'recency_score',
+                  'turnover_score', 'coverage_score', 'frequency_score']
 
 
 class DemandForecastSerializer(serializers.ModelSerializer):

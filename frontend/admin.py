@@ -142,7 +142,7 @@ class DemandForecastAdmin(admin.ModelAdmin):
 
 @admin.register(InventoryClassification)
 class InventoryClassificationAdmin(admin.ModelAdmin):
-    list_display = ('product', 'classification', 'turnover_rate', 'last_sold_date', 'days_since_last_sale', 'classified_at')
+    list_display = ('product', 'classification', 'stagnation_index', 'confidence', 'turnover_rate', 'last_sold_date', 'days_since_last_sale', 'classified_at')
     search_fields = ('product__sku', 'product__name')
     list_filter = ('classification',)
     ordering = ('-classified_at',)

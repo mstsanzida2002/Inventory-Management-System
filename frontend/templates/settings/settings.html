@@ -145,6 +145,88 @@
       </div>
     </div>
 
+    {# ---------------------------------- Dead-stock classification knowledge base #}
+    {% comment %}
+      Prompt 2 (2026-08-24) — the multi-criteria weighted expert system's
+      admin-tunable inputs (docs/DEAD_STOCK_DETECTION.md). The four
+      weights must sum to exactly 1.00 (SystemSettings.clean(), rejected
+      on save, never silently normalised) — the running total below is
+      client-side convenience only, the real check happens server-side.
+    {% endcomment %}
+    <div class="panel" style="margin-bottom: var(--sp-6);">
+      <div class="panel-header">
+        <div>
+          <h3>Dead-stock classification knowledge base</h3>
+          <p class="panel-sub">Weights and thresholds the stagnation-index classifier uses. The four weights below must sum to exactly 1.00.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+
+          <div class="field">
+            <label class="form-label" for="settings-weight-recency">Weight &mdash; Recency</label>
+            <input class="input input-plain" type="number" id="settings-weight-recency" name="weight_recency" value="{{ settings.weight_recency }}" min="0" max="1" step="0.01">
+            <div class="field-error" id="settings-weight-recency-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-weight-turnover">Weight &mdash; Turnover</label>
+            <input class="input input-plain" type="number" id="settings-weight-turnover" name="weight_turnover" value="{{ settings.weight_turnover }}" min="0" max="1" step="0.01">
+            <div class="field-error" id="settings-weight-turnover-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-weight-coverage">Weight &mdash; Coverage</label>
+            <input class="input input-plain" type="number" id="settings-weight-coverage" name="weight_coverage" value="{{ settings.weight_coverage }}" min="0" max="1" step="0.01">
+            <div class="field-error" id="settings-weight-coverage-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-weight-frequency">Weight &mdash; Frequency</label>
+            <input class="input input-plain" type="number" id="settings-weight-frequency" name="weight_frequency" value="{{ settings.weight_frequency }}" min="0" max="1" step="0.01">
+            <div class="field-error" id="settings-weight-frequency-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-slow-index-threshold">Slow-moving index threshold (0&ndash;100)</label>
+            <input class="input input-plain" type="number" id="settings-slow-index-threshold" name="slow_index_threshold" value="{{ settings.slow_index_threshold }}" min="0" max="100" step="1">
+            <div class="field-error" id="settings-slow-index-threshold-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-dead-index-threshold">Dead-stock index threshold (0&ndash;100)</label>
+            <input class="input input-plain" type="number" id="settings-dead-index-threshold" name="dead_index_threshold" value="{{ settings.dead_index_threshold }}" min="0" max="100" step="1">
+            <div class="field-error" id="settings-dead-index-threshold-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-target-days-of-cover">Target days of cover</label>
+            <input class="input input-plain" type="number" id="settings-target-days-of-cover" name="target_days_of_cover" value="{{ settings.target_days_of_cover }}" min="1" step="1">
+            <div class="field-error" id="settings-target-days-of-cover-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-min-observation-days">Minimum observation window (days)</label>
+            <input class="input input-plain" type="number" id="settings-min-observation-days" name="min_observation_days" value="{{ settings.min_observation_days }}" min="0" step="1">
+            <div class="field-error" id="settings-min-observation-days-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-min-sale-events">Minimum sale events</label>
+            <input class="input input-plain" type="number" id="settings-min-sale-events" name="min_sale_events" value="{{ settings.min_sale_events }}" min="0" step="1">
+            <div class="field-error" id="settings-min-sale-events-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-extreme-coverage-days">Extreme coverage (days)</label>
+            <input class="input input-plain" type="number" id="settings-extreme-coverage-days" name="extreme_coverage_days" value="{{ settings.extreme_coverage_days }}" min="1" step="1">
+            <div class="field-error" id="settings-extreme-coverage-days-error" role="alert"></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
     {# --------------------------------------------------------- Session #}
     <div class="panel" style="margin-bottom: var(--sp-6);">
       <div class="panel-header">

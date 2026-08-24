@@ -81,6 +81,10 @@
 .badge-warning { background: var(--c-warning-tint); color: #9C6B12; }
 .badge-danger  { background: var(--c-danger-tint);  color: var(--c-danger); }
 .badge-indigo  { background: var(--c-indigo-tint);  color: var(--c-indigo); }
+/* Prompt 2 (2026-08-24) — muted, deliberately not an accent color: for a
+   state that isn't a problem (insufficient_data) and shouldn't read as
+   one next to badge-warning/badge-danger. */
+.badge-neutral { background: var(--c-slate-100); color: var(--c-slate); }
 
 /* ------------------------------------------------------------ Form fields */
 .field {

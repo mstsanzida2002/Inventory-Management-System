@@ -407,7 +407,13 @@ def build_ai_classification_report(request):
     headers = ["Product", "Classification", "Turnover Rate", "Last Sold", "Days Since Last Sale", "Recommendation"]
     rows = [
         [c.product.name, c.get_classification_display(), c.turnover_rate,
-         c.last_sold_date or "—", c.days_since_last_sale, c.recommendation]
+         # Prompt 2 (2026-08-24) — days_since_last_sale is genuinely
+         # nullable now (BUG fix, docs/bugsfound.md): render "—", not the
+         # literal string "None" that render_tabular_report()'s str(cell)
+         # would otherwise produce for every never-sold/insufficient-data
+         # row.
+         c.last_sold_date or "—", c.days_since_last_sale if c.days_since_last_sale is not None else "—",
+         c.recommendation]
         for c in qs
     ]
     return "AI Slow-Moving & Dead Stock Report", headers, rows

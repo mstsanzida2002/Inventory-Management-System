@@ -12,7 +12,7 @@
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Slow-moving &amp; dead stock</h2>
-      <p class="text-slate">Rule-based classification from turnover rate and days since last sale &mdash; no ML model, just configurable thresholds.</p>
+      <p class="text-slate">Multi-criteria weighted expert system &mdash; no ML model, a configurable knowledge base of weights and thresholds combining recency, turnover, coverage, and sale frequency into one stagnation index.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-secondary" type="button">
@@ -25,25 +25,6 @@
       </button>
     </div>
   </div>
-
-  {% comment %}
-    Phase 12.1 §5b — ABC class is now an authority input (ApprovalPolicy
-    row 20 escalates class-A adjustments to Admin), and recompute is
-    manual (no Celery) — silent staleness here is worse than no ABC at
-    all, so it's surfaced directly rather than left implicit.
-  {% endcomment %}
-  {% if abc_stale %}
-    <div class="form-alert form-alert-warning">
-      <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
-      {% if abc_last_recomputed_at %}
-        ABC class last recomputed {{ abc_last_recomputed_at|date:"d M Y, H:i" }} &mdash; over 30 days ago. Products' revenue-contribution class may no longer reflect recent sales; an unclassified product resolves as the strictest class (A) for approval routing, never silently downgraded.
-      {% else %}
-        ABC class has never been recomputed. Every product resolves as class A (strictest) for approval routing until "Run classification now" is used.
-      {% endif %}
-    </div>
-  {% else %}
-    <p class="text-slate text-xs" style="margin-top:-0.5rem; margin-bottom: var(--sp-4);">ABC class last recomputed {{ abc_last_recomputed_at|date:"d M Y, H:i" }}.</p>
-  {% endif %}
 
   {# --------------------------------------------------------------- KPIs #}
   <div class="kpi-grid">
@@ -80,6 +61,14 @@
       <div class="kpi-label">Total flagged (slow + dead)</div>
     </div>
 
+    <div class="kpi-card">
+      <div class="kpi-top">
+        <span class="kpi-icon" style="background:var(--c-slate-100); color:var(--c-slate);"><svg class="icon"><use href="#icon-clock"></use></svg></span>
+      </div>
+      <div class="kpi-value">{{ counts.insufficient_data }}</div>
+      <div class="kpi-label">Insufficient data</div>
+    </div>
+
   </div>
 
   {# ---------------------------------------------------------- AI insight #}
@@ -88,7 +77,7 @@
       <svg class="icon"><use href="#icon-cpu"></use></svg>
       AI Insight
     </span>
-    <p class="text-slate text-sm" style="margin:0;">Classified using a {{ slow_threshold }}-day slow-moving threshold and a {{ dead_threshold }}-day dead-stock threshold &mdash; configurable in System Settings.</p>
+    <p class="text-slate text-sm" style="margin:0;">Override rules (extreme recency, coverage, or dormancy) are checked first, then a 0&ndash;100 stagnation index (slow at {{ slow_index_threshold }}+, dead at {{ dead_index_threshold }}+) built from four weighted factors &mdash; weights and thresholds configurable in System Settings. Products in stock fewer than {{ min_observation_days }} days are marked Insufficient Data instead of being scored, unless an override already applies. See "Classification rules" for the full precedence.</p>
   </div>
 
   <div class="dash-grid">
@@ -128,6 +117,7 @@
               <button type="button" data-value="fast">Fast</button>
               <button type="button" data-value="slow">Slow</button>
               <button type="button" data-value="dead">Dead</button>
+              <button type="button" data-value="insufficient_data">Insufficient Data</button>
             </div>
           </div>
         </div>
@@ -142,7 +132,7 @@
                   <th>Last sold</th>
                   <th>Turnover</th>
                   <th>Classification</th>
-                  <th>ABC</th>
+                  <th>Stagnation index</th>
                   <th>Recommendation</th>
                 </tr>
               </thead>
@@ -154,8 +144,8 @@
                     <td class="mono">{{ c.last_sold_label }}</td>
                     <td class="mono">{{ c.turnover_rate }}x</td>
                     <td><span class="badge {{ c.badge }}">{{ c.get_classification_display }}</span></td>
-                    {# Phase 12.1 §5b: blank means never computed — resolves as 'A' (strictest) for approval routing, but shown honestly as "Unclassified" here, not as a fabricated "A". #}
-                    <td>{% if c.abc_class %}<span class="badge badge-indigo">{{ c.abc_class }}</span>{% else %}<span class="text-slate text-xs">Unclassified</span>{% endif %}</td>
+                    {# Prompt 2 — null for insufficient_data rows (nothing scored yet); shown honestly as "—", not a fabricated number. #}
+                    <td class="mono" title="Confidence: {% if c.confidence is not None %}{{ c.confidence }}{% else %}—{% endif %}">{% if c.stagnation_index is not None %}{{ c.stagnation_index }}{% else %}&mdash;{% endif %}</td>
                     <td class="text-sm">{{ c.recommendation }}</td>
                   </tr>
                 {% endfor %}
@@ -200,7 +190,11 @@
                 </span>
                 <div class="widget-main">
                   <div class="widget-title">{{ c.product.name }}</div>
-                  <div class="widget-meta">{{ c.product.category.name }} &middot; {% if c.last_sold_date %}{{ c.days_since_last_sale }} days since last sale{% else %}no recorded sales{% endif %}</div>
+                  <div class="widget-meta">
+                    {% if c.flagged_by_rule %}Flagged by rule: {{ c.flagged_by_rule }}
+                    {% elif c.last_sold_date %}{{ c.days_since_last_sale }} days since last sale
+                    {% else %}no recorded sales{% endif %}
+                  </div>
                 </div>
                 <span class="badge badge-danger">Dead</span>
               </div>
@@ -230,22 +224,51 @@
       <div class="card-flat">
         <h4 style="margin-bottom: var(--sp-3);">Classification rules</h4>
         <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">
-          Rule-based, not machine learning &mdash; recalculated on every sale approval, and on demand via "Run classification now."
+          Two layers, in order &mdash; not machine learning. Recalculated on every sale approval, and on demand via "Run classification now." No scheduler runs this automatically; a product that simply stops selling keeps its last classification until one of those two triggers fires again.
         </p>
-        <div class="flex flex-col gap-3">
+
+        <p class="text-slate text-xs" style="margin-bottom: var(--sp-2); font-weight:600;">1. Override rules (checked first, on raw signals)</p>
+        <div class="flex flex-col gap-3" style="margin-bottom: var(--sp-4);">
           <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">Sold recently, healthy turnover</span>
-            <span class="badge badge-success">Fast &lt; {{ slow_threshold }} days</span>
+            <span class="text-slate text-xs">No sale in &ge; {{ dead_threshold }} days, or never sold and in stock &ge; {{ dead_threshold }} days (stock on hand)</span>
+            <span class="badge badge-danger">Force dead</span>
           </div>
           <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">Last sold {{ slow_threshold }}&ndash;{{ dead_threshold|add:"-1" }} days ago</span>
+            <span class="text-slate text-xs">&ge; {{ extreme_coverage_days }} days of stock on hand &mdash; unless the index below already calls it dead on its own</span>
+            <span class="badge badge-warning">Force slow</span>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">Sold within the last 14 days, and &le; {{ target_days_of_cover }} days of cover</span>
+            <span class="badge badge-success">Force fast</span>
+          </div>
+        </div>
+
+        <p class="text-slate text-xs" style="margin-bottom: var(--sp-2); font-weight:600;">2. Not old enough to score</p>
+        <div class="flex flex-col gap-3" style="margin-bottom: var(--sp-4);">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">In stock &lt; {{ min_observation_days }} days, and no override above fired</span>
+            <span class="badge badge-neutral">Insufficient data</span>
+          </div>
+        </div>
+
+        <p class="text-slate text-xs" style="margin-bottom: var(--sp-2); font-weight:600;">3. Weighted stagnation index (0&ndash;100) &mdash; only when nothing above decided it</p>
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">Index &lt; {{ slow_index_threshold }}</span>
+            <span class="badge badge-success">Fast-moving</span>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-slate text-xs">Index {{ slow_index_threshold }}&ndash;{{ dead_index_threshold|add:"-1" }}</span>
             <span class="badge badge-warning">Slow-moving</span>
           </div>
           <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">{{ dead_threshold }}+ days, or never sold</span>
+            <span class="text-slate text-xs">Index {{ dead_index_threshold }}+</span>
             <span class="badge badge-danger">Dead stock</span>
           </div>
         </div>
+        <p class="text-slate text-xs" style="margin-top: var(--sp-4);">
+          The index blends four factors &mdash; recency, turnover, coverage (days of stock on hand vs. recent demand), and sale frequency (distinct weeks with a sale, not raw event count) &mdash; each scored 0&ndash;1 and combined using the weights set in System Settings. A row flagged by an override rule shows the reason in place of the index (e.g. "No sales in 210 days") &mdash; worth more than an opaque number.
+        </p>
       </div>
 
     </div>

@@ -2,48 +2,57 @@
 <footer class="site-footer" id="contact">
   <div class="container">
     <div class="footer-grid">
-      <div class="footer-col">
+
+      <div class="footer-col footer-col-brand">
         <div class="brand">
           <img class="brand-mark" src="{% static 'images/logo.png' %}" alt="" aria-hidden="true">
           Stockwell
         </div>
-        <p style="color:var(--c-slate); font-size:var(--fs-sm); max-width:32ch; margin-top:var(--sp-3);">
+        <p class="footer-intro">
           Real-time inventory records and AI-driven forecasting for teams who can't afford to guess.
         </p>
-        <a href="mailto:mst.sanzida02@gmail.com" class="footer-contact-card">
-          <span class="footer-contact-icon" aria-hidden="true">
-            <svg class="icon" width="20" height="20" viewBox="0 0 24 24"><use href="#icon-mail"></use></svg>
-          </span>
-          <span>
-            <span class="footer-contact-label">Get in touch</span>
-            <span class="footer-contact-email">mst.sanzida02@gmail.com</span>
-          </span>
-        </a>
       </div>
+
       <div class="footer-col">
-        <h4>Product</h4>
-        <ul>
-          <li><a href="#features">Features</a></li>
-          <li><a href="#ai">AI Forecasting</a></li>
-          <li><a href="#pricing">Pricing</a></li>
+        <h4>Contact Us</h4>
+        <ul class="footer-contact-list">
+          <li>
+            <a href="mailto:mst.sanzida02@gmail.com">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#icon-mail"></use></svg>
+              <span>mst.sanzida02@gmail.com</span>
+            </a>
+          </li>
+          <li>
+            <a href="tel:+8801700000000">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#icon-phone"></use></svg>
+              <span>+880 1700-000000</span>
+            </a>
+          </li>
+          <li>
+            <span class="footer-contact-static">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#icon-map-pin"></use></svg>
+              <span>Gulshan, Dhaka, Bangladesh</span>
+            </span>
+          </li>
+          <li>
+            <a href="https://www.linkedin.com/company/stockwell" target="_blank" rel="noopener noreferrer">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#icon-linkedin"></use></svg>
+              <span>LinkedIn</span>
+            </a>
+          </li>
         </ul>
       </div>
-      <div class="footer-col">
-        <h4>Company</h4>
-        <ul>
-          <li><a href="#">About</a></li>
-        </ul>
-      </div>
+
       <div class="footer-col">
         <h4>Account</h4>
         <ul>
           <li><a href="{% url 'frontend:login' %}">Log in</a></li>
         </ul>
       </div>
+
     </div>
     <div class="footer-bottom">
       <span>&copy; {% now "Y" %} Stockwell. All rights reserved.</span>
-      <span>Built with Django</span>
     </div>
   </div>
 </footer>

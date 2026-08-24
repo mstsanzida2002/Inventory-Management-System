@@ -1651,7 +1651,8 @@ nothing calls.
   `db.sqlite3` (used through Phase 3.7) is no longer read by the app at
   all — the file is still on disk (gitignored, harmless) but stale;
   safe to delete whenever convenient.
-- **Schema implementation status**: **all 16 models implemented in code**,
+- **Schema implementation status**: **all 17 models implemented in code**
+  (16 through Phase 11, `ApprovalPolicy` added Phase 12),
   verified programmatically (Django shell introspection of
   `model._meta.get_fields()`, `_meta.indexes`, `_meta.db_table`, and each
   FK's `field.remote_field.on_delete`) to match `docs/SCHEMA.md` exactly —
@@ -1671,12 +1672,13 @@ nothing calls.
   | `SaleItem` | quantity, unit_price, discount, tax, line_total | FK→SaleTransaction (CASCADE), FK→Product (PROTECT) |
   | `InventoryRecord` | current_stock, reorder_level, status (available/low_stock/out_of_stock), total_value | OneToOne→Product (PROTECT) |
   | `InventoryMovement` | movement_type (purchase/sale/adjustment/return), quantity_change, stock_before/after, reference_type/id — **immutable ledger** | FK→Product, FK→User (performed_by) |
-  | `InventoryAdjustment` | adjustment_type (increase/decrease), quantity, reason (required), status (pending/approved/rejected) | FK→Product, FK→User×2 |
+  | `InventoryAdjustment` | adjustment_type (increase/decrease), quantity, **reason_code (Phase 12 — structured, required, `AdjustmentReason` choices) alongside the original free-text reason (required)**, status (pending/approved/rejected) | FK→Product, FK→User×2 |
   | `DemandForecast` | forecast_period (weekly/monthly), forecasted_demand, recommended_reorder_qty, confidence_score, model_version | FK→Product (CASCADE) |
-  | `InventoryClassification` | classification (fast/slow/dead), turnover_rate, days_since_last_sale, recommendation | OneToOne→Product (CASCADE) |
+  | `InventoryClassification` | classification (fast/slow/dead), turnover_rate, days_since_last_sale, recommendation, **abc_class (Phase 12 — `ABCClass` A/B/C, blank = never computed since Phase 12.1 §5b, recomputed by `recompute_abc_classes()`, never touched by `classify_product()`; analytics-only since Phase 12.2 — see §13)** | OneToOne→Product (CASCADE) |
   | `Notification` | type (12 choices), title, message, is_read, is_critical | FK→User (recipient, CASCADE) |
   | `AuditLog` | action, module, affected_id, status, details (JSON), ip_address — **immutable, save()/delete() raise `PermissionError` on update/delete attempts**. Note: does **not** inherit `TimeStampedModel` — it's a plain `models.Model` with its own `timestamp` field instead of `created_at`/`updated_at`, exactly as SCHEMA.md writes it. | FK→User (SET_NULL) |
-  | `SystemSettings` | singleton (`get_settings()` → `get_or_create(pk=1)`); default_reorder_level, forecast config, threshold days, session_timeout_seconds, notification toggles | none |
+  | `SystemSettings` | singleton (`get_settings()` → `get_or_create(pk=1)`); default_reorder_level, forecast config, threshold days, session_timeout_seconds, notification toggles (`email_notifications_enabled`/`low_stock_email_enabled` fields still live, still read by `notifications.py`; the settings-page UI control was removed Phase 12.2 — only Django admin can change them now, see §13); company_name/address/email/phone plus **company_tax_number/company_website (Phase 13, new)**; `company_logo` is a **`FileField`, not `ImageField`, since Phase 13** — SVG has no Pillow support, so `ImageField`'s built-in validation would hard-reject it; `frontend.validators.validate_company_logo` does that checking instead (Pillow-verified for PNG/JPG, sniffed for SVG). `get_company_profile()` (classmethod, alongside `get_settings()`) is the one accessor every PDF reads through — no PDF hardcodes a company value | none |
+  | `ApprovalPolicy` (Phase 12, new) | name, transaction_type (purchase_order/adjustment/sale_cancel), reason_code/min_value/max_value/max_variance_pct/cumulative_window_days/cumulative_value_cap (matching conditions, blank/null = matches anything), required_level (auto/supervisor/admin), block_self_approval, priority (lower wins, unique per active row per type), is_active, notes — **`abc_class` field removed Phase 12.2, see §13** | none — resolved against live `PurchaseOrder`/`InventoryAdjustment`/`SaleTransaction` instances by `frontend/approvals.py`, not a FK |
 
   Documented migration order (per-app) collapses to one
   `makemigrations frontend` in the current single-app structure — this is
@@ -3193,6 +3195,641 @@ inert but undeleted for the same reason.
   issue this phase's wider variety of trending/seasonal cohorts made
   visible for the first time. Not patched here per this phase's explicit
   scope (seed data only); flagged for a future forecasting.py phase.
+
+- **Phase 12: Approval Authority Matrix — the static `@supervisor_required`/
+  `SupervisorRequiredMixin` role check is now a floor, not the whole
+  answer.** "The supervisor approves transactions. The admin defines which
+  transactions the supervisor is permitted to approve." New model
+  (`ApprovalPolicy`, §6) + resolver (`frontend/approvals.py`:
+  `resolve_required_level()`/`can_approve()`) govern three actions:
+  `PurchaseService.approve()`, `AdjustmentService.approve()` (+ a new
+  `AdjustmentService.create()` for the AUTO fast path), and
+  `SaleService.cancel_sale()`. **Fail-closed is the core design
+  principle**: no matching active policy → required level is `ADMIN`,
+  never `SUPERVISOR`, never `AUTO` — a transaction the ruleset can't
+  classify needs the most senior signature, by construction. The gate
+  lives *inside* the service layer, not only the view — `SupervisorRequiredMixin`
+  stays as the coarse floor (can this role ever reach this URL), `can_approve()`
+  narrows further per-transaction and is called from the service methods
+  themselves (§6's own instruction: the service layer is the boundary
+  that must hold "regardless of caller" — proven by this phase's own
+  `ApprovalAuthorityServiceLayerTests`, which call the services directly,
+  bypassing views entirely).
+  Two premise gaps found during discovery, reported before writing code
+  rather than guessed past (this task's own explicit instruction):
+  1. **No pre-existing purchase-order approval value ceiling existed
+  anywhere in this codebase** — confirmed by reading `SystemSettings`'
+  full field list and `PurchaseService.approve()` line by line; grepped
+  the whole tree for `ceiling`/`approval_limit`/`approval_threshold` and
+  found only an unrelated Phase 10 `turnover_rate` overflow cap. The
+  task's own brief (§2/§3) assumed one existed and asked for a data
+  migration converting it byte-identically into two seeded policy rows —
+  there was nothing to convert *from*. The seed migration
+  (`frontend/migrations/0007_seed_approval_policies.py`) writes the
+  starting ruleset directly; the ৳50,000 purchase-order supervisor/admin
+  split is a fresh value, confirmed with the user (not invented, not
+  inherited).
+  2. **`InventoryAdjustment` has no stored currency value or "variance"
+  concept at all** — only `quantity` + `adjustment_type`. Both are
+  computed at resolution time, not stored: `value = quantity *
+  product.purchase_price`; `variance_pct = |quantity| / current_stock *
+  100`, `None` when `current_stock` is 0 (an undefined variance against a
+  zero base, deliberately excluded from matching — falls through to a
+  catch-all/Supervisor rule rather than satisfying an AUTO threshold on a
+  technicality). `ApprovalPolicy.max_variance_pct`'s comparison direction
+  isn't fixed by the model spec alone, so it's disclosed here: for an
+  ADMIN-outcome policy it's a floor variance must *exceed* to match
+  (escalate when unusually high); for AUTO/SUPERVISOR-outcome policies
+  it's a ceiling variance must stay *at or below* to match (only
+  automate/keep-at-supervisor when routine).
+  A third, unforeseen interaction found empirically, not assumed: **`seed_dev_data.py`'s
+  own `call_command("flush", ...)` truncates the `ApprovalPolicy` table
+  along with everything else — but a data migration only seeds it once,
+  so the table stayed empty on every reseed, and every `approve()`/
+  `cancel_sale()` call in that command started failing closed to Admin**
+  (found by actually running the seed command post-migration, not
+  assumed safe). Fixed by extracting the starting ruleset into
+  `frontend.approvals.DEFAULT_APPROVAL_POLICIES` +
+  `ensure_default_policies()` (idempotent, `get_or_create`-based) —
+  the migration keeps its own frozen, self-contained snapshot (migrations
+  must never import evolving app code) and `seed_dev_data.py` now calls
+  `ensure_default_policies()` right after its own flush to restore the
+  same ruleset for dev purposes. One real, disclosed behavior change this
+  exposed: `seed_dev_data.py`'s `_build_non_completed_records()` had
+  `self.staff` cancel a draft sale directly via the service layer — this
+  only ever "worked" because the service layer never checked role before
+  Phase 12 (the *view*'s `SupervisorRequiredMixin` already made this
+  unreachable for a real staff user); changed to `self.supervisor` to
+  match what was already true everywhere a real user hits this action.
+  **Self-approval blocking (§5 rule 5) is a deliberate reversal of a
+  previously-disclosed decision**: Phase 7/8.99b's `SaleApproveView`
+  explicitly documented "no creator≠approver restriction, deliberately
+  matching how Purchases already works." Phase 12 reverses this —
+  `block_self_approval` defaults `True` per-policy, admin is always
+  exempt, supervisor is not — flagged here as an intentional overturn,
+  not a silent inconsistency.
+  `ABCClass`/`recompute_abc_classes()` (cumulative revenue contribution,
+  trailing 90 days — same window as `calculate_turnover_rate()`, 80/15/5
+  split) lives on `InventoryClassification`, not `Product` or
+  `InventoryRecord`: it's the same *kind* of field
+  (`StockClassification`/`turnover_rate`) already there — a derived,
+  batch-recomputed, sales-history classification — not static catalog
+  data or live per-movement stock state. No Celery task schedules it
+  (§7's brief assumed one; none exists anywhere in this project,
+  `frontend/forecasting.py`'s own docstring already discloses the same
+  absence) — folded into `run_full_classification()`'s own closing step
+  instead, matching this project's established "every AI/analytics pass
+  is a manual synchronous run" pattern.
+  DRF/UI: `AdjustmentReason` (structured reason code, required alongside
+  the existing free-text `reason`) lets policies route on adjustment
+  reason; the admin-only Approval Policy screen
+  (`/settings/approval-policies/`, `AdminRequiredMixin`) lists policies
+  grouped by transaction type with a best-effort (disclosed as such, not
+  a full boolean-logic prover) "possibly unreachable rule" warning and a
+  rule simulator calling the same `resolve_required_level()` the real
+  approval path uses; every create/update/deactivate/reactivate writes an
+  `AuditLog` entry with before/after field snapshots (§4's own
+  instruction: the policy table must be at least as auditable as the
+  transactions it governs). Approve/cancel buttons on Purchases/
+  Adjustments/Sales now render shown-but-disabled with the real denial
+  reason as a tooltip when `can_approve()` returns `False`, never hidden
+  (§8b) — a new `.pill-btn:disabled` style (`dashboard.css`) since none
+  existed before this phase. Verified live: the full 355-test suite
+  passes (333 existing + 22 new — 19 pre-existing tests needed updating,
+  each because they called `PurchaseService.approve()`/
+  `AdjustmentService.approve()`/`SaleService.cancel_sale()` directly with
+  a STAFF-role test user that the service layer never checked before;
+  noted inline at each fix, not silently patched), the AUTO path was
+  proven end-to-end (posts stock, writes exactly one movement, zero
+  pending-record audit entries), and `seed_dev_data.py` runs clean and
+  idempotent at the full 43-product scale with the policy engine live.
+
+- **Phase 12.1: Approval Authority Matrix hardening — two corrections to
+  Phase 12's own brief, a real gap left unbuilt (reported, not invented),
+  a cumulative-value cap on the AUTO path, two fail-open defaults closed,
+  and one more service-layer authorization gap fixed.**
+
+  **Two corrections to Phase 12's premise, recorded so future prompts
+  stop reasoning from them (this phase's own §2 instruction):**
+  1. No purchase-order approval ceiling ever existed before Phase 12. The
+  ৳50,000 supervisor/admin split is new, seeded by
+  `frontend/migrations/0007_seed_approval_policies.py`, and originates
+  from `ApprovalPolicy` rows this project wrote — not from a migrated
+  legacy setting. There is no deprecated setting anywhere to remove in a
+  later phase (Phase 12 never created one, since discovery found nothing
+  to deprecate) — any future prompt referencing a "deprecated ceiling
+  setting TODO" is describing something that doesn't exist.
+  2. Celery and Celery Beat are not installed in this project (confirmed
+  again: `requirements.txt` has no `celery` dependency). Every AI/policy
+  recompute (`run_full_classification()`, `run_full_forecast()`,
+  `recompute_abc_classes()`) is synchronous and manually triggered. Any
+  doc or prompt referencing `@shared_task`, a Celery Beat schedule, or an
+  async `backfill_actual_demand()` describes an architecture that was
+  never built here.
+
+  **The "record unlock" system §3 asked this phase to harden does not
+  exist anywhere in this codebase — reported before writing code, not
+  invented to give §3 something to attach to (this task's own §0
+  instruction, and the user's explicit choice when asked how to
+  proceed).** Confirmed exhaustively: `grep -rniE "unlock"` across every
+  `.py` file and every doc (one hit, unrelated — "mutates current_stock
+  unlocked," plain English for "unrestricted"); no model/field/migration
+  named anything like `RecordUnlock`/`EditUnlock`/`is_locked`/
+  `edit_token`/`consumed`; all 7 real migrations read in full; all 66
+  §15 timeline entries read — no "record unlock" phase anywhere, and no
+  post-approval edit path exists for `PurchaseOrder`/`InventoryAdjustment`/
+  `SaleTransaction` at all (every status transition in `services.py` is
+  forward-only). §3's re-resolution contract, its 3 required tests, and
+  the "invalidate/keep/never-downgrade" table are **not implemented** —
+  building a full terminal-record-unlock-and-edit subsystem to give
+  hardening something to harden would have been a large, unrequested
+  feature build disguised as a fix. If a future phase builds a real
+  unlock/edit path, §3's own table (increase → invalidate & return to
+  pending; unchanged → keep, log; decrease → keep, never auto-post) is
+  the right contract to implement against — written down here so it
+  isn't lost.
+
+  **§4 — cumulative cap on the AUTO adjustment path, closing a real
+  salami-slicing hole.** `ApprovalPolicy.cumulative_window_days`/
+  `cumulative_value_cap` (both null → no cap, unchanged behavior).
+  `InventoryAdjustment` gained `resolved_policy`/`was_auto_posted`
+  (previously only existed inside `AuditLog.details` — a real gap this
+  phase's own §0 discovery question anticipated correctly; you cannot
+  compare against a value you have to parse back out of a JSON log
+  field). `frontend.approvals.resolve_adjustment_with_cumulative_cap()`
+  re-resolves excluding the AUTO policy (via a new
+  `resolve_required_level(exclude_policy_ids=...)` parameter) when the
+  trailing-window AUTO-posted total for that product would exceed the
+  cap — the ruleset's own next-priority rule decides the fallback
+  (lands on the Supervisor catch-all in the seeded set), never a
+  hard-coded escalation target. `ADJUSTMENT_AUTO_DEFLECTED` audit entry
+  records both figures ("the trail that makes the control provable," §4's
+  own words). Seeded default: ৳2,000 / 30 days on the one AUTO policy
+  (priority 40) — via a new migration
+  (`0009_cumulative_cap_and_backfill.py`) updating the existing seeded
+  row (a migration must update what an earlier migration already wrote,
+  not just apply to future rows) plus a best-effort backfill of
+  `was_auto_posted`/`resolved_policy` for adjustments AUTO-posted before
+  this migration ran, sourced from their own `AuditLog` entries.
+  Cumulative usage per product surfaced on the Approval Policy screen
+  (`cumulative_usage_by_product()`, a `.confidence-bar`-based mini panel
+  per AUTO+capped policy) — "demonstrable rather than invisible," §4's
+  own instruction.
+
+  **§5a — `variance_pct is None` (zero `current_stock`) now MATCHES an
+  ADMIN-outcome variance condition instead of being skipped.** Previously
+  `resolve_required_level()` treated `None` as "no signal, skip this
+  policy" for every variance-conditioned rule regardless of outcome —
+  fail-open at exactly the boundary the whole resolver is supposed to be
+  fail-closed at. An adjustment against zero stock (the "50 units found
+  in overflow storage"/phantom-stock case) is undefined variance, not
+  absent variance, and undefined is exactly what should escalate. Fixed
+  in `resolve_required_level()`'s own variance branch, with the
+  direction now conditioned per-branch (`ADMIN`: `None` matches;
+  `AUTO`/`SUPERVISOR`: `None` still doesn't, unchanged — it was already
+  correctly excluded there). Covered by
+  `FailClosedDefaultsTests.test_variance_none_at_zero_stock_matches_admin_variance_rule`.
+
+  **§5b — an unclassified (never-computed) `abc_class` now resolves as
+  `'A'` for policy-matching, not `'C'`.** Phase 12's own §7 instruction
+  ("Products with no sales history default to 'C', not blank") was
+  correct for ABC as a pure analytics label but wrong once it became an
+  authority input (policy row 20 escalates class-A adjustments to
+  Admin) — recompute is manual (no Celery, see the correction above), so
+  a newly-stocked high-value product could sit at a default `'C'`
+  indefinitely and policy row 20 would simply never fire for it.
+  `InventoryClassification.abc_class`'s model default changed from
+  `ABCClass.C` to blank (`''`) — blank now means "never computed,"
+  distinguishable in the data and on screen from a genuinely-computed
+  `'C'` (`ABCClass` itself gained no 4th member; blank is the state,
+  same convention `ApprovalPolicy.abc_class` already used for "matches
+  anything"). The STORED field stays blank; `frontend.approvals.
+  _adjustment_context()` substitutes `'A'` only at resolution time.
+  Staleness surfaced explicitly rather than left implicit: a bulk
+  `.update()` call (`recompute_abc_classes()`) bypasses
+  `TimeStampedModel`'s `auto_now updated_at` entirely (`.update()` never
+  calls `save()`) — a real, previously-silent gap found while
+  implementing this — so a new `SystemSettings.abc_last_recomputed_at`
+  field is set explicitly, and both the Approval Policy screen and the
+  Slow-Moving & Dead Stock page show "ABC last recomputed: &lt;date&gt;"
+  with a warning past 30 days (`abc_staleness_info()`). Covered by
+  `FailClosedDefaultsTests.test_never_computed_abc_resolves_as_a`/
+  `test_computed_c_still_resolves_as_c_not_a` (the second proving the
+  fallback doesn't also swallow a real computed `'C'`).
+
+  **§6 — swept for BUG-56 siblings (other tables `seed_dev_data.py`'s
+  `flush` silently wipes that only a data migration seeds). None found.**
+  All 7 real migrations read in full: `0007_seed_approval_policies.py`
+  is the *only* `RunPython` data migration in this project; every other
+  migration is pure schema (`AddField`/`AlterField`/`CreateModel`). Not
+  padded with manufactured findings — an honest "swept, found nothing
+  else" is itself the deliverable here, per this phase's own explicit
+  preference for that over inflating a count.
+
+  **§7 — the service-layer authorization gap is now a standing rule, not
+  a one-off:** **authorization checks belong at the service boundary;
+  view-layer gates (`SupervisorRequiredMixin`/`AdminRequiredMixin`) are
+  defence in depth, never the primary control.** Phase 12's 19 updated
+  tests weren't test churn — they proved the service layer accepted
+  unauthorised approvals from any caller that reached it another way
+  (a management command, a shell, a future API path), with views as the
+  *only* real gate. Swept for the same pattern elsewhere: `PurchaseService.
+  reject()`/`cancel()`, `SaleService.reject_sale()`/`approve_sale()`,
+  `AdjustmentService.reject()` all mutate state with zero service-layer
+  check, relying entirely on their view's mixin. Fixed the clearest,
+  highest-stakes one this phase — `SaleService.approve_sale()`, the one
+  place a sale's stock actually moves — with a minimal role check (not
+  routed through `ApprovalPolicy`; plain sale completion was never in
+  Phase 12's `ApprovalTxType` scope). The other four are reported here,
+  not fixed this phase — real, listed technical debt, not a silent gap.
+
+  Verified live: full 363-test suite passes (355 + 8 new — 9 pre-existing
+  tests needed updating, every one because §5b's corrected fallback now
+  routes their never-classified test fixture to the seeded ADMIN policy;
+  noted inline at each fix, an admin approver added locally to the two
+  affected test classes rather than the shared `ServiceTestCase` base,
+  since adding it there was tried first and broke an unrelated
+  notify-every-supervisor-and-admin recipient-set assertion elsewhere —
+  found and reverted, not left broken), `seed_dev_data.py` runs clean and
+  idempotent at 43 products with the cumulative cap and both corrected
+  defaults live, and `manage.py check` passes clean.
+
+- **Phase 12.2: ABC removed as an approval-routing input; Approval
+  Policies page simplified; notification setting trimmed from admin
+  settings.** Found `frontend/audit.py` regressed to disk missing 6
+  constants (`ADJUSTMENT_AUTO_POSTED`/`ADJUSTMENT_AUTO_DEFLECTED`/all 4
+  `APPROVAL_POLICY_*`) before this phase started — a blocker, fixed
+  first (§ own Task 1), restoring the suite to green before any other
+  work began; recorded as its own entry in `docs/bugsfound.md`, not
+  folded into this phase's feature work.
+
+  **ABC out of approval routing.** `ApprovalPolicy.abc_class` (field +
+  migration), the resolver's abc_class matching branch, and `can_approve()`'s
+  ABC awareness are all removed; the ABC-matching seeded policy (former
+  priority 20, "Class-A product, high variance" → Admin) deleted via data
+  migration (`0010_remove_abc_class_policy_row.py`, separate from the
+  schema migration — combining a data-migration `DELETE` with a
+  same-table `RemoveField` in one file hit a real Postgres error,
+  `OperationalError: cannot ALTER TABLE ... because it has pending
+  trigger events`; splitting into two migrations each in their own
+  transaction fixed it, found by actually running it, not assumed).
+  `DEFAULT_APPROVAL_POLICIES` is 9 rows now (was 10); remaining coverage
+  re-verified to still end in the catch-all Supervisor rule per
+  transaction type, fail-closed-to-Admin-on-no-match unchanged. Phase
+  12.1 §5b's "unclassified resolves as `'A'`" fallback is gone with it —
+  that rule only ever existed because ABC was an authority input; its
+  two tests (`test_never_computed_abc_resolves_as_a`/
+  `test_computed_c_still_resolves_as_c_not_a`) are deleted, not
+  rewritten, since the behaviour they asserted no longer applies.
+  **`ABCClass`, `InventoryClassification.abc_class` (field, blank
+  default, and Phase 12.1's "blank = never computed" semantics),
+  `recompute_abc_classes()`, and `abc_staleness_info()` are all
+  unchanged and still live** — ABC remains real for the Slow-Moving &
+  Dead Stock page and inventory analytics generally, only its use as a
+  policy-matching input is gone. `cumulative_usage_by_product()` (only
+  ever called by the now-removed UI panel below) is deleted from
+  `frontend/approvals.py` entirely; `resolve_adjustment_with_cumulative_cap()`
+  and the cap enforcement itself are untouched.
+
+  **Approval Policies page simplified back to "list + add."** Removed
+  from the page: the rule simulator (form, JS `runSimulation()`, and
+  `ApprovalPolicySimulateView` + its URL — the resolver function itself
+  untouched, only the UI that called it for hypothetical inputs is
+  gone), the unreachable/shadowed-rule warning computation, the ABC
+  staleness banner (stays on the Slow-Moving & Dead Stock page), and the
+  cumulative-usage-by-product panel. Kept: one table per transaction
+  type (priority/name/condition/outcome/self-approval/status/actions),
+  add/edit modals, activate/deactivate, admin-only gating.
+  `cumulative_window_days`/`cumulative_value_cap` stay fully enforced —
+  moved to the bottom of the add/edit form as optional fields, shown in
+  the condition-text cell only when set, not removed from anywhere
+  functional.
+
+  **Notification setting trimmed from admin settings.** Removed the
+  "Notifications" panel (two checkboxes) from `settings.html` and both
+  fields from `SystemSettingsForm.Meta.fields`. The model fields
+  themselves are untouched: `email_notifications_enabled` is still the
+  live master gate `notifications.py`'s `_maybe_send_email()` reads —
+  it's now frozen at whatever value is already in the DB (default
+  `True`), changeable only through Django's raw `/admin/` (no custom
+  `SystemSettingsAdmin.fields` override exists to remove there too, so
+  the escape hatch is real, just unstyled). `low_stock_email_enabled`
+  was already fully dead code before this phase — grepped, confirmed
+  nothing reads it (`InventoryService._send_low_stock_notification()`
+  calls `notify_supervisors()` unconditionally) — its removal from the
+  form has zero behavioral effect.
+
+  **Task 6 (flaky forecast test, optional/time-boxed): not reproducing.**
+  `RunFullForecastTests.test_replenish_alert_when_weekly_demand_exceeds_stock`
+  passed clean in a full single-process suite run (`--parallel=1`, 361/361).
+  The described root cause (stale `ai_models/*.joblib` on disk leaking
+  between tests) is already guarded against — every forecast-training
+  test class (`ForecastingPipelineTests`, `RunFullForecastTests`,
+  `DemandForecastingViewTests`) already calls `_clear_forecast_model_files()`
+  in both `setUp()`/`tearDown()`, pre-existing code this phase didn't
+  need to touch. No change made; noted here rather than left unverified.
+
+  Verified live: 361/361 tests (363 from Phase 12.1, minus the 2 deleted
+  ABC-fallback tests) — 5 failures surfaced immediately after the ABC
+  removal (2 ERRORs from the deleted-field/deleted-policy tests, 3 FAILs
+  from stale "10 policies" count assertions and one test still expecting
+  `ApprovalOutcome.ADMIN` for a scenario that now resolves to
+  `ApprovalOutcome.SUPERVISOR` without ABC escalation) — all fixed, none
+  left red. Local per-test-class `self.admin` fixtures added in Phase
+  12.1 to route around ABC-driven Admin escalation are removed along
+  with it (`AdjustmentServiceTests`, `AdjustmentAuditNotificationTests`,
+  `AdjustmentWorkflowViewTests`, `MovementHistoryViewTests` all reverted
+  to their pre-12.1 `self.supervisor` fixtures — these scenarios now
+  resolve via the seeded catch-all Supervisor policy, no ABC involved).
+  `manage.py check` clean.
+
+- **BUG-57 close-out: the last four service-boundary authorization gaps
+  fixed — the standing rule now has zero known violations.** §7's own
+  words: "a standing rule with four known violations sitting in the
+  tree is worse than no rule." `PurchaseService.reject()`/`cancel()`,
+  `SaleService.reject_sale()`, and `AdjustmentService.reject()` now gate
+  with the identical plain supervisor-or-admin role check `SaleService.
+  approve_sale()` already used (Phase 12.1 §7) — same
+  `ApprovalAuthorityError`, checked immediately after the status guard
+  and before any mutation, view-layer `SupervisorRequiredMixin` left in
+  place on all four (both layers, not one). Deliberately NOT routed
+  through the `ApprovalPolicy` engine (`resolve_for_transaction()`/
+  `can_approve()`) the way `approve()`/`cancel_sale()` are — rejection
+  was never in Phase 12's `ApprovalTxType` scope, same reasoning
+  `approve_sale()` already gave for its own plain check; matching that
+  precedent rather than inventing a second authorization pattern for
+  reject/cancel.
+
+  **Swept the full service layer for anything else matching "mutates
+  state, creates/cancels a record, or moves stock, gated only by a view
+  mixin."** Found nothing further: `InventoryService.increase_stock()`/
+  `decrease_stock()` are internal primitives, only ever called from
+  `receive_items()` (staff-appropriate — receiving is an operational
+  task, not an approval decision, matching `PurchaseReceiveView`'s own
+  `AnyStaffMixin`) or from already-gated `approve()`/`approve_sale()`/
+  the AUTO-outcome `AdjustmentService.create()` path (policy-gated by
+  design — AUTO's entire point is posting without a human approver).
+  `submit_for_approval()` (both services), `receive_items()`, and
+  `create_sale()` are intentionally open to any authenticated staff —
+  no role distinction beyond "logged in" was ever intended for them, so
+  their `AnyStaffMixin`-only gating is not a gap of this kind.
+
+  **7 pre-existing tests were silently relying on the gap they were
+  supposed to help prevent** — each called one of the four methods
+  directly with the shared `ServiceTestCase.self.user` fixture (STAFF)
+  and had always passed, because nothing on the service side ever
+  checked. Not test churn: a test asserting a STAFF user *can* reject a
+  PO/adjustment or cancel a PO was asserting the bug's own behavior.
+  Rewritten to call with `self.supervisor` instead (`PurchaseServiceTests.
+  test_reject_moves_pending_to_rejected_with_reason`, `PurchaseCancelTests.
+  test_cancel_from_draft_leaves_stock_untouched`/
+  `test_cancel_from_pending_leaves_stock_untouched`/
+  `test_cancel_rejects_already_cancelled`'s first call,
+  `PurchaseAuditNotificationTests.test_cancel_logs_but_does_not_notify`,
+  `AdjustmentServiceTests.test_reject_adjustment_does_not_touch_stock`).
+  The several `PurchaseCancelTests` cases already expecting `ValueError`
+  from a wrong-status PO (`test_cancel_rejects_approved`/
+  `_partially_received`/`_already_received`, and the second call in
+  `_already_cancelled`) needed no change — the status guard still runs
+  before the new authorization check, so those keep proving the status
+  guard specifically, unaffected by caller role. One new negative test
+  added per fixed method (`test_reject_raises_for_unauthorised_staff` ×3,
+  `test_cancel_raises_for_unauthorised_staff` ×1), each calling the
+  service directly with `self.user` (STAFF) and asserting
+  `ApprovalAuthorityError`, mirroring
+  `ApprovalAuthorityServiceLayerTests`' existing shape for `approve()`/
+  `cancel_sale()`. `PurchaseRejectView`/`PurchaseCancelView`/
+  `SaleRejectView`/`AdjustmentRejectView` each gained an `except
+  ApprovalAuthorityError: ... status=403` clause matching every other
+  approval-adjacent view in this file — previously absent since a
+  `SupervisorRequiredMixin`-gated view could never actually reach the
+  new check via the UI, but leaving it uncaught would have surfaced as
+  an unhandled 500 rather than a clean 403 the one time it could (a
+  role changing mid-session, or any future caller of these views that
+  isn't the current UI).
+
+  Verified live: 365/365 tests (361 from Phase 12.2 + 4 new direct-
+  service denial tests, one per fixed method; 7 existing tests rewritten
+  to act as `self.supervisor` instead of the STAFF fixture that used to
+  pass unchecked, none deleted), `manage.py check` clean. No templates
+  touched this phase, so no `{# #}` sweep was needed.
+
+- **BUG-59: `ProgrammingError: column approval_policies.abc_class does
+  not exist` diagnosed — the Phase 12.2 ABC removal itself was NOT
+  incomplete.** Diagnosis before any fix, per this task's own
+  instruction: `showmigrations frontend` showed 0011 applied,
+  `makemigrations --check --dry-run` reported no drift, a direct
+  `information_schema.columns` query confirmed `abc_class` genuinely
+  absent from the live `approval_policies` table, and a fresh Django
+  test-client process hitting the exact same view against the exact
+  same dev DB returned 200 clean — model, migration, and schema were
+  already in full agreement. The actual cause, found by `netstat -ano`:
+  **six `manage.py runserver` processes had accumulated on
+  `127.0.0.1:8000`** across this session's own earlier "start the dev
+  server" steps (this session's own doing — each prior restart started
+  a new process without confirming the old one had actually exited;
+  Windows happily let all six coexist bound to the same port), spanning
+  roughly 1:17 PM to 4:22 PM. Requests landed on whichever process's
+  socket accepted the connection — including ones whose in-memory
+  `ApprovalPolicy` view/model bytecode predated the `abc_class`
+  removal. A live reproduction against the pool confirmed the exact
+  error; killing all six and leaving exactly one fresh process fixed it
+  immediately (5/5 clean page loads plus one full add-policy round trip
+  afterward). **A general operational lesson, not specific to ABC**:
+  this project has no dev/production settings split and no process
+  manager — every future "restart the server" step should verify the
+  old listener is actually gone (`netstat`/`lsof` on the port) before
+  starting a new one, not just start a new one and assume the old one
+  died. The `frontend/views.py:2482` "prose in the traceback" symptom
+  that looked alarming on its own was a side effect of the same root
+  cause, not a second bug: the stale process's compiled bytecode had
+  drifted from the current file's line numbering, so Django's debug
+  page (which re-reads the *current* file from disk to render source
+  context) displayed an unrelated but entirely valid line of
+  `_policy_snapshot()`'s real docstring — confirmed by reading the file
+  directly; no prompt/spec text was ever actually pasted into source.
+
+  Also fixed while here: `LOGIN_REDIRECT_URL`/`LOGOUT_REDIRECT_URL`
+  were never set in `config/settings.py`, silently defaulting to
+  Django's own `/accounts/profile/`/`None`. Confirmed **latent, not
+  broken** — `frontend.views.login()`/`logout_view()` are plain
+  function views that `redirect()` explicitly by URL name
+  (`frontend:dashboard`/`frontend:login`) and never call
+  `get_success_url()` or read either setting. Set anyway, matching
+  `LOGIN_URL`'s own established style/comment convention just above
+  them, as defence in depth for anything that ever does fall back to
+  Django's own default (the admin's own `/admin/login/` with no `next`,
+  for one).
+
+  Verified live: `manage.py migrate` reports no pending migrations,
+  `manage.py check` clean, full suite 365/365 unchanged, reseed via
+  `seed_dev_data.py` followed by another live page load both clean.
+
+- **Phase 13: professional PDF documents + live company settings.** New
+  `frontend/pdf.py` — the shared header/footer/style/currency/date
+  infrastructure every PDF in the system now renders through
+  (`render_document()` for the 3 transactional documents,
+  `render_tabular_report()` for the 9 REPORT_BUILDERS exports and
+  Movement History's export), replacing what used to be five
+  independent, copy-pasted ReportLab setups. Discovery before any code:
+  only 2 per-record PDFs existed (Purchase Order, Sale Transaction) —
+  no per-Adjustment or per-Movement document, only the flat report-table
+  export covered either. `SystemSettings` company fields already
+  persisted for real (form → DB → survives restart, audited via
+  `SETTINGS_UPDATED`) — the actual gap was that **zero PDF code
+  anywhere read them**; every generator hardcoded its own title, no
+  logo, no address, no branding at all.
+
+  **Two disclosed ReportLab-only constraints, found empirically, not
+  assumed** (full detail in `frontend/pdf.py`'s own module docstring):
+  (1) the ৳ glyph has no coverage in any of ReportLab's built-in fonts
+  (WinAnsi/Latin-1 only) and this repo ships no font file to register
+  instead — PDFs use `Tk` as the currency prefix, the web UI keeps ৳
+  everywhere unchanged; (2) `company_logo` accepts SVG, but ReportLab
+  can't rasterize it without a new dependency (svglib et al.), which
+  the phase's own standing rules forbid — an SVG logo renders the PDF
+  header the same graceful text-only way a missing logo does, and
+  still displays correctly on the web (plain `<img src>`).
+
+  **Company settings, made genuinely load-bearing.** `company_logo`
+  switched from `ImageField` to `FileField` — Pillow (which `ImageField`
+  uses to validate) cannot open SVG at all, so the field type itself
+  was the blocker, not just the validator; a new `validate_company_logo`
+  (Pillow-verified for PNG/JPG, sniffed for SVG) replaces the checking
+  `ImageField` used to do for free. Added `company_tax_number`/
+  `company_website` (both blank-optional, no backfill needed). New
+  `SystemSettings.get_company_profile()` classmethod, alongside the
+  existing `get_settings()` — the one accessor every PDF reads through,
+  always returning plain strings (never `None`) so no caller needs to
+  special-case a blank field. Settings page gets a live client-side
+  logo preview on file selection (`FileReader`, no round trip) — the
+  old preview only ever showed the *saved* logo, never a newly-picked
+  one before upload.
+
+  **Every document type, one shared structure**: header band (logo or
+  company-name-in-type fallback, address/phone/email/tax number,
+  closing rule) and footer (page N of M via a `NumberedCanvas` that
+  buffers pages since the total isn't known until the whole document is
+  built once, generated-timestamp, computer-generated note, company
+  name) drawn via `BaseDocTemplate`'s `onPage` callback so both repeat
+  on every page regardless of length — verified against a deliberately
+  long (120-row) report: 7 pages, table header genuinely repeats on
+  each one, "Page N of 7" numbered correctly throughout. Party block
+  (Supplier for POs, Bill To for invoices, none for adjustments — this
+  schema has no location/warehouse concept anywhere, confirmed via
+  `InventoryRecord` having no location breakdown, so a fabricated
+  "Location: Main Warehouse" line was left out rather than invented).
+  Totals block reconstructed from `frontend.pricing.
+  calculate_totals_breakdown()` (new) — Subtotal/Discount/Tax/Grand
+  Total derived from `calculate_line_total()`'s own formula, since
+  `PurchaseOrderItem`/`SaleItem` only ever persist the final
+  `line_total`, never the breakdown; reconciles exactly by
+  construction, proven with a test. Signature block shows the real
+  approver by name — `PurchaseOrder`/`SaleTransaction` don't store
+  which policy/level resolved their approval (only
+  `InventoryAdjustment.resolved_policy` does), so the approver's own
+  role (`get_role_display()`) stands in as the level shown, which is
+  exactly the signal that matters: whoever is shown already passed
+  `can_approve()` for whatever level the transaction required — this is
+  Phase 12/12.1's approval-authority work becoming visible on paper, as
+  asked. Cancelled/rejected documents get a diagonal, pale-red status
+  watermark drawn directly on the canvas.
+
+  New `generate_adjustment_pdf()` (no prior document existed) + new
+  `AdjustmentPDFView`/`adjustments/<pk>/pdf/` route — replaced
+  Adjustments' dead "View adjustment" button (BUG-60: no handler ever
+  existed) with a real download, same pattern Purchases/Sales already
+  use.
+
+  **Reports page Task 4**: the Sales Report panel's raw per-transaction
+  table (redundant with Movement History) is gone, replaced by a
+  revenue-by-day Chart.js bar chart (reusing the exact setup/colors
+  dashboard.js's own sales chart already established — no new charting
+  convention) plus a status-breakdown table (count + total per
+  `SaleStatus`). The Sales Report's own PDF export mirrors this same
+  aggregate shape (`generate_sales_summary_pdf()`, new); its CSV export
+  is untouched and still the detailed per-transaction dump —
+  `build_sales_report()` itself wasn't removed, just no longer used for
+  the on-page preview or the PDF.
+
+  **Consistency pass (Task 5)**: every PDF generator in the codebase —
+  all 9 `REPORT_BUILDERS`, Movement History's export, the Sales
+  summary, and all 3 transactional documents — now renders through
+  `frontend/pdf.py`. None were left out.
+
+  Verified live: full suite 385/385 (365 + 20 new — company branding
+  reflected in real PDF output, blank-optional-fields rendering,
+  logo upload accepting PNG/JPG/SVG and rejecting bad extension/size/
+  spoofed-SVG, totals reconciliation, multi-page repeat/pagination,
+  cancelled/rejected watermark presence, every new/changed PDF endpoint
+  returning valid `application/pdf` — a text-extraction helper
+  (`_extract_pdf_text()`, undoing ReportLab's default
+  `[ASCII85Decode, FlateDecode]` stream encoding, confirmed empirically)
+  makes the actual rendered text assertable rather than only checking
+  status codes/content-type), `manage.py check` clean, live Playwright
+  round trip (login → download real PDFs through the actual UI buttons
+  for a PO/an adjustment/the Sales summary, all valid) after a fresh
+  reseed. Nothing left stubbed: every company field is real, every PDF
+  reads through `get_company_profile()`, every generator shares the one
+  infrastructure module.
+
+- **Phase 14: three-column footer redesign — Brand / Contact Us /
+  Account.** Discovery: `includes/footer.html` is included only from
+  `landing/index.html` (the public landing page); it does not appear in
+  `dashboard_base.html` or any auth-flow template, but `landing()` has
+  no redirect for authenticated users, so an already-logged-in visitor
+  genuinely can view it — a real, not hypothetical, case for the
+  Account column. Three new icons added to the shared sprite
+  (`icon-phone`, `icon-map-pin`, `icon-linkedin`, same hand-built stroke
+  convention as every existing one — no icon library).
+
+  **First pass wired the Brand/Contact Us columns to `SystemSettings.
+  get_company_profile()`** (Phase 13's own accessor, "same source the
+  PDFs read from," per this task's own instruction) — added
+  `company_linkedin_url` to the model for it. **Reversed on live user
+  correction mid-task**: the footer is Stockwell's own public-facing
+  brand (the product/company operating this landing page), not the
+  per-tenant business identity an admin configures in Settings for
+  their own invoices/POs — those are two different identities, and
+  conflating them was wrong. `company_linkedin_url` was removed again
+  (model field, migration, form, settings.html field, JS map) — reverted
+  via a fresh forward migration attempt first, found `makemigrations`
+  reported "no changes detected" once the file was deleted (Django's
+  migration graph only tracks files present on disk, so a deleted
+  migration file simply drops out of the state comparison); the already-
+  applied column and its `django_migrations` row were real on the dev
+  DB regardless, cleaned up directly (`ALTER TABLE ... DROP COLUMN`,
+  matching delete from `django_migrations`) rather than left orphaned.
+  `landing()`'s context addition was reverted too — nothing reads
+  `get_company_profile()` from this page anymore.
+
+  **Final shape**: Brand column is static Stockwell markup (logo, name,
+  intro line) exactly as it was before this phase, unchanged in
+  substance. Contact Us is a 4-row icon list (email/phone/address/
+  LinkedIn) with static placeholder Stockwell contact details — real
+  email (`mst.sanzida02@gmail.com`, already the established real
+  contact), phone/address/LinkedIn are plausible placeholders, not
+  live data, not admin-editable (a deliberate, disclosed choice this
+  time, not a gap). Account column is a single "Log in" link — no
+  authenticated-state branching in the final version (the user
+  explicitly simplified past that concern once the footer's real
+  identity was clarified as public/product-level, not per-session).
+  Icons are `18px`, vertically centred against their text via flex
+  `align-items:center`, coloured `--c-indigo`, one CSS rule
+  (`.footer-contact-list .icon`) rather than per-instance sizing.
+  `.footer-grid` narrowed from 4 columns to 3 (`1.6fr 1fr 1fr`),
+  collapsing to a single column under 760px. Old, now-dead
+  `.footer-contact-card`/`-icon`/`-label`/`-email` CSS (the previous
+  single-CTA-card treatment) removed rather than left orphaned.
+
+  Verified live (fresh server process each time, learning BUG-59's own
+  lesson — killed stale listeners before every check): desktop, tablet,
+  and mobile screenshots of the 3-column layout, "Log in" link resolves
+  to a real page, LinkedIn opens `target="_blank" rel="noopener
+  noreferrer"`. `manage.py check` clean; full suite unaffected (no new
+  tests were needed for this template/CSS-only final state — the
+  removed `company_linkedin_url` field never shipped in a form other
+  code depended on).
 
 ---
 
@@ -5282,6 +5919,204 @@ session history, not `git log`:
     products — distinct from Phase 11's already-documented tree-
     extrapolation ceiling, and only made visible by this phase's wider
     variety of longer-running patterned cohorts.
+66. **Phase 12: Approval Authority Matrix — the static supervisor-or-admin
+    role check becomes a policy engine ("the admin defines which
+    transactions the supervisor may approve").** New `ApprovalPolicy`
+    model + `frontend/approvals.py` resolver, governing
+    `PurchaseService.approve()`, `AdjustmentService.approve()`/new
+    `create()` (AUTO fast path), and `SaleService.cancel_sale()` — gated
+    inside the service layer, not only the view. Fail-closed: no match →
+    Admin, never Supervisor/Auto. Discovery found two premise gaps before
+    any code was written (§13): no pre-existing PO approval ceiling
+    anywhere to migrate from (seeded a fresh, user-confirmed ৳50,000 split
+    instead), and `InventoryAdjustment` has no stored value/variance
+    concept (both computed at resolution time). A third gap found by
+    actually running the seed command: `flush` wiped the migration-seeded
+    policy table every reseed, fixed via `ensure_default_policies()`. New
+    `AdjustmentReason` structured reason code; new `ABCClass`/
+    `recompute_abc_classes()` on `InventoryClassification` (folded into
+    `run_full_classification()`, no Celery task — none exists in this
+    project). Admin-only Approval Policy screen with a rule simulator and
+    a best-effort "possibly unreachable rule" warning; approve/cancel
+    buttons across Purchases/Adjustments/Sales now render shown-but-
+    disabled with the real denial reason, never hidden. Self-approval
+    blocked per-policy (admin exempt) — a deliberate, disclosed reversal
+    of Phase 7/8.99b's "no creator≠approver restriction" decision.
+    Proposed REQ coverage (RBAC's own doc states `REQ 2.1 → 2.12`; not
+    edited — this project's docs stay historical per its own established
+    convention, only project_memory.md records the extension): REQ 2.13
+    (ApprovalPolicy model + resolver), 2.14 (fail-closed escalation),
+    2.15 (AUTO outcome), 2.16 (self-approval blocking, admin-exempt),
+    2.17 (ABC classification), 2.18 (structured adjustment reason codes),
+    2.19 (admin-only policy screen + simulator), 2.20 (policy audit
+    trail) — no collision with any REQ number actually cited elsewhere in
+    this file (none are; REQ numbers are a docs-only convention in this
+    project, not something the codebase's own history otherwise tracks).
+    Verified live: 355/355 tests (333 + 22 new; 19 pre-existing tests
+    updated — each called the service layer directly with a STAFF test
+    user the layer never checked before Phase 12, noted inline per fix),
+    AUTO path proven end-to-end (one movement, zero pending-record audit
+    entries), `seed_dev_data.py` clean and idempotent at 43 products with
+    the policy engine live.
+67. **Phase 12.1: Approval Authority Matrix hardening.** Two corrections
+    to Phase 12's own brief recorded in §13 (no PO ceiling ever existed
+    before Phase 12 — nothing deprecated to remove later; no Celery, all
+    recompute is manual). The "record unlock" system §3 asked to be
+    hardened does not exist anywhere in this codebase (exhaustive
+    discovery: models, services, views, all 7 migrations, all 66 timeline
+    entries) — reported, not built; the user chose to skip it and
+    document the gap rather than build a new subsystem this phase wasn't
+    asked to design. Everything else implemented: `ApprovalPolicy.
+    cumulative_window_days`/`cumulative_value_cap` close a real
+    salami-slicing hole on the AUTO adjustment path (N sub-threshold
+    adjustments no longer move unbounded stock with zero approval
+    events) — new `InventoryAdjustment.resolved_policy`/`was_auto_posted`
+    fields, `ADJUSTMENT_AUTO_DEFLECTED` audit trail, ৳2,000/30-day default,
+    cumulative usage surfaced on the policy screen. Two fail-open
+    defaults closed in the resolver: undefined variance (zero stock) now
+    escalates instead of falling through (§5a); an unclassified `abc_class`
+    now resolves as `'A'` (strictest) instead of Phase 12's own wrong
+    `'C'` default (§5b), with ABC staleness surfaced explicitly since a
+    bulk `.update()` call was found to silently bypass `auto_now`
+    entirely. Swept for BUG-56 siblings (other flush-wiped, migration-
+    seeded tables) — found none; the policy table is the only one.
+    New standing rule recorded: authorization belongs at the service
+    boundary, view mixins are defence in depth only — found one more
+    unguarded case (`SaleService.approve_sale()`, the one place a sale's
+    stock moves) and fixed it; four more (`PurchaseService.reject()`/
+    `cancel()`, `SaleService.reject_sale()`, `AdjustmentService.reject()`)
+    reported as real, listed technical debt, not fixed this phase.
+    Proposed REQ coverage, continuing Phase 12's own 2.13→2.20 (RBAC's
+    doc still states `REQ 2.1 → 2.12`; not edited, same historical-docs
+    convention): REQ 2.21 (cumulative cap on AUTO), 2.22 (fail-closed
+    variance-at-zero-stock), 2.23 (fail-closed unclassified-ABC), 2.24
+    (service-boundary authorization as a standing architectural rule) —
+    no collision with anything cited elsewhere in this file. Verified
+    live: 363/363 tests (355 + 8 new; 9 pre-existing tests updated, every
+    one because §5b's fix now routes their never-classified fixture
+    product to the seeded ADMIN policy), `seed_dev_data.py` clean and
+    idempotent at 43 products with both fail-closed fixes and the
+    cumulative cap live, `manage.py check` clean.
+68. **Phase 12.2: ABC removed from approval routing (kept for
+    analytics); simulator and unreachable-rule warnings removed from the
+    Approval Policies page; notification toggle removed from admin
+    settings.** Started by fixing a real regression found on disk —
+    `frontend/audit.py` was missing 6 constants `services.py`/`views.py`
+    already imported — restored first as a blocker (own entry in
+    `docs/bugsfound.md`), before any Phase 12.2 feature work. `ApprovalPolicy.
+    abc_class` removed (field + 2 migrations, split across a data
+    migration and a schema migration after combining them in one file
+    hit a real Postgres trigger-pending error); the ABC-matching seeded
+    policy row deleted; `DEFAULT_APPROVAL_POLICIES` now 9 rows, catch-all
+    coverage and fail-closed-to-Admin reverified. Phase 12.1 §5b's
+    "unclassified ABC resolves as 'A'" fallback and its 2 tests are gone
+    with it — that rule only existed because ABC was an authority input.
+    `ABCClass`/`InventoryClassification.abc_class`/`recompute_abc_classes()`/
+    `abc_staleness_info()` all untouched, ABC stays real for Slow-Moving &
+    Dead Stock and analytics. Approval Policies page cut down to one
+    table per transaction type + add/edit/activate/deactivate — simulator,
+    unreachable-rule warnings, and the cumulative-usage panel removed
+    from the UI (cumulative cap enforcement itself untouched, moved to
+    the bottom of the form). Removed the Notifications panel from
+    `settings.html`/`SystemSettingsForm`; `email_notifications_enabled`
+    stays the live gate in `notifications.py`, now frozen at its current
+    DB value (Django admin is the only remaining way to change it);
+    `low_stock_email_enabled` was already dead code, confirmed via grep
+    before removing it from the form. Investigated the flaky-forecast-test
+    report (Task 6, time-boxed): not reproducing — every forecast-training
+    test class already clears `ai_models/*.joblib` in setUp/tearDown, a
+    full single-process 361-test run passed clean; no change needed.
+    Verified live: 361/361 tests (363 − 2 deleted ABC-fallback tests; 5
+    failures surfaced by the ABC removal, all fixed — 2 ERRORs from
+    tests referencing the deleted field/policy, 3 FAILs from stale
+    policy-count assertions and one outcome assertion that no longer
+    escalates to Admin without ABC), `manage.py check` clean. Nothing
+    committed, per this phase's own instruction.
+69. **BUG-57 close-out: the last four service-boundary authorization
+    gaps fixed.** `PurchaseService.reject()`/`cancel()`, `SaleService.
+    reject_sale()`, `AdjustmentService.reject()` now gate with the exact
+    plain supervisor-or-admin check `SaleService.approve_sale()`
+    established in Phase 12.1 §7 — same `ApprovalAuthorityError`, same
+    placement (after the status guard, before mutation), same choice not
+    to route through the `ApprovalPolicy` engine (reject/cancel were
+    never in its `ApprovalTxType` scope). View-layer `SupervisorRequiredMixin`
+    kept on all four; each view gained the matching `except
+    ApprovalAuthorityError: status=403` clause the other approval views
+    already had. Full sweep of the service layer for the same
+    view-mixin-only pattern found nothing else: `InventoryService.
+    increase_stock()`/`decrease_stock()` are internal primitives only
+    reached from already-gated or policy-gated callers;
+    `submit_for_approval()`/`receive_items()`/`create_sale()` are
+    intentionally open to any staff, not a role-escalation gap. 7
+    pre-existing tests had been silently exercising the gap itself (a
+    STAFF fixture rejecting/cancelling and passing, because nothing
+    checked) — rewritten to a supervisor actor, none deleted; a new
+    direct-service denial test added per fixed method. Verified live:
+    365/365 tests, `manage.py check` clean. No templates touched, no
+    commit made.
+70. **BUG-59: diagnosed and fixed a `ProgrammingError` on
+    `/settings/approval-policies/` that looked like an incomplete ABC
+    removal but wasn't.** Model, migration (0011 applied), schema
+    (`information_schema.columns`), and `makemigrations --check` were
+    all already consistent — `abc_class` was genuinely gone. Root cause:
+    six accumulated `manage.py runserver` processes bound to the same
+    port from this session's own earlier restarts, one of which still
+    held pre-removal bytecode; requests landed on whichever process
+    answered. Killed all six, ran with exactly one; re-verified 5/5 live
+    plus a full add-policy round trip. New operational lesson recorded:
+    verify the old listener is actually gone before starting a new one
+    on future "restart the server" steps — this project has no process
+    manager to do it automatically. Also set `LOGIN_REDIRECT_URL`/
+    `LOGOUT_REDIRECT_URL` (previously unset, defaulting to Django's own
+    values) — confirmed latent, not broken, since the real login/logout
+    views redirect explicitly and never read either setting. 365/365
+    tests unchanged, `manage.py check` clean, reseed verified clean.
+71. **Phase 13: professional PDF documents + live company settings.**
+    New `frontend/pdf.py` — one shared header/footer/style/currency/
+    date module every PDF now renders through, replacing five
+    independent ReportLab setups. `SystemSettings.company_logo` became
+    a `FileField` (Pillow, which `ImageField` needs, can't open SVG) with
+    a new `validate_company_logo`; added `company_tax_number`/
+    `company_website`; new `get_company_profile()` accessor every PDF
+    reads through. Two disclosed ReportLab-only constraints: no ৳ glyph
+    in any built-in font (PDFs use "Tk"), no SVG rasterization without a
+    forbidden new dependency (SVG logo falls back to text-only header,
+    same as no logo). Every document gets a real header/footer
+    (NumberedCanvas for accurate "Page N of M"), party block, a totals
+    block reconciled via new `calculate_totals_breakdown()`
+    (frontend/pricing.py), and a signature block naming the real
+    approver — Phase 12/12.1's approval-authority work made visible on
+    paper. New `generate_adjustment_pdf()` + `AdjustmentPDFView` (no
+    per-adjustment document existed before), fixing BUG-60 (a dead "View
+    adjustment" button) along the way. Reports page: Sales Report's raw
+    transaction table replaced with a Chart.js revenue-by-day chart +
+    status breakdown, matching the shape of the page's other cards; its
+    PDF export mirrors the new aggregate shape, CSV export untouched.
+    Verified live: 385/385 tests (20 new), `manage.py check` clean, a
+    real Playwright round trip downloading real PDFs through the actual
+    UI after a fresh reseed. Nothing left stubbed.
+72. **Phase 14: three-column footer redesign (Brand / Contact Us /
+    Account).** Discovery: `includes/footer.html` renders only on the
+    public landing page, but that page has no auth-redirect, so an
+    already-logged-in visitor is a real case, not hypothetical. First
+    pass wired Brand/Contact Us to `SystemSettings.get_company_profile()`
+    (adding `company_linkedin_url`) — **reversed on live user
+    correction**: the footer is Stockwell's own public brand identity,
+    not the per-tenant business identity Settings configures for a
+    tenant's own invoices. Field/migration/form/JS all removed again;
+    the already-applied dev-DB column and its orphaned
+    `django_migrations` row (left behind once the migration file was
+    deleted, since `makemigrations` only compares against files still on
+    disk) were cleaned up directly rather than left inconsistent. Final:
+    static Stockwell branding (unchanged from before), a 4-row icon
+    contact list (email/phone/address/LinkedIn — new `icon-phone`/
+    `icon-map-pin`/`icon-linkedin` in the shared sprite) with real email
+    + placeholder phone/address/LinkedIn, and a single "Log in" link.
+    `.footer-grid` narrowed 4→3 columns, collapses to 1 under 760px; dead
+    `.footer-contact-card` CSS (the old single-CTA-card treatment)
+    removed. Verified live at desktop/tablet/mobile, links resolve,
+    LinkedIn opens `target="_blank" rel="noopener noreferrer"`,
+    `manage.py check` clean, full suite unaffected.
 
 ---
 

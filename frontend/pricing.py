@@ -23,3 +23,34 @@ def calculate_line_total(unit_price, quantity, discount=0, tax=0):
     discount = Decimal(str(discount))
     tax = Decimal(str(tax))
     return (unit_price * quantity) * (1 - discount / 100) * (1 + tax / 100)
+
+
+def calculate_totals_breakdown(items):
+    """Phase 13 — a Subtotal/Discount/Tax/Grand Total breakdown for the
+    PDF totals block (generate_purchase_order_pdf/generate_sale_transaction_pdf,
+    frontend/reports.py), reconstructed from calculate_line_total()'s own
+    formula rather than stored anywhere: PurchaseOrderItem/SaleItem only
+    ever persist the final `line_total`, not the pre-discount/pre-tax
+    breakdown. `items`: any iterable of objects with unit_price/quantity/
+    discount/tax/line_total attributes (both item models share this exact
+    shape). Returns (subtotal, discount_total, tax_total, grand_total) as
+    Decimals — subtotal - discount_total + tax_total == grand_total
+    exactly, by construction, since every figure here is derived from the
+    same per-item formula line_total already uses."""
+    subtotal = Decimal("0")
+    discount_total = Decimal("0")
+    tax_total = Decimal("0")
+    grand_total = Decimal("0")
+    for item in items:
+        unit_price = Decimal(str(item.unit_price))
+        quantity = Decimal(str(item.quantity if hasattr(item, "quantity") else item.ordered_qty))
+        discount = Decimal(str(item.discount))
+        tax = Decimal(str(item.tax))
+        gross = unit_price * quantity
+        after_discount = gross * (1 - discount / 100)
+        line_total = Decimal(str(item.line_total))
+        subtotal += gross
+        discount_total += gross - after_discount
+        tax_total += line_total - after_discount
+        grand_total += line_total
+    return subtotal, discount_total, tax_total, grand_total

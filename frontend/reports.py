@@ -19,17 +19,25 @@ generate_csv_response can stay completely generic instead of the
 getattr-chain approach 10_REPORTS.md's own generate_csv() reference code
 uses (that approach doesn't reach across joins or computed values cleanly,
 e.g. a movement row's product name or a sale's item count).
+
+Phase 13 — every PDF export below (generate_pdf_response, and the 3
+per-record documents further down) now renders through frontend/pdf.py's
+shared header/footer/style infrastructure instead of building its own
+ReportLab document from scratch; see that module's own docstring for the
+two disclosed ReportLab-only constraints (no ৳ glyph, no SVG logo
+rasterization) this inherits.
 """
 import csv
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from decimal import Decimal
-from io import BytesIO
 
 from django.http import HttpResponse
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
+from frontend import pdf as pdf_lib
 from frontend.models import (
+    AdjustmentStatus,
     DemandForecast,
     InventoryAdjustment,
     InventoryClassification,
@@ -37,10 +45,12 @@ from frontend.models import (
     InventoryRecord,
     InventoryStatus,
     MovementType,
+    POStatus,
     PurchaseOrder,
     SaleStatus,
     SaleTransaction,
 )
+from frontend.pricing import calculate_totals_breakdown
 
 
 def _date_bounds(request):
@@ -215,6 +225,82 @@ def sales_report_summary(sales_qs):
     }
 
 
+def sales_status_breakdown(request):
+    """Phase 13 Task 4 — replaces the Sales Report panel's raw per-
+    transaction table with an aggregate: count + revenue per status,
+    across every status (not completed-only, same broadened scope
+    build_sales_report() already uses — see that function's own Phase
+    8.99c comment), same date_from/date_to filter."""
+    qs = SaleTransaction.objects.all()
+    start, end = _date_bounds(request)
+    if start:
+        qs = qs.filter(transaction_date__gte=start.date())
+    if end:
+        qs = qs.filter(transaction_date__lte=end.date())
+    rows = []
+    for value, label in SaleStatus.choices:
+        agg = qs.filter(status=value).aggregate(count=Count("id"), total=Sum("total_amount"))
+        rows.append({"status": value, "label": label, "count": agg["count"] or 0, "total": agg["total"] or Decimal("0")})
+    return rows
+
+
+def sales_daily_revenue(request, default_days=30):
+    """Completed-sales revenue per day, for the Sales Report panel's
+    chart — same shape dashboard.js's own sales/purchases Chart.js setup
+    already reads (labels/values), reused rather than a new chart
+    convention. Falls back to the trailing `default_days` days when no
+    date filter is set, matching this page's own KPI panel's existing
+    "no filter = everything/recent" convention."""
+    qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED)
+    start, end = _date_bounds(request)
+    if start:
+        qs = qs.filter(transaction_date__gte=start.date())
+    if end:
+        qs = qs.filter(transaction_date__lte=end.date())
+    if not start and not end:
+        qs = qs.filter(transaction_date__gte=timezone.localdate() - timedelta(days=default_days))
+
+    daily = qs.values("transaction_date").annotate(total=Sum("total_amount")).order_by("transaction_date")
+    return {
+        "labels": [row["transaction_date"].strftime("%d %b") for row in daily],
+        "values": [float(row["total"]) for row in daily],
+    }
+
+
+def generate_sales_summary_pdf(request):
+    """Phase 13 Task 4 — the Sales Report's own PDF export, rebuilt
+    around the same aggregate shape the on-page panel now shows (status
+    breakdown + the 2 KPIs), replacing what used to be a straight dump
+    of build_sales_report()'s per-transaction rows. build_sales_report()
+    itself is untouched and still backs the CSV export — Task 4 only
+    asked to remove the *detailed* on-page table and its PDF twin, not
+    the underlying per-transaction data CSV analysis would still want."""
+    summary_qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED)
+    start, end = _date_bounds(request)
+    if start:
+        summary_qs = summary_qs.filter(transaction_date__gte=start.date())
+    if end:
+        summary_qs = summary_qs.filter(transaction_date__lte=end.date())
+    summary = sales_report_summary(summary_qs)
+    breakdown = sales_status_breakdown(request)
+
+    headers = ["Status", "Transactions", "Total Value"]
+    rows = [[b["label"], b["count"], pdf_lib.format_currency(b["total"])] for b in breakdown]
+
+    filters_summary = [
+        f"Total revenue (completed): {pdf_lib.format_currency(summary['total_revenue'])}",
+        f"Total transactions (completed): {summary['total_transactions']}",
+    ]
+    date_from, date_to = request.GET.get("date_from"), request.GET.get("date_to")
+    if date_from or date_to:
+        filters_summary.append(f"Date: {date_from or 'any'} to {date_to or 'any'}")
+
+    return pdf_lib.render_tabular_report(
+        filename="sales_report.pdf", title="Sales Report", headers=headers, rows=rows,
+        filters_summary=filters_summary,
+    )
+
+
 # -------------------------------------------------------------- 4. Movements
 
 def build_movement_report(request):
@@ -351,153 +437,187 @@ def generate_csv_response(headers, rows, filename):
     return response
 
 
-def _styled_data_table(data, repeat_rows=1):
-    """The exact Table/TableStyle `generate_pdf_response()` always built
-    inline, pulled out so Phase 8.98d's per-record PDFs (below) can reuse
-    the same look — same reportlab objects, not a second styling scheme."""
-    from reportlab.lib import colors
-    from reportlab.platypus import Table, TableStyle
-
-    table = Table(data, repeatRows=repeat_rows)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    return table
-
-
 def generate_pdf_response(title, headers, rows, filename, filters_summary=None):
     """`filters_summary` (Phase 8.99d): an optional list of "Label: value"
     strings rendered under the title, above the table — a report of a
     filtered subset that doesn't say what it was filtered by isn't a
     usable record (Movement History's own PDF export is the first user of
     this; the 9 REPORT_BUILDERS callers via ReportExportView don't pass
-    it, so their output is byte-for-byte unchanged)."""
-    from reportlab.lib.pagesizes import landscape, letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    it, so their output is byte-for-byte unchanged).
 
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), title=title, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
-    if filters_summary:
-        elements.append(Paragraph("Filters: " + "; ".join(filters_summary), styles["Normal"]))
-        elements.append(Spacer(1, 12))
-
-    table_data = [headers] + [[str(cell) for cell in row] for row in rows]
-    if not rows:
-        table_data.append(["No data available for the selected filters."] + [""] * (len(headers) - 1))
-
-    elements.append(_styled_data_table(table_data))
-    doc.build(elements)
-
-    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return response
+    Phase 13 — delegates to frontend.pdf.render_tabular_report() for the
+    actual document (shared header/footer/style with every other PDF in
+    the system now, plus real "Page N of M" and a repeating table
+    header); this function's own signature is unchanged so every caller
+    (ReportExportView, MovementHistoryExportView) needed no changes."""
+    return pdf_lib.render_tabular_report(
+        filename=filename, title=title, headers=headers, rows=rows, filters_summary=filters_summary,
+    )
 
 
-# ------------------------------------------------- Per-record PDFs (Phase 8.98d)
-# Individual Purchase Order / Sale Transaction downloads — distinct from the
-# 9 whole-report exports above (Reports module, untouched by this phase).
-# Reuses the exact same reportlab setup: SimpleDocTemplate + getSampleStyleSheet
-# + _styled_data_table() (just above) for the line-items grid — no new PDF
-# library or rendering mechanism.
+# ------------------------------------------------- Per-record PDFs (Phase 8.98d,
+# rebuilt Phase 13 on frontend/pdf.py's shared document structure)
+# Individual Purchase Order / Sale Transaction / Stock Adjustment downloads
+# — distinct from the 9 whole-report exports above (untouched by this
+# section). generate_adjustment_pdf is new in Phase 13: no per-adjustment
+# document existed before (only the whole-Adjustments report table did).
+
+_PO_STATUS_VARIANT = {
+    POStatus.DRAFT: "slate", POStatus.PENDING: "warning", POStatus.APPROVED: "success",
+    POStatus.PARTIAL: "warning", POStatus.RECEIVED: "success",
+    POStatus.REJECTED: "danger", POStatus.CANCELLED: "danger",
+}
+_SALE_STATUS_VARIANT = {
+    SaleStatus.DRAFT: "slate", SaleStatus.PENDING: "warning", SaleStatus.COMPLETED: "success",
+    SaleStatus.REJECTED: "danger", SaleStatus.CANCELLED: "danger",
+}
+_ADJUSTMENT_STATUS_VARIANT = {
+    AdjustmentStatus.PENDING: "warning", AdjustmentStatus.APPROVED: "success", AdjustmentStatus.REJECTED: "danger",
+}
+_WATERMARK_STATUSES = {POStatus.REJECTED, POStatus.CANCELLED, SaleStatus.REJECTED, SaleStatus.CANCELLED, AdjustmentStatus.REJECTED}
+
+
+def _approver_signature(approved_by, approved_at, level_label=None):
+    """§ Task 3's own instruction: "a document approved under an
+    admin-only policy should show the admin as approver." Neither
+    PurchaseOrder nor SaleTransaction stores which policy/level resolved
+    their approval (only InventoryAdjustment does, via resolved_policy)
+    — the approver's own role is always available and is exactly the
+    signal that matters here: whoever is shown as "Approved by" already
+    passed can_approve() for whatever level this transaction required."""
+    if not approved_by:
+        return None
+    return {
+        "role": "Approved by", "name": approved_by.full_name,
+        "level": level_label or approved_by.get_role_display(),
+        "timestamp": pdf_lib.format_datetime(approved_at),
+    }
+
 
 def generate_purchase_order_pdf(po):
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    items = list(po.items.select_related("product").all())
+    subtotal, discount_total, tax_total, grand_total = calculate_totals_breakdown(items)
 
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"Purchase Order {po.po_number}",
-                             topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph(f"Purchase Order {po.po_number}", styles["Title"]), Spacer(1, 12)]
+    totals = [("Subtotal", pdf_lib.format_currency(subtotal), False)]
+    if discount_total:
+        totals.append(("Discount", f"-{pdf_lib.format_currency(discount_total)}", False))
+    if tax_total:
+        totals.append(("Tax", pdf_lib.format_currency(tax_total), False))
+    totals.append(("Grand Total", pdf_lib.format_currency(grand_total), True))
 
-    meta_data = [
-        ["Field", "Value"],
-        ["Supplier", po.supplier.company_name],
-        ["Status", po.get_status_display()],
-        ["Order Date", str(po.order_date)],
-        ["Expected Delivery", str(po.expected_delivery) if po.expected_delivery else "—"],
-        ["Created By", po.created_by.full_name],
-        # Phase 8.99c — same conditional "—"-fallback pattern the Sale PDF
-        # already uses for Approved By/Approved At, just below. Reason
-        # covers rejected_reason too (display_reason), not just
-        # cancellation, per this phase's Objective #3.
-        ["Cancelled By", po.cancelled_by.full_name if po.cancelled_by else "—"],
-        ["Cancelled At", str(po.cancelled_at) if po.cancelled_at else "—"],
-        ["Reason", po.display_reason or "—"],
-    ]
-    elements += [_styled_data_table(meta_data), Spacer(1, 16)]
+    meta_extra = []
+    if po.expected_delivery:
+        meta_extra.append(("Expected delivery", pdf_lib.format_date(po.expected_delivery)))
+    if po.status in (POStatus.CANCELLED, POStatus.REJECTED) and po.display_reason:
+        meta_extra.append(("Reason", po.display_reason))
 
-    items = po.items.select_related("product").all()
-    headers = ["Product", "SKU", "Ordered Qty", "Received Qty", "Unit Price", "Discount %", "Tax %", "Line Total"]
-    rows = [
-        [item.product.name, item.product.sku, item.ordered_qty, item.received_qty,
-         f"{item.unit_price:.2f}", f"{item.discount:.2f}", f"{item.tax:.2f}", f"{item.line_total:.2f}"]
-        for item in items
-    ]
-    elements.append(_styled_data_table([headers] + rows))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"Total Cost: {po.total_cost:.2f}", styles["Heading3"]))
+    signatures = [{
+        "role": "Prepared by", "name": po.created_by.full_name,
+        "timestamp": pdf_lib.format_date(po.order_date), "level": None,
+    }]
+    approver_sig = _approver_signature(po.approved_by, po.approved_at)
+    if approver_sig:
+        signatures.append(approver_sig)
 
-    doc.build(elements)
-    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{po.po_number}.pdf"'
-    return response
+    return pdf_lib.render_document(
+        filename=f"{po.po_number}.pdf",
+        doc_type_label="Purchase Order", doc_number=po.po_number, issue_date=po.order_date,
+        status_label=po.get_status_display(), status_variant=_PO_STATUS_VARIANT.get(po.status, "slate"),
+        table_headers=["Product", "SKU", "Ordered", "Received", "Unit Price", "Discount %", "Tax %", "Line Total"],
+        table_rows=[
+            [item.product.name, item.product.sku, str(item.ordered_qty), str(item.received_qty),
+             pdf_lib.format_currency(item.unit_price), f"{item.discount:.1f}%", f"{item.tax:.1f}%",
+             pdf_lib.format_currency(item.line_total)]
+            for item in items
+        ],
+        col_widths=[130, 60, 45, 45, 65, 55, 45, 70], col_aligns=["L", "L", "C", "C", "R", "R", "R", "R"],
+        party=("Supplier", [
+            po.supplier.company_name, po.supplier.contact_person,
+            po.supplier.email, po.supplier.phone, po.supplier.address,
+        ]),
+        meta_extra=meta_extra, totals=totals, signatures=signatures,
+        watermark_text=po.get_status_display().upper() if po.status in _WATERMARK_STATUSES else None,
+    )
 
 
 def generate_sale_transaction_pdf(sale):
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    items = list(sale.items.select_related("product").all())
+    subtotal, discount_total, tax_total, grand_total = calculate_totals_breakdown(items)
 
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"Sale {sale.invoice_number}",
-                             topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph(f"Sale {sale.invoice_number}", styles["Title"]), Spacer(1, 12)]
+    totals = [("Subtotal", pdf_lib.format_currency(subtotal), False)]
+    if discount_total:
+        totals.append(("Discount", f"-{pdf_lib.format_currency(discount_total)}", False))
+    if tax_total:
+        totals.append(("Tax", pdf_lib.format_currency(tax_total), False))
+    totals.append(("Grand Total", pdf_lib.format_currency(grand_total), True))
 
-    meta_data = [
-        ["Field", "Value"],
-        ["Customer", sale.customer_name or "—"],
-        ["Status", sale.get_status_display()],
-        ["Transaction Date", str(sale.transaction_date)],
-        ["Created By", sale.created_by.full_name],
-        # Phase 8.99b — a sale now goes through the same approval gate a
-        # PO does; not every sale reaches it (draft/pending/rejected/
-        # cancelled never set these), so both are conditional, same
-        # blank-vs-set pattern the purchases table itself already uses
-        # for expected_delivery.
-        ["Approved By", sale.approved_by.full_name if sale.approved_by else "—"],
-        ["Approved At", str(sale.approved_at) if sale.approved_at else "—"],
-        # Phase 8.99c — mirrors the PO PDF's own new rows, just above.
-        ["Cancelled By", sale.cancelled_by.full_name if sale.cancelled_by else "—"],
-        ["Cancelled At", str(sale.cancelled_at) if sale.cancelled_at else "—"],
-        ["Reason", sale.display_reason or "—"],
-    ]
-    elements += [_styled_data_table(meta_data), Spacer(1, 16)]
+    meta_extra = []
+    if sale.status in (SaleStatus.CANCELLED, SaleStatus.REJECTED) and sale.display_reason:
+        meta_extra.append(("Reason", sale.display_reason))
 
-    items = sale.items.select_related("product").all()
-    headers = ["Product", "SKU", "Quantity", "Unit Price", "Discount %", "Tax %", "Line Total"]
-    rows = [
-        [item.product.name, item.product.sku, item.quantity,
-         f"{item.unit_price:.2f}", f"{item.discount:.2f}", f"{item.tax:.2f}", f"{item.line_total:.2f}"]
-        for item in items
-    ]
-    elements.append(_styled_data_table([headers] + rows))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"Total Amount: {sale.total_amount:.2f}", styles["Heading3"]))
+    signatures = [{
+        "role": "Prepared by", "name": sale.created_by.full_name,
+        "timestamp": pdf_lib.format_date(sale.transaction_date), "level": None,
+    }]
+    approver_sig = _approver_signature(sale.approved_by, sale.approved_at)
+    if approver_sig:
+        signatures.append(approver_sig)
 
-    doc.build(elements)
-    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{sale.invoice_number}.pdf"'
-    return response
+    return pdf_lib.render_document(
+        filename=f"{sale.invoice_number}.pdf",
+        doc_type_label="Sales Invoice", doc_number=sale.invoice_number, issue_date=sale.transaction_date,
+        status_label=sale.get_status_display(), status_variant=_SALE_STATUS_VARIANT.get(sale.status, "slate"),
+        table_headers=["Product", "SKU", "Qty", "Unit Price", "Discount %", "Tax %", "Line Total"],
+        table_rows=[
+            [item.product.name, item.product.sku, str(item.quantity),
+             pdf_lib.format_currency(item.unit_price), f"{item.discount:.1f}%", f"{item.tax:.1f}%",
+             pdf_lib.format_currency(item.line_total)]
+            for item in items
+        ],
+        col_widths=[150, 65, 40, 65, 55, 45, 75], col_aligns=["L", "L", "C", "R", "R", "R", "R"],
+        party=("Bill To", [sale.customer_name or "Walk-in customer"]),
+        meta_extra=meta_extra, totals=totals, signatures=signatures,
+        watermark_text=sale.get_status_display().upper() if sale.status in _WATERMARK_STATUSES else None,
+    )
+
+
+def generate_adjustment_pdf(adjustment):
+    """Phase 13 — new: no per-adjustment document existed before this
+    (only the whole-Adjustments report table did). No party block —
+    an adjustment isn't transacted with a supplier or customer; this
+    project also has no location/warehouse concept anywhere in its
+    schema (single-location throughout, confirmed via InventoryRecord
+    having no location breakdown), so a fabricated "Location: Main
+    Warehouse" line was left out rather than invented. The product and
+    reason code stand in its place — what a Stock Adjustment Note
+    actually needs to justify is which product moved and why."""
+    level_label = None
+    if adjustment.resolved_policy:
+        level_label = adjustment.resolved_policy.get_required_level_display()
+
+    signatures = [{
+        "role": "Requested by", "name": adjustment.requested_by.full_name,
+        "timestamp": pdf_lib.format_datetime(adjustment.created_at), "level": None,
+    }]
+    if adjustment.approved_by:
+        signatures.append(_approver_signature(adjustment.approved_by, adjustment.approved_at, level_label))
+
+    meta_extra = [("Reason code", adjustment.get_reason_code_display())]
+    if adjustment.status == AdjustmentStatus.REJECTED and adjustment.rejected_reason:
+        meta_extra.append(("Rejection reason", adjustment.rejected_reason))
+
+    sign = "+" if adjustment.adjustment_type == "increase" else "-"
+    return pdf_lib.render_document(
+        filename=f"adjustment_{adjustment.pk}.pdf",
+        doc_type_label="Stock Adjustment Note", doc_number=f"ADJ-{adjustment.pk:06d}",
+        issue_date=adjustment.created_at, status_label=adjustment.get_status_display(),
+        status_variant=_ADJUSTMENT_STATUS_VARIANT.get(adjustment.status, "slate"),
+        table_headers=["Product", "SKU", "Type", "Quantity", "Notes"],
+        table_rows=[[
+            adjustment.product.name, adjustment.product.sku, adjustment.get_adjustment_type_display(),
+            f"{sign}{adjustment.quantity}", adjustment.reason,
+        ]],
+        col_widths=[130, 70, 70, 60, 145], col_aligns=["L", "L", "L", "C", "L"],
+        party=None, meta_extra=meta_extra, totals=None, signatures=signatures,
+        watermark_text="REJECTED" if adjustment.status == AdjustmentStatus.REJECTED else None,
+    )

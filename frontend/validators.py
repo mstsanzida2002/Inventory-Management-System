@@ -68,3 +68,44 @@ def validate_product_image(file):
         raise ValidationError(f'Unsupported file type. Allowed: {", ".join(ALLOWED_IMAGE_EXTENSIONS)}')
     if file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024:
         raise ValidationError(f'Image file too large. Maximum size is {MAX_IMAGE_SIZE_MB}MB.')
+
+
+# Phase 13 — the company logo needs SVG support (a document header logo
+# is very commonly vector), which `validate_product_image` deliberately
+# doesn't offer: Django's ImageField opens every upload with Pillow to
+# verify it's a real image, and Pillow cannot open SVG at all — a raster
+# ImageField hard-rejects every SVG before this validator would even
+# run. SystemSettings.company_logo is a plain FileField instead (see
+# models.py), with this validator doing the type/size checking Django's
+# ImageField would otherwise have done for free. Not reused for
+# Product.image: products don't need vector logos, and widening that
+# field's accepted types wasn't asked for.
+ALLOWED_LOGO_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.svg']
+MAX_LOGO_SIZE_MB = 5
+
+
+def validate_company_logo(file):
+    ext = os.path.splitext(file.name)[1].lower()
+    if ext not in ALLOWED_LOGO_EXTENSIONS:
+        raise ValidationError(f'Unsupported file type. Allowed: {", ".join(ALLOWED_LOGO_EXTENSIONS)}')
+    if file.size > MAX_LOGO_SIZE_MB * 1024 * 1024:
+        raise ValidationError(f'Logo file too large. Maximum size is {MAX_LOGO_SIZE_MB}MB.')
+    if ext == '.svg':
+        # No Pillow check available for SVG, so at least confirm the
+        # upload is really an SVG and not an arbitrary file renamed
+        # with a .svg extension — a cheap sniff, not full XML
+        # validation/sanitization.
+        head = file.read(512)
+        file.seek(0)
+        if b'<svg' not in head and b'<?xml' not in head:
+            raise ValidationError('That file does not look like a valid SVG.')
+    else:
+        # PNG/JPG still go through Pillow, same guarantee ImageField
+        # itself would have provided.
+        from PIL import Image, UnidentifiedImageError
+        try:
+            Image.open(file).verify()
+        except UnidentifiedImageError:
+            raise ValidationError('Upload a valid PNG or JPG image.')
+        finally:
+            file.seek(0)

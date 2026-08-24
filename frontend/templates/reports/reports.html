@@ -21,11 +21,18 @@
     since PDF/CSV generation reads the same request.GET params
     10_REPORTS.md documents) — the on-page preview tables themselves stay
     unfiltered/real-time, same as every other list page in this project.
-    Sales rows dropped the mock's single "Category" column: a real sale
-    can span multiple product categories, so showing one column would be
-    fabricating a value that isn't well-defined — the category filter
-    still exists as a real *export* parameter, just not as an on-page
-    filter for that panel.
+
+    Phase 13 Task 4 — the Sales panel's per-transaction table (which had
+    already dropped the mock's single "Category" column — a real sale
+    can span multiple product categories, so one column would fabricate
+    a value that isn't well-defined) is gone entirely, replaced by a
+    revenue-by-day chart and a status breakdown table: that same
+    transaction-level detail is already one click away on Inventory
+    Movement History, so this page now matches the aggregate shape every
+    other report card already presents instead of duplicating it. The
+    Sales Report's own PDF export mirrors this same aggregate shape
+    (frontend/reports.py's generate_sales_summary_pdf); its CSV export is
+    untouched and still the detailed per-transaction dump.
   {% endcomment %}
 
   <div class="page-heading-row">
@@ -183,44 +190,40 @@
         </div>
       </div>
 
+      {# Phase 13 Task 4 — the raw per-transaction table (already available from Inventory Movement History) is replaced with an aggregate: revenue-by-day chart plus a status breakdown, matching the "summary figures, aggregates" shape the rest of this page already uses for its export-only cards. #}
+      <div class="chart-wrap" style="height:220px; margin-bottom: var(--sp-5);">
+        <canvas id="salesRevenueChart"></canvas>
+      </div>
+
       <div class="table-scroll">
         <table class="data-table">
           <thead>
             <tr>
-              <th>Invoice</th>
-              <th>Date</th>
-              <th>Customer</th>
-              <th>Items</th>
-              <th>Total</th>
               <th>Status</th>
-              <th>Reason</th>
+              <th>Transactions</th>
+              <th>Total value</th>
             </tr>
           </thead>
-          <tbody id="salesReportTableBody">
-            {# Phase 8.99c: build_sales_report() now returns every status, not just completed (see frontend/reports.py's own comment) — badge class follows row.5's label instead of being hardcoded to badge-success. #}
-            {% for row in sales_rows %}
+          <tbody>
+            {% for row in sales_breakdown %}
               <tr>
-                <td class="mono">{{ row.0 }}</td>
-                <td class="mono">{{ row.1 }}</td>
-                <td>{{ row.2 }}</td>
-                <td class="mono">{{ row.3 }}</td>
-                <td class="mono">${{ row.4 }}</td>
                 <td>
-                  {% if row.5 == "Completed" %}<span class="badge badge-success">{{ row.5 }}</span>
-                  {% elif row.5 == "Pending Approval" %}<span class="badge badge-warning">{{ row.5 }}</span>
-                  {% elif row.5 == "Draft" %}<span class="badge badge-indigo">{{ row.5 }}</span>
-                  {% else %}<span class="badge badge-danger">{{ row.5 }}</span>{% endif %}
+                  {% if row.status == "completed" %}<span class="badge badge-success">{{ row.label }}</span>
+                  {% elif row.status == "pending" %}<span class="badge badge-warning">{{ row.label }}</span>
+                  {% elif row.status == "draft" %}<span class="badge badge-indigo">{{ row.label }}</span>
+                  {% else %}<span class="badge badge-danger">{{ row.label }}</span>{% endif %}
                 </td>
-                <td>{{ row.6 }}</td>
+                <td class="mono">{{ row.count }}</td>
+                <td class="mono">${{ row.total|floatformat:2 }}</td>
               </tr>
-            {% empty %}
-              <tr><td colspan="7" class="text-slate text-center">No sales yet.</td></tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     </div>
   </div>
+
+  {{ sales_chart_data|json_script:"salesChartData" }}
 
   {# --------------------------------------------------- Low Stock Report #}
   <div class="panel" id="lowStockReportPanel">

@@ -6,12 +6,79 @@
    there's nothing left for table-filter.js to match there; its Category
    select is export-only now, read directly by report-export-btn's click
    handler below alongside both panels' date range.
+
+   Phase 13 — the Sales Report panel's revenue-by-day chart, same Chart.js
+   setup dashboard.js's own sales/purchases chart already uses (Chart.js +
+   window.ChartColors, both loaded globally in dashboard_base.html) — not
+   a new charting convention.
    ========================================================================== */
 
 (function () {
   "use strict";
 
+  var COLORS = window.ChartColors;
+
+  function readSalesChartData() {
+    var el = document.getElementById("salesChartData");
+    if (!el) return null;
+    try {
+      return JSON.parse(el.textContent);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function initSalesRevenueChart() {
+    var canvas = document.getElementById("salesRevenueChart");
+    var chartData = readSalesChartData();
+    if (!canvas || typeof Chart === "undefined" || !chartData || !COLORS) return;
+
+    new Chart(canvas.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: chartData.labels,
+        datasets: [{
+          label: "Revenue",
+          data: chartData.values,
+          backgroundColor: COLORS.indigo,
+          borderRadius: 6,
+          barThickness: 18
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: COLORS.ink,
+            titleFont: { family: "Inter", size: 12, weight: "600" },
+            bodyFont: { family: "IBM Plex Mono", size: 12 },
+            padding: 10,
+            cornerRadius: 8,
+            callbacks: {
+              label: function (item) { return "Revenue: $" + item.formattedValue; }
+            }
+          }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { family: "Inter", size: 11 }, color: COLORS.slate } },
+          y: {
+            grid: { color: COLORS.slate200 },
+            ticks: {
+              font: { family: "IBM Plex Mono", size: 11 },
+              color: COLORS.slate,
+              callback: function (v) { return "$" + (v >= 1000 ? (v / 1000) + "k" : v); }
+            }
+          }
+        }
+      }
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
+    initSalesRevenueChart();
+
     if (document.getElementById("lowStockReportTableBody")) {
       TableFilter.init({
         tableBodyId: "lowStockReportTableBody",

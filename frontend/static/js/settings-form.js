@@ -17,6 +17,8 @@
     company_address: "settings-company-address",
     company_email: "settings-company-email",
     company_phone: "settings-company-phone",
+    company_tax_number: "settings-company-tax-number",
+    company_website: "settings-company-website",
     default_reorder_level: "settings-default-reorder-level",
     forecast_period_weeks: "settings-forecast-period-weeks",
     forecast_retrain_days: "settings-forecast-retrain-days",
@@ -56,7 +58,33 @@
     });
   }
 
+  // Phase 13 — instant local preview of a newly-picked logo file, before
+  // it's ever uploaded: FileReader reads the selected File straight from
+  // the browser's own memory, no round trip needed, and the same <img>
+  // stays correct after a successful save without a page reload (it's
+  // already showing exactly the file that got submitted).
+  function wireLogoPreview() {
+    var input = getField("settings-company-logo");
+    var preview = getField("settings-company-logo-preview");
+    var filename = getField("settings-company-logo-filename");
+    if (!input || !preview) return;
+
+    input.addEventListener("change", function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        preview.src = e.target.result;
+        preview.hidden = false;
+      };
+      reader.readAsDataURL(file);
+      if (filename) filename.textContent = file.name;
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
+    wireLogoPreview();
+
     var form = getField(FORM_ID);
     if (!form) return;
 

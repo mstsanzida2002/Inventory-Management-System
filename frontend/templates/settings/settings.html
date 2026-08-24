@@ -58,11 +58,11 @@
               <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
               <span class="file-drop-text">
                 <span class="file-drop-title">Click to upload a logo</span>
-                <div class="file-drop-filename">{% if settings.company_logo %}{{ settings.company_logo.name }}{% else %}PNG or JPG, up to 5MB{% endif %}</div>
+                <div class="file-drop-filename" id="settings-company-logo-filename">{% if settings.company_logo %}{{ settings.company_logo.name }}{% else %}PNG, JPG, or SVG, up to 5MB{% endif %}</div>
               </span>
-              <img class="file-drop-preview" alt="" {% if settings.company_logo %}src="{{ settings.company_logo.url }}"{% else %}hidden{% endif %}>
+              <img class="file-drop-preview" alt="" id="settings-company-logo-preview" {% if settings.company_logo %}src="{{ settings.company_logo.url }}"{% else %}hidden{% endif %}>
             </label>
-            <input type="file" class="sr-only" id="settings-company-logo" name="company_logo" accept="image/png,image/jpeg">
+            <input type="file" class="sr-only" id="settings-company-logo" name="company_logo" accept="image/png,image/jpeg,.svg,image/svg+xml">
             <div class="field-error" id="settings-company-logo-error" role="alert"></div>
           </div>
 
@@ -82,6 +82,18 @@
             <label class="form-label" for="settings-company-phone">Company phone <span class="optional-tag">(optional)</span></label>
             <input class="input input-plain" type="text" id="settings-company-phone" name="company_phone" value="{{ settings.company_phone }}">
             <div class="field-error" id="settings-company-phone-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-company-tax-number">Tax / BIN number <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="text" id="settings-company-tax-number" name="company_tax_number" value="{{ settings.company_tax_number }}">
+            <div class="field-error" id="settings-company-tax-number-error" role="alert"></div>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="settings-company-website">Website <span class="optional-tag">(optional)</span></label>
+            <input class="input input-plain" type="url" id="settings-company-website" name="company_website" value="{{ settings.company_website }}" placeholder="https://">
+            <div class="field-error" id="settings-company-website-error" role="alert"></div>
           </div>
 
         </div>

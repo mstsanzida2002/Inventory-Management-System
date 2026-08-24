@@ -38,7 +38,7 @@ from django.contrib.auth.views import PasswordResetConfirmView
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Count, Sum
 from django.db.models.functions import TruncMonth, TruncWeek
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -63,7 +63,7 @@ from frontend.forms import (
 from frontend.mixins import AdminRequiredMixin, AnyStaffMixin, SupervisorRequiredMixin
 from frontend.approvals import can_approve, resolve_for_transaction
 from frontend.classification import run_full_classification
-from frontend.forecasting import backfill_actual_demand, run_full_forecast
+from frontend.forecasting import backfill_actual_demand, latest_forecast_batch, needs_replenishment, run_full_forecast
 from frontend.models import (
     AdjustmentReason,
     AdjustmentStatus,
@@ -519,6 +519,90 @@ class DashboardView(AnyStaffMixin, View):
             for log in recent_activity:
                 log.user_label = log.user.full_name if log.user else "System"
 
+        # ---- AI Insights: Stock Classification (§4d, REQ 11.9/11.10, PROMPT_C_STEP_3) ----
+        # 09_DASHBOARD.md §4d's own query shape ("most recently classified
+        # 4 rows") was written when neither AI table had any rows at all
+        # and was never re-verified once they did (docs/bugsfound.md
+        # BUG-76) — "most recently classified" is meaningless once
+        # run_full_classification() updates every active product's
+        # classified_at in the same batch (ties, arbitrary order), and
+        # says nothing about priority. Replaced here with what the page
+        # actually needs: real counts across all four states (matching
+        # SlowMovingDeadStockView's own counting, so this widget can
+        # never silently disagree with /ai/slow-moving/ — the exact
+        # failure mode BUG-64 was for forecasts) and the highest-priority
+        # dead/slow products by stagnation_index, the same composite
+        # score /ai/slow-moving/ itself sorts and displays by. Same
+        # Supervisor+ role gate as the page these link to
+        # (SlowMovingDeadStockView is SupervisorRequiredMixin) — showing
+        # this widget to a Staff user who can't open the linked page
+        # would be a dead end, not an insight.
+        classification_insights = None
+        if request.user.is_authenticated and request.user.role in (UserRole.ADMIN, UserRole.SUPERVISOR):
+            classification_counts = {choice: 0 for choice in StockClassification.values}
+            for row in InventoryClassification.objects.values('classification').annotate(count=Count('id')):
+                classification_counts[row['classification']] = row['count']
+
+            # PROMPT_C_STEP_3 — priority is stagnation_index today. Step 4
+            # adds capital-at-risk ranking (current_stock * purchase_price
+            # for dead/slow products) — this stays a plain list of rows
+            # with one sort key, so swapping the key (or blending it with
+            # stagnation_index) is a one-line change here, not a
+            # restructure of the widget or its template.
+            priority_products = list(
+                InventoryClassification.objects.filter(
+                    classification__in=[StockClassification.DEAD, StockClassification.SLOW],
+                )
+                .select_related('product', 'product__category')
+                .order_by('-stagnation_index')[:DASHBOARD_PREVIEW_ROWS]
+            )
+            for c in priority_products:
+                c.badge = SlowMovingDeadStockView._BADGE.get(c.classification, "badge-neutral")
+
+            classification_insights = {
+                "counts": classification_counts,
+                "total_flagged": classification_counts[StockClassification.SLOW] + classification_counts[StockClassification.DEAD],
+                "priority_products": priority_products,
+            }
+
+        # ---- AI Insights: Forecast Replenishment (§4d, REQ 11.9, PROMPT_C_STEP_3) ----
+        # Deliberately NOT ForecastSummaryAPIView — that endpoint has a
+        # known, still-open aggregation defect (docs/bugsfound.md BUG-64:
+        # it aggregates every DemandForecast row ever created, no dedup
+        # by latest run, so repeated "Run forecast now" clicks skew its
+        # counts toward whichever products got re-run most). Uses
+        # frontend.forecasting.latest_forecast_batch() instead — the same
+        # dedup-by-latest-created-per-(product, period, period_start)
+        # DemandForecastingView's own HTML page uses, extracted specifically
+        # so this widget can't define a second, divergent "current
+        # forecast." "Needs replenishment" = forecasted_demand exceeds
+        # current_stock, the identical condition run_full_forecast()'s own
+        # replenish_alerts uses; "urgency" = the size of that shortfall.
+        forecast_insights = None
+        if request.user.is_authenticated and request.user.role in (UserRole.ADMIN, UserRole.SUPERVISOR):
+            forecasts, forecast_last_run = latest_forecast_batch()
+            stock_by_product = dict(InventoryRecord.objects.values_list('product_id', 'current_stock'))
+
+            # needs_replenishment() (frontend/forecasting.py) is the same
+            # function run_full_forecast()'s own replenish_alerts calls —
+            # written once so tuning this threshold can't happen in one
+            # call site and silently drift from the other.
+            replenishment_needed = []
+            for f in forecasts:
+                current_stock = stock_by_product.get(f.product_id, 0)
+                if needs_replenishment(f.forecast_period, f.forecasted_demand, current_stock):
+                    f.current_stock_display = current_stock
+                    f.deficit = float(f.forecasted_demand) - current_stock
+                    f.confidence_pct = round(float(f.confidence_score) * 100)
+                    replenishment_needed.append(f)
+            replenishment_needed.sort(key=lambda f: -f.deficit)
+
+            forecast_insights = {
+                "last_run": forecast_last_run,
+                "replenishment_count": len(replenishment_needed),
+                "replenishment_products": replenishment_needed[:DASHBOARD_PREVIEW_ROWS],
+            }
+
         # ---- Charts (§3) ----
         chart_data = {
             "sales_purchases": {
@@ -540,6 +624,8 @@ class DashboardView(AnyStaffMixin, View):
             "pending_po_count": pending_po_count,
             "pending_adjustment_count": pending_adjustment_count,
             "recent_activity": recent_activity,
+            "classification_insights": classification_insights,
+            "forecast_insights": forecast_insights,
             "chart_data": chart_data,
         }
         return render(request, "dashboard/dashboard.html", context)
@@ -1803,24 +1889,13 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
     therefore expected to accumulate rows over time — this view's own GET
     query keeps the *display* sane by showing only the most recent batch
     (deduped by (product, period, period_start), keyed off created_at),
-    not by changing what gets written."""
+    not by changing what gets written. That dedup now lives in
+    frontend.forecasting.latest_forecast_batch() (extracted so the
+    Dashboard's AI Insights widget, REQ 11.9, shares the exact same
+    definition of "current forecast" rather than risking a second,
+    divergent one)."""
 
     _PERIOD_LABEL = {ForecastPeriod.WEEKLY: 'weekly', ForecastPeriod.MONTHLY: 'monthly'}
-
-    def _latest_batch(self):
-        """One row per (product_id, forecast_period, period_start) — the
-        most recently created one, discarding older re-run duplicates
-        from the *display* only (the DB keeps every row)."""
-        all_forecasts = list(
-            DemandForecast.objects.select_related('product', 'product__category')
-            .order_by('-created_at')
-        )
-        latest = {}
-        for f in all_forecasts:
-            key = (f.product_id, f.forecast_period, f.period_start)
-            if key not in latest:
-                latest[key] = f
-        return list(latest.values()), (all_forecasts[0] if all_forecasts else None)
 
     def _build_chart_data(self, forecasts, period_choice):
         buckets = {}
@@ -1838,7 +1913,7 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
         }
 
     def get(self, request):
-        forecasts, last_run = self._latest_batch()
+        forecasts, last_run = latest_forecast_batch()
         stock_by_product = dict(InventoryRecord.objects.values_list('product_id', 'current_stock'))
 
         # One table row per (product, period-type): the nearest upcoming

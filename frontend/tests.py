@@ -46,6 +46,7 @@ from frontend.forecasting import (
     build_features,
     get_sales_dataframe,
     get_stockout_flags,
+    needs_replenishment,
     predict_demand,
     run_full_forecast,
     train_model,
@@ -4478,12 +4479,104 @@ class DashboardViewTests(TestCase):
         self.assertNotContains(response, 'aria-label="Approve"')
         self.assertNotContains(response, 'aria-label="Reject"')
 
-    def test_ai_insights_section_dropped_entirely(self):
+    # REQ 11.9/11.10 (docs/09_DASHBOARD.md §4d, corrected — see
+    # docs/bugsfound.md BUG-76). test_ai_insights_section_dropped_entirely
+    # (Phase 8.96) is retired, not kept-and-passing-by-coincidence: its
+    # entire premise ("AI Insights dropped entirely") is now false, even
+    # though its literal string assertions happened not to overlap with
+    # this widget's actual copy. A test whose name and docstring lie about
+    # what it protects is worse than no test.
+
+    def _classify_and_forecast_one_product(self):
+        """Shared fixture for the widget-content tests below: ages
+        low_product past min_observation_days with enough sale history to
+        clear the insufficient_data gate and land DEAD (never sold, old,
+        in stock — the Force-DEAD override), then a forecast row that
+        needs replenishment (forecasted_demand > current_stock)."""
+        past = timezone.now() - timedelta(days=200)
+        Product.objects.filter(pk=self.low_product.pk).update(created_at=past)
+        InventoryMovement.objects.filter(product=self.low_product).update(created_at=past)
+        classify_product(self.low_product)
+
+        DemandForecast.objects.create(
+            product=self.low_product, forecast_period=ForecastPeriod.WEEKLY,
+            period_start=timezone.localdate(), period_end=timezone.localdate() + timedelta(days=7),
+            forecasted_demand=Decimal('50.00'), recommended_reorder_qty=47,
+            confidence_score=Decimal('0.80'), model_version='test',
+        )
+
+    def test_classification_and_forecast_widgets_visible_for_admin_and_supervisor(self):
+        self._classify_and_forecast_one_product()
+        for username in ('dashadmin', 'dashsuper'):
+            self.client.login(username=username, password='x')
+            response = self.client.get(reverse('frontend:dashboard'))
+            self.assertIsNotNone(response.context['classification_insights'])
+            self.assertIsNotNone(response.context['forecast_insights'])
+            self.assertContains(response, 'Stock classification insights')
+            self.assertContains(response, 'Forecast replenishment')
+            self.assertContains(response, 'Dash Low Stock Item')
+            self.client.logout()
+
+    def test_classification_and_forecast_widgets_not_rendered_for_staff(self):
+        self._classify_and_forecast_one_product()
+        self.client.login(username='dashstaff', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertIsNone(response.context['classification_insights'])
+        self.assertIsNone(response.context['forecast_insights'])
+        self.assertNotContains(response, 'Stock classification insights')
+        self.assertNotContains(response, 'Forecast replenishment')
+
+    def test_dashboard_loads_with_zero_classifications(self):
+        """No InventoryClassification rows at all (the default fixture
+        state in this class's own setUp) — must not crash, must show an
+        honest empty state, not a fabricated one."""
         self.client.login(username='dashadmin', password='x')
         response = self.client.get(reverse('frontend:dashboard'))
-        self.assertNotContains(response, 'AI Insights')
-        self.assertNotContains(response, 'Demand forecasting')
-        self.assertNotContains(response, 'Slow-moving')
+        self.assertEqual(response.status_code, 200)
+        insights = response.context['classification_insights']
+        self.assertEqual(insights['counts'][StockClassification.FAST], 0)
+        self.assertEqual(insights['counts'][StockClassification.DEAD], 0)
+        self.assertEqual(insights['priority_products'], [])
+        self.assertContains(response, 'No slow-moving or dead stock flagged right now.')
+
+    def test_dashboard_loads_with_zero_forecasts(self):
+        self.client.login(username='dashadmin', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(response.status_code, 200)
+        insights = response.context['forecast_insights']
+        self.assertEqual(insights['replenishment_count'], 0)
+        self.assertIsNone(insights['last_run'])
+        self.assertContains(response, 'No forecasts have been run yet.')
+
+    def test_fresh_db_neither_table_populated_dashboard_still_loads(self):
+        """Belt-and-suspenders: both AI tables empty simultaneously (the
+        genuinely fresh-install case), not just one at a time."""
+        self.assertEqual(InventoryClassification.objects.count(), 0)
+        self.assertEqual(DemandForecast.objects.count(), 0)
+        self.client.login(username='dashsuper', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_classification_counts_match_slow_moving_page(self):
+        """Guards the BUG-64 failure mode on the classification side:
+        the dashboard widget's counts must be pixel-identical to
+        /ai/slow-moving/'s own, never a second, divergent aggregation."""
+        self._classify_and_forecast_one_product()
+        # A second product, left unclassified, exercises a real mix.
+        InventoryService.initialize_for_product(self.out_product)
+
+        self.client.login(username='dashsuper', password='x')
+        dashboard_response = self.client.get(reverse('frontend:dashboard'))
+        slow_moving_response = self.client.get(reverse('frontend:slow_moving'))
+
+        dashboard_counts = dashboard_response.context['classification_insights']['counts']
+        page_counts = slow_moving_response.context['counts']
+
+        for classification in StockClassification.values:
+            self.assertEqual(
+                dashboard_counts[classification], page_counts[classification],
+                msg=f"dashboard/{classification} diverges from /ai/slow-moving/'s own count",
+            )
 
     def test_anonymous_redirects_to_login(self):
         """Phase 8.97 Part A: DashboardView now requires AnyStaffMixin —
@@ -6043,6 +6136,37 @@ class RunFullForecastTests(ServiceTestCase):
 
         self.assertEqual(weekly_rows, 4, "weekly run keeps periods_ahead == forecast_period_weeks unchanged")
         self.assertEqual(monthly_rows, 1, "4 weeks must convert to periods_ahead=1 for the monthly run, not 4")
+
+
+class NeedsReplenishmentTests(TestCase):
+    """Guards against the exact drift risk flagged in the git-push safety
+    audit: run_full_forecast()'s replenish_alerts and the Dashboard's
+    forecast widget (REQ 11.9) both call this one function rather than
+    each writing their own 'forecasted_demand > current_stock' comparison
+    — these tests pin its behaviour so a future edit to either call site
+    can't quietly re-duplicate the threshold instead of changing it here."""
+
+    def test_weekly_demand_exceeding_stock_needs_replenishment(self):
+        self.assertTrue(needs_replenishment(ForecastPeriod.WEEKLY, Decimal('10.00'), 5))
+
+    def test_weekly_demand_at_or_below_stock_does_not(self):
+        self.assertFalse(needs_replenishment(ForecastPeriod.WEEKLY, Decimal('5.00'), 5))
+        self.assertFalse(needs_replenishment(ForecastPeriod.WEEKLY, Decimal('4.00'), 5))
+
+    def test_monthly_forecast_never_triggers_even_when_demand_exceeds_stock(self):
+        """The specific case a first draft of the dashboard widget got
+        wrong (docs/project_memory.md) — a monthly forecast exceeding
+        current stock is routine for healthy, more-than-monthly-restocked
+        inventory, not a signal."""
+        self.assertFalse(needs_replenishment(ForecastPeriod.MONTHLY, Decimal('100.00'), 5))
+
+    def test_accepts_both_decimal_and_float_demand(self):
+        """DemandForecast.forecasted_demand is a Decimal (model field);
+        run_full_forecast()'s own pred['forecasted_demand'] is a float
+        (straight from the model's prediction). Both real call sites must
+        work without either caller having to cast first."""
+        self.assertTrue(needs_replenishment(ForecastPeriod.WEEKLY, 10.5, 5))
+        self.assertTrue(needs_replenishment(ForecastPeriod.WEEKLY, Decimal('10.5'), 5))
 
 
 class DemandForecastingViewTests(TestCase):

@@ -464,7 +464,7 @@ def run_full_forecast():
                 )
                 forecasts_created += 1
 
-                if pred['forecasted_demand'] > current_stock and period_choice == ForecastPeriod.WEEKLY:
+                if needs_replenishment(period_choice, pred['forecasted_demand'], current_stock):
                     replenish_alerts.append({
                         'product': product,
                         'forecasted_demand': pred['forecasted_demand'],
@@ -480,3 +480,50 @@ def run_full_forecast():
         'training_errors': training_errors,
         'replenish_alerts': replenish_alerts,
     }
+
+
+def needs_replenishment(forecast_period, forecasted_demand, current_stock):
+    """The one comparison that defines "this forecast means reorder now":
+    weekly forecasts only (a monthly forecast exceeding current stock is
+    a routine, healthy pattern for anything restocked more than once a
+    month, not a signal) AND forecasted demand exceeding what's on hand.
+
+    Shared by run_full_forecast()'s replenish_alerts (fires the real
+    ai_replenish notification supervisors see) and the Dashboard's
+    forecast-replenishment widget (REQ 11.9) — written once specifically
+    so tuning this threshold later (a buffer margin, a different
+    comparison, lead-time awareness) can't happen in one call site and
+    silently drift from the other, which would leave the dashboard
+    disagreeing with the notification it's supposed to summarise.
+    """
+    return forecast_period == ForecastPeriod.WEEKLY and float(forecasted_demand) > float(current_stock)
+
+
+def latest_forecast_batch():
+    """One row per (product_id, forecast_period, period_start) — the most
+    recently created one, discarding older re-run duplicates from the
+    *display* only (the DB keeps every row on purpose — REQ 9.9 needs
+    historical forecasts kept around to compare against actual_demand
+    once backfilled; run_full_forecast() never deletes old rows).
+
+    Extracted from DemandForecastingView._latest_batch() (Phase 11) so
+    the Dashboard's AI Insights widget (REQ 11.9) can show "the current
+    forecast" without a second, potentially-divergent definition of what
+    that means — this dedup-by-latest-created-per-key is exactly the
+    shape ForecastSummaryAPIView's own BUG-64 defect got wrong, by
+    aggregating every row ever created instead of deduping like this.
+    Both real UI surfaces now share one definition; ForecastSummaryAPIView
+    itself is unfixed (BUG-64 is still open) and neither surface calls it.
+
+    Returns (list_of_forecasts, most_recent_forecast_or_None).
+    """
+    all_forecasts = list(
+        DemandForecast.objects.select_related('product', 'product__category')
+        .order_by('-created_at')
+    )
+    latest = {}
+    for f in all_forecasts:
+        key = (f.product_id, f.forecast_period, f.period_start)
+        if key not in latest:
+            latest[key] = f
+    return list(latest.values()), (all_forecasts[0] if all_forecasts else None)

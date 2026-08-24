@@ -261,6 +261,99 @@
       </div>
       {% endif %}
 
+      {% comment %}
+        REQ 11.10 (docs/09_DASHBOARD.md §4d, corrected — see
+        docs/bugsfound.md BUG-76): same Supervisor+ gate as
+        /ai/slow-moving/ itself. total_flagged/counts mirror that page's
+        own counting exactly, so this widget can never silently disagree
+        with it.
+      {% endcomment %}
+      {% if classification_insights is not None %}
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Stock classification insights</h3>
+            <p class="panel-sub">{{ classification_insights.counts.fast }} fast &middot; {{ classification_insights.counts.slow }} slow &middot; {{ classification_insights.counts.dead }} dead &middot; {{ classification_insights.counts.insufficient_data }} insufficient data</p>
+          </div>
+          <a href="/ai/slow-moving/" class="panel-link">
+            View all
+            <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+          </a>
+        </div>
+        <div class="panel-body no-top-pad">
+          <div class="widget-list">
+            {% for c in classification_insights.priority_products %}
+            <div class="widget-row">
+              {% if c.classification == 'dead' %}
+                <span class="widget-icon" style="background:var(--c-danger-tint); color:var(--c-danger);">
+                  <svg class="icon icon-sm"><use href="#icon-trending-down"></use></svg>
+                </span>
+              {% else %}
+                <span class="widget-icon" style="background:var(--c-warning-tint); color:#9C6B12;">
+                  <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
+                </span>
+              {% endif %}
+              <div class="widget-main">
+                <div class="widget-title">{{ c.product.name }}</div>
+                {# flagged_by_rule ("No sales in 210 days") is the most useful thing to show here — an opaque index number is not #}
+                <div class="widget-meta">{% if c.flagged_by_rule %}Flagged by rule: {{ c.flagged_by_rule }}{% else %}Stagnation index: {{ c.stagnation_index }}{% endif %}</div>
+              </div>
+              <span class="badge {{ c.badge }}">{{ c.get_classification_display }}</span>
+            </div>
+            {% empty %}
+            <div class="widget-row">
+              <div class="widget-main">
+                <div class="widget-title text-slate">No slow-moving or dead stock flagged right now.</div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% comment %}
+        REQ 11.9 (docs/09_DASHBOARD.md §4d, corrected — see
+        docs/bugsfound.md BUG-76). Deliberately not ForecastSummaryAPIView
+        (BUG-64) — see frontend/views.py's own comment on this block for
+        the full reasoning.
+      {% endcomment %}
+      {% if forecast_insights is not None %}
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Forecast replenishment</h3>
+            <p class="panel-sub">{{ forecast_insights.replenishment_count }} product{{ forecast_insights.replenishment_count|pluralize }} need{{ forecast_insights.replenishment_count|pluralize:"s," }} reorder</p>
+          </div>
+          <a href="/ai/forecasting/" class="panel-link">
+            View all
+            <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+          </a>
+        </div>
+        <div class="panel-body no-top-pad">
+          <div class="widget-list">
+            {% for f in forecast_insights.replenishment_products %}
+            <div class="widget-row">
+              <span class="widget-icon" style="background:var(--c-amber-tint); color:#9C6B12;">
+                <svg class="icon icon-sm"><use href="#icon-cpu"></use></svg>
+              </span>
+              <div class="widget-main">
+                <div class="widget-title">{{ f.product.name }}</div>
+                <div class="widget-meta">Reorder {{ f.recommended_reorder_qty }} &middot; {{ f.confidence_pct }}% confidence</div>
+              </div>
+            </div>
+            {% empty %}
+            <div class="widget-row">
+              <div class="widget-main">
+                <div class="widget-title text-slate">{% if forecast_insights.last_run %}No products currently need replenishment.{% else %}No forecasts have been run yet.{% endif %}</div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
     </div>
 
   </div>

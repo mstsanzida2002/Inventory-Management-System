@@ -5357,6 +5357,39 @@ class ForecastingPipelineTests(ServiceTestCase):
             self.assertIn('forecasted_demand', p)
             self.assertGreaterEqual(p['forecasted_demand'], 0)
 
+    def test_period_num_advances_across_multi_step_forecast(self):
+        """BUG found and fixed this pass: predict_demand()'s multi-step
+        loop never advanced period_num — every step fed the model the
+        same, last-observed period_num, telling it every future period
+        was the same point in time rather than 1/2/3/4 periods further
+        out. Spies on the trained model's own predict() (not just the
+        output shape, which wouldn't catch a frozen input feature) to
+        assert period_num strictly increases step over step. 15 weeks
+        for train_model()'s own >=10-pooled-row guard."""
+        self._weekly_sales(self.product, weeks=15, start_weeks_ago=15, qty=4)
+        train_model('W')
+
+        from sklearn.ensemble import HistGradientBoostingRegressor
+        original_predict = HistGradientBoostingRegressor.predict
+        seen_period_nums = []
+
+        def spy_predict(self, X, *args, **kwargs):
+            seen_period_nums.append(X['period_num'].iloc[0])
+            return original_predict(self, X, *args, **kwargs)
+
+        with patch.object(HistGradientBoostingRegressor, 'predict', spy_predict):
+            preds = predict_demand(self.product.pk, period='W', periods_ahead=4)
+
+        self.assertEqual(len(preds), 4)
+        self.assertEqual(len(seen_period_nums), 4)
+        for earlier, later in zip(seen_period_nums, seen_period_nums[1:]):
+            self.assertLess(earlier, later, "period_num must strictly increase across forecast steps")
+        # Each step is exactly 1 more than the last, not merely increasing.
+        self.assertEqual(
+            [seen_period_nums[i + 1] - seen_period_nums[i] for i in range(3)],
+            [1, 1, 1],
+        )
+
     def test_train_model_chronological_split_not_random(self):
         """Design Notes revision #2: the held-out test rows must be the
         most recent ones, not a random sample."""
@@ -5503,6 +5536,53 @@ class RunFullForecastTests(ServiceTestCase):
         alerts = [a for a in result['replenish_alerts'] if a['product'].pk == self.product.pk]
         self.assertTrue(alerts, "expected at least one replenish alert for a near-zero-stock product")
         self.assertEqual(alerts[0]['current_stock'], 1)
+
+    def test_monthly_run_converts_weeks_setting_not_raw_value(self):
+        """BUG found and fixed this pass: forecast_period_weeks (a
+        weeks-denominated horizon setting — its own name says so) was
+        previously passed straight through as periods_ahead to the
+        MONTHLY run too. With the default of 4, the weekly run correctly
+        produced 4 rows but the monthly run produced 4 *months* of
+        forecasts instead of the intended ~1.
+
+        Needs a sales history spanning ~16 months for train_model('M') to
+        survive its own dropna()/>=10-row guard (train_model() itself
+        documents needing ~14 months pooled before monthly rows survive
+        at all) — build_features()'s resample() fills every calendar
+        month in the *span*, populated or not, so a handful of
+        monthly-spaced transactions covers the same span as 70 weekly
+        ones for a fraction of the DB writes. Deliberately not reusing
+        _weekly_sales() at a large count here: SaleTransaction's own
+        invoice-number generator is a random 4-digit suffix (INV-<date>-
+        NNNN, ~9000 possible values), and 70 rapid creates in one test
+        carries a real, non-negligible collision probability — a
+        pre-existing weakness in that generator, not something this
+        forecasting fix should paper over, but also not worth tripping
+        over here when a monthly cadence proves the same thing with 16
+        transactions instead of 70."""
+        for i in range(16):
+            sale = SaleTransaction.objects.create(
+                created_by=self.user, status=SaleStatus.COMPLETED,
+                transaction_date=timezone.localdate() - timedelta(days=(16 - i) * 30),
+            )
+            SaleItem.objects.create(
+                transaction=sale, product=self.product, quantity=4,
+                unit_price=Decimal('20.00'), line_total=Decimal('80.00'),
+            )
+        self.give_stock(500)
+
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.forecast_period_weeks = 4
+        settings_obj.save(update_fields=['forecast_period_weeks'])
+
+        result = run_full_forecast()
+        self.assertIn('M', result['periods_trained'], "monthly training must succeed for this test to prove anything")
+
+        weekly_rows = DemandForecast.objects.filter(product=self.product, forecast_period=ForecastPeriod.WEEKLY).count()
+        monthly_rows = DemandForecast.objects.filter(product=self.product, forecast_period=ForecastPeriod.MONTHLY).count()
+
+        self.assertEqual(weekly_rows, 4, "weekly run keeps periods_ahead == forecast_period_weeks unchanged")
+        self.assertEqual(monthly_rows, 1, "4 weeks must convert to periods_ahead=1 for the monthly run, not 4")
 
 
 class DemandForecastingViewTests(TestCase):

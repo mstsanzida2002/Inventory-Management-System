@@ -3831,6 +3831,94 @@ inert but undeleted for the same reason.
   removed `company_linkedin_url` field never shipped in a form other
   code depended on).
 
+- **Phase 15: demand forecasting pipeline bug audit.** `docs/
+  DEMAND_FORECASTING.md`'s 9-item bug list (derived from the doc's own
+  stale `apps.ai.*`-path reading) checked against the actual running
+  `frontend/forecasting.py`, item by item, verifying against real dev
+  data rather than trusting either the doc or a source read alone —
+  written up as a table before any code changed, per this phase's own
+  explicit instruction. Of 9: 4 already fixed (rename/dtype order in
+  `get_sales_dataframe()`, the tz-aware/naive `stockout_flag` merge —
+  both empirically re-confirmed against real stockout products, not
+  just re-read; the MAE-mislabeling shape; `DemandForecast.updated_at`
+  existing), 2 not applicable to this codebase's architecture (the
+  Celery-task `log_action` import gap — no Celery tasks exist here at
+  all; the month-end/month-start labeling difference — empirically
+  produces correct, non-overlapping calendar tiling regardless), 1
+  reviewed and confirmed deliberate/already-disclosed (duplicate
+  `DemandForecast` rows across re-runs — REQ 9.9 needs forecast
+  history kept for later accuracy comparison), and 2 real, confirmed,
+  fixed bugs.
+
+  **Three follow-up checks requested before the fix, all completed
+  first:** (1) whether anything aggregates across `DemandForecast` rows
+  in a way the "duplicates are fine, they're vintage-distinguishable"
+  rationale doesn't actually cover — found one: `ForecastSummaryAPIView`
+  aggregates unconditionally (`count()`/`avg(confidence_score)`) with
+  no latest-batch dedup, unlike the HTML dashboard's own `_latest_batch()`
+  — logged as BUG-64, not fixed (out of this pass's scope), and the
+  duplicate-rows rationale itself moved out of `views.py`'s docstring
+  into `docs/DEMAND_FORECASTING.md` where it's actually discoverable.
+  (2) grepped every caller of `run_full_forecast()` — exactly one,
+  `DemandForecastingView.post()`, which does correctly audit-log; no
+  management command, cron, or scheduled-job path exists in this
+  project at all, so REQ 9.14 has no hole. (3) `rolling_std_4` staying
+  frozen while `rolling_avg_4` gets recomputed in the same loop was
+  genuinely ambiguous (Design Note #5 only ever promised no
+  *scrambling*, never addressed whether the value itself should track
+  the synthetic future) — resolved explicitly: stays frozen,
+  deliberately, reasoning now in both the code and the doc (a
+  recomputed volatility signal built from increasingly model-smoothed
+  synthetic values would drift toward artificially low numbers the
+  further out the horizon runs; a frozen one anchors to real observed
+  volatility instead).
+
+  **Two real bugs fixed, both present in the doc's own reference code
+  too, both empirically verified before AND after the fix, not just
+  read:** `predict_demand()`'s multi-step loop never advanced
+  `period_num` — instrumented the actual loop against a real trained
+  model and confirmed it fed the identical value on all 4 steps of a
+  4-step forecast before fixing, then added a test that spies on the
+  model's own `.predict()` calls and asserts strict step-by-step
+  increase (BUG-61). `run_full_forecast()` passed the weeks-denominated
+  `forecast_period_weeks` setting straight through as `periods_ahead`
+  to the monthly run too — fixed as a conversion (`max(1, round(weeks
+  / 4))`) rather than a new settings field, per explicit instruction not
+  to add `forecast_period_months` (BUG-62). Neither fix touches the
+  model class, hyperparameters, `FEATURE_COLUMNS`, the chronological
+  split, the residual-based confidence, task names, or any API response
+  shape — confirmed no existing test pins an exact forecast value (all
+  assert shape/bounds/counts), so none needed re-pinning; two new tests
+  added instead.
+
+  One design limitation logged without fixing, per explicit scope: the
+  final resample bin can be a partial period (training mid-week/month
+  captures an incomplete bin), biasing the very first forecast step's
+  `lag_1` downward — a real fix changes what `build_features()` returns,
+  which this pass's own scope excluded (BUG-63).
+
+  Verified: full suite 387/387 (385 baseline + 2 new), `manage.py check`
+  clean. Live dev server, not just diffs: killed stale listeners first
+  (BUG-59's own lesson), triggered a real "Run forecast now" against a
+  freshly reseeded DB (43 active products, `forecast_period_weeks=4`) —
+  191 rows created, `AI_FORECASTS_GENERATED` audit entry landed with the
+  correct user/details, `AI_MODEL_RETRAINED`'s `mae` correctly keyed per
+  period (`{'W': 0.84, 'M': 5.22}`), zero duplicate `(product, period,
+  period_start)` groups from that single run, and a spot-checked product
+  showed exactly 4 weekly rows / 1 monthly row — BUG-62's conversion
+  confirmed live, not just in a test. A second click confirmed the
+  *intentional* cross-run accumulation behaves exactly as documented:
+  382 total rows, 2 audit entries, exactly 191 duplicate groups (one
+  real duplicate per row from run 1, no unexpected multiplication).
+  One unrelated, pre-existing flake surfaced during this pass's own
+  full-suite runs (not caused by anything here, and out of this task's
+  scope): `SaleTransaction._generate_invoice_number()` is a random
+  4-digit suffix over ~9000 values, `INV-<date>-NNNN` — a test creating
+  many `SaleTransaction` rows in one method carries a real collision
+  probability; confirmed by a clean re-run of the exact same code
+  immediately after. Worth a real fix (a sequential or wider-space
+  suffix) in some future pass; not touched here.
+
 ---
 
 ## 14. Coding Standards

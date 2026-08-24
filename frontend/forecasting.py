@@ -288,8 +288,19 @@ def predict_demand(product_id, period='W', periods_ahead=4):
 
     lag_indices = [FEATURE_COLUMNS.index(f'lag_{i}') for i in (1, 2, 3, 4)]
     rolling_avg_idx = FEATURE_COLUMNS.index('rolling_avg_4')
+    period_num_idx = FEATURE_COLUMNS.index('period_num')
 
     for i in range(1, periods_ahead + 1):
+        # BUG found and fixed this pass — period_num previously stayed
+        # frozen at the last real observed value for every step of this
+        # loop (verified empirically: instrumented the loop against real
+        # trained-model data, period_num fed to the model was identical
+        # on all 4 steps). That told the model every future period was
+        # the same point in time it had already seen, rather than 1/2/3/4
+        # periods further out. Advanced here, once per step, before
+        # `features` is captured, so step i's period_num is genuinely
+        # last-observed + i.
+        last_row[period_num_idx] += 1
         features = last_row.copy()
         # Predict from a DataFrame with the same column names train_model()
         # fit on, not a bare array (model.predict([features])) — the model
@@ -309,6 +320,19 @@ def predict_demand(product_id, period='W', periods_ahead=4):
             last_row[lag_indices[j]] = last_row[lag_indices[j - 1]]
         last_row[lag_indices[0]] = pred
         last_row[rolling_avg_idx] = np.mean([last_row[idx] for idx in lag_indices])
+        # rolling_std_4 (index 5) is deliberately left untouched here,
+        # unlike rolling_avg_4 just above — an explicit decision made
+        # this pass, not an oversight Design Note #5 left ambiguous.
+        # rolling_avg_4 is a level signal: it's standard recursive-
+        # forecasting practice for a level feature to track the synthetic
+        # future the loop is building. rolling_std_4 is a volatility
+        # signal — recomputing it from 4 increasingly model-generated (and
+        # typically smoother than real demand) values would make it
+        # measure "how noisy is my own prediction sequence" rather than
+        # real historical volatility, likely decaying toward artificially
+        # low numbers the further out the horizon runs. Freezing it
+        # anchors the model to the last real observed volatility instead
+        # of a self-reinforcing synthetic drift.
 
         period_start = last_period + pd.tseries.frequencies.to_offset(freq) * i
         period_end = period_start + pd.tseries.frequencies.to_offset(freq) - pd.Timedelta(days=1)
@@ -394,6 +418,23 @@ def run_full_forecast():
     products = Product.objects.filter(is_active=True)
     model_version = f"hgb_{timezone.localdate().strftime('%Y%m%d')}"
 
+    # BUG found and fixed this pass — forecast_period_weeks is a
+    # weeks-denominated horizon setting (its own name says so), but was
+    # previously passed straight through as periods_ahead for BOTH
+    # periods: with the seeded default of 4, the weekly run correctly
+    # forecast 4 weeks ahead, but the monthly run forecast 4 *months*
+    # ahead — a materially longer horizon than the setting promises.
+    # Converted here rather than adding a second forecast_period_months
+    # setting (out of scope for this pass — forecast_period_weeks stays
+    # the one horizon knob an admin sees, matching every existing
+    # caller/serializer/template that already names it that way).
+    # Rounded to the nearest month, floored at 1 so a horizon shorter
+    # than half a month never produces a zero-length monthly run.
+    periods_ahead_by_period = {
+        'W': settings_obj.forecast_period_weeks,
+        'M': max(1, round(settings_obj.forecast_period_weeks / 4)),
+    }
+
     forecasts_created = 0
     replenish_alerts = []
 
@@ -401,7 +442,7 @@ def run_full_forecast():
         for period, period_choice in (('W', ForecastPeriod.WEEKLY), ('M', ForecastPeriod.MONTHLY)):
             if period not in trained_periods:
                 continue
-            predictions = predict_demand(product.id, period=period, periods_ahead=settings_obj.forecast_period_weeks)
+            predictions = predict_demand(product.id, period=period, periods_ahead=periods_ahead_by_period[period])
 
             for pred in predictions:
                 try:

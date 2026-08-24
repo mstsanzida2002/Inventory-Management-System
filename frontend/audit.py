@@ -61,11 +61,6 @@ USER_UPDATED = 'USER_UPDATED'
 USER_DEACTIVATED = 'USER_DEACTIVATED'
 USER_REACTIVATED = 'USER_REACTIVATED'
 USER_ROLE_CHANGED = 'USER_ROLE_CHANGED'
-# Phase 8.99f-2 — not in 13_AUDIT.md's own table (that doc has no hard-
-# delete concept for users at all). Disclosed addition, load-bearing: a
-# true delete (UserDeleteView, guarded to zero-history accounts only)
-# with no audit trail at all would be worse than the gap it closes — see
-# docs/project_memory.md §13.
 USER_DELETED = 'USER_DELETED'
 # Phase 8.99f-7 — same disclosure as USER_DELETED above: not in
 # 13_AUDIT.md, added because a resend with no audit trail at all would be
@@ -132,6 +127,24 @@ PHYSICAL_COUNT_PERFORMED = 'PHYSICAL_COUNT_PERFORMED'
 ADJUSTMENT_REQUESTED = 'ADJUSTMENT_REQUESTED'
 ADJUSTMENT_APPROVED = 'ADJUSTMENT_APPROVED'
 ADJUSTMENT_REJECTED = 'ADJUSTMENT_REJECTED'
+# Phase 12 — a single audit entry for the AUTO-outcome create path
+# (AdjustmentService.create()), distinct from ADJUSTMENT_APPROVED: no
+# human approved this, a policy authorised it automatically, and that
+# distinction matters when reading the trail back later.
+ADJUSTMENT_AUTO_POSTED = 'ADJUSTMENT_AUTO_POSTED'
+# Phase 12.1 §4 — fires when the cumulative cap deflects what would
+# otherwise have been an AUTO match; "the trail that makes the control
+# provable" (§4's own words) against salami-slicing.
+ADJUSTMENT_AUTO_DEFLECTED = 'ADJUSTMENT_AUTO_DEFLECTED'
+
+# Phase 12 — Approval Policy (§4's own instruction: "the policy table
+# must be at least as auditable as the transactions it governs" — an
+# admin who can silently raise the supervisor ceiling has defeated the
+# entire control).
+APPROVAL_POLICY_CREATED = 'APPROVAL_POLICY_CREATED'
+APPROVAL_POLICY_UPDATED = 'APPROVAL_POLICY_UPDATED'
+APPROVAL_POLICY_DEACTIVATED = 'APPROVAL_POLICY_DEACTIVATED'
+APPROVAL_POLICY_REACTIVATED = 'APPROVAL_POLICY_REACTIVATED'
 
 # Reports
 REPORT_GENERATED = 'REPORT_GENERATED'

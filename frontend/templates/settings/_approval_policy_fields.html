@@ -1,0 +1,108 @@
+{% comment %}
+  Phase 12 — shared ApprovalPolicy field markup for both the Add and Edit
+  modals in approval_policies.html (one include, two prefixes — same
+  pattern as this project's other Add/Edit modal pairs, just without a
+  second copy-pasted block of HTML to keep in sync). `prefix` sets each
+  input's id (and its matching label `for`/error-box id); `name=` stays
+  the real ModelForm field name in both cases, since each include renders
+  inside its own independent <form>.
+{% endcomment %}
+<div class="form-alert form-alert-error" id="{{ prefix }}-form-error" hidden></div>
+<div class="form-grid">
+
+  <div class="field field-full">
+    <label class="form-label" for="{{ prefix }}-name">Policy name<span class="required-mark">*</span></label>
+    <input class="input input-plain" type="text" id="{{ prefix }}-name" name="name" placeholder="e.g. Unexplained shrinkage, any value">
+    <div class="field-error" id="{{ prefix }}-name-error" role="alert"></div>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-transaction-type">Transaction type<span class="required-mark">*</span></label>
+    <div class="select-wrap">
+      <select class="input select" id="{{ prefix }}-transaction-type" name="transaction_type">
+        <option value="" selected disabled>Select type</option>
+        {% for value, label in tx_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+      <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+    </div>
+    <div class="field-error" id="{{ prefix }}-transaction-type-error" role="alert"></div>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-priority">Priority<span class="required-mark">*</span></label>
+    <input class="input input-plain" type="number" id="{{ prefix }}-priority" name="priority" placeholder="10" min="1" step="1">
+    <div class="field-error" id="{{ prefix }}-priority-error" role="alert"></div>
+    <p class="text-slate text-xs" style="margin-top:0.3rem;">Lower runs first. First active match wins.</p>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-reason-code">Reason category <span class="optional-tag">(adjustments only — blank matches any)</span></label>
+    <div class="select-wrap">
+      <select class="input select" id="{{ prefix }}-reason-code" name="reason_code">
+        <option value="">Any</option>
+        {% for value, label in reason_codes %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+      <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+    </div>
+    <div class="field-error" id="{{ prefix }}-reason-code-error" role="alert"></div>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-min-value">Min value (৳)<span class="required-mark">*</span></label>
+    <input class="input input-plain" type="number" id="{{ prefix }}-min-value" name="min_value" value="0" min="0" step="0.01">
+    <div class="field-error" id="{{ prefix }}-min-value-error" role="alert"></div>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-max-value">Max value (৳) <span class="optional-tag">(blank = no ceiling)</span></label>
+    <input class="input input-plain" type="number" id="{{ prefix }}-max-value" name="max_value" min="0" step="0.01">
+    <div class="field-error" id="{{ prefix }}-max-value-error" role="alert"></div>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-max-variance">Variance % threshold <span class="optional-tag">(adjustments only — blank = ignore variance)</span></label>
+    <input class="input input-plain" type="number" id="{{ prefix }}-max-variance" name="max_variance_pct" min="0" step="0.01">
+    <div class="field-error" id="{{ prefix }}-max-variance-error" role="alert"></div>
+    <p class="text-slate text-xs" style="margin-top:0.3rem;">For an Admin outcome: matches when variance EXCEEDS this. For Auto/Supervisor: matches when variance is AT OR BELOW this.</p>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-required-level">Outcome<span class="required-mark">*</span></label>
+    <div class="select-wrap">
+      <select class="input select" id="{{ prefix }}-required-level" name="required_level">
+        <option value="" selected disabled>Select outcome</option>
+        {% for value, label in outcomes %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+      <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+    </div>
+    <div class="field-error" id="{{ prefix }}-required-level-error" role="alert"></div>
+  </div>
+
+  <div class="field field-full">
+    <label class="checkbox-row">
+      <input type="checkbox" id="{{ prefix }}-block-self-approval" name="block_self_approval" checked>
+      Block self-approval (the requester can never also be the approver — Admin is always exempt)
+    </label>
+  </div>
+
+  <div class="field field-full">
+    <label class="form-label" for="{{ prefix }}-notes">Notes <span class="optional-tag">(optional)</span></label>
+    <textarea class="textarea" id="{{ prefix }}-notes" name="notes" rows="2" placeholder="Why this rule exists..."></textarea>
+    <div class="field-error" id="{{ prefix }}-notes-error" role="alert"></div>
+  </div>
+
+  {% comment %} Built, tested, and enforced (Phase 12.1 §4) — kept out of the way here as optional, bottom-of-form fields rather than removed. {% endcomment %}
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-cumulative-window">Cumulative window (days) <span class="optional-tag">(AUTO only — blank = no cap)</span></label>
+    <input class="input input-plain" type="number" id="{{ prefix }}-cumulative-window" name="cumulative_window_days" min="1" step="1">
+    <div class="field-error" id="{{ prefix }}-cumulative-window-error" role="alert"></div>
+  </div>
+
+  <div class="field">
+    <label class="form-label" for="{{ prefix }}-cumulative-cap">Cumulative cap (৳) <span class="optional-tag">(AUTO only — blank = no cap)</span></label>
+    <input class="input input-plain" type="number" id="{{ prefix }}-cumulative-cap" name="cumulative_value_cap" min="0" step="0.01">
+    <div class="field-error" id="{{ prefix }}-cumulative-cap-error" role="alert"></div>
+    <p class="text-slate text-xs" style="margin-top:0.3rem;">Closes the salami-slicing hole: once a product's trailing-window AUTO-posted total would exceed this, resolution continues to the next rule instead.</p>
+  </div>
+
+</div>

@@ -24,6 +24,7 @@
     "adjustment-product": "Product",
     "adjustment-type": "Adjustment type",
     "adjustment-quantity": "Quantity",
+    "adjustment-reason-code": "Reason category",
     "adjustment-reason": "Reason"
   };
 
@@ -31,6 +32,7 @@
     "adjustment-product",
     "adjustment-type",
     "adjustment-quantity",
+    "adjustment-reason-code",
     "adjustment-reason"
   ];
 
@@ -40,6 +42,7 @@
     product: "adjustment-product",
     adjustment_type: "adjustment-type",
     quantity: "adjustment-quantity",
+    reason_code: "adjustment-reason-code",
     reason: "adjustment-reason"
   };
 

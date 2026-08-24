@@ -25,10 +25,12 @@ from django.db import transaction
 from django.utils import timezone
 
 from frontend import audit
+from frontend.approvals import can_approve, resolve_adjustment_with_cumulative_cap, resolve_for_transaction
 from frontend.classification import classify_product
 from frontend.models import (
     AdjustmentStatus,
     AdjustmentType,
+    ApprovalOutcome,
     InventoryMovement,
     InventoryRecord,
     InventoryStatus,
@@ -41,12 +43,39 @@ from frontend.models import (
     SaleTransaction,
     SystemSettings,
 )
-from frontend.notifications import notify_supervisors, notify_user
+from frontend.notifications import notify_admins, notify_supervisors, notify_user
 from frontend.pricing import calculate_line_total
 
 
 class InsufficientStockError(Exception):
     pass
+
+
+class ApprovalAuthorityError(Exception):
+    """Phase 12 — raised by PurchaseService.approve()/AdjustmentService.
+    approve()/SaleService.cancel_sale() when frontend.approvals.
+    can_approve() denies the acting user. Raised in the service layer,
+    not only checked in the view (§6): the service layer is the boundary
+    that must hold regardless of caller.
+
+    Phase 12.1 §7 / BUG-57 close-out — also raised by a plain
+    supervisor-or-admin role check (not routed through the
+    ApprovalPolicy engine; reject/cancel were never in Phase 12's
+    ApprovalTxType scope) in SaleService.approve_sale(), PurchaseService.
+    reject()/cancel(), SaleService.reject_sale(), and AdjustmentService.
+    reject() — every service method that mutates a purchase/sale/
+    adjustment's status and was previously gated only by the matching
+    view's SupervisorRequiredMixin."""
+    pass
+
+
+def _notify_pending_audience(required_level, *args, **kwargs):
+    """§6: a transaction that resolves to ADMIN notifies admins, not
+    supervisors (a supervisor can't act on it, so notifying them is
+    noise); SUPERVISOR keeps the existing notify_supervisors() behaviour
+    (which already includes admins)."""
+    notify_fn = notify_admins if required_level == ApprovalOutcome.ADMIN else notify_supervisors
+    return notify_fn(*args, **kwargs)
 
 
 class InventoryService:
@@ -225,7 +254,12 @@ class PurchaseService:
             raise ValueError("Only draft POs can be submitted.")
         po.status = POStatus.PENDING
         po.save(update_fields=['status', 'updated_at'])
-        notify_supervisors(
+        # Phase 12 — notify the audience actually empowered to act on
+        # this PO (§6): resolved against total_cost, same policy the
+        # approve() call below will re-check.
+        _, required_level, _ = resolve_for_transaction(po)
+        _notify_pending_audience(
+            required_level,
             NotificationType.PO_PENDING, f'PO {po.po_number} Awaiting Approval',
             f'{submitted_by.full_name} submitted {po.po_number} for approval.',
             link=f'/purchases/{po.pk}/',
@@ -238,6 +272,16 @@ class PurchaseService:
     def approve(cls, po, approved_by):
         if po.status != POStatus.PENDING:
             raise ValueError("Only pending POs can be approved.")
+
+        # Phase 12 — the policy engine's gate, inside the service layer
+        # (§6): this is the boundary that must hold regardless of caller,
+        # not just whatever the view's SupervisorRequiredMixin floor lets
+        # through.
+        policy, required_level, _ = resolve_for_transaction(po)
+        allowed, reason = can_approve(approved_by, po)
+        if not allowed:
+            raise ApprovalAuthorityError(reason)
+
         po.status = POStatus.APPROVED
         po.approved_by = approved_by
         po.approved_at = timezone.now()
@@ -247,7 +291,12 @@ class PurchaseService:
             f'Your purchase order {po.po_number} has been approved.',
             link=f'/purchases/{po.pk}/',
         )
-        audit.log_action(approved_by, audit.PO_APPROVED, 'purchases', affected_id=po.pk, status='success')
+        # policy_id/required_level recorded so we can later prove *why*
+        # this approver was permitted to approve (§6's own instruction).
+        audit.log_action(
+            approved_by, audit.PO_APPROVED, 'purchases', affected_id=po.pk, status='success',
+            details={'policy_id': policy.pk if policy else None, 'required_level': required_level},
+        )
         return po
 
     @classmethod
@@ -255,6 +304,15 @@ class PurchaseService:
     def reject(cls, po, rejected_by, reason):
         if po.status != POStatus.PENDING:
             raise ValueError("Only pending POs can be rejected.")
+
+        # BUG-57 close-out — same plain role check as SaleService.
+        # approve_sale() (not routed through the ApprovalPolicy engine:
+        # rejection was never in Phase 12's ApprovalTxType scope, same as
+        # sale completion), matching what PurchaseRejectView's own
+        # SupervisorRequiredMixin already enforces.
+        if not (rejected_by.is_supervisor or rejected_by.is_admin):
+            raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
+
         po.status = POStatus.REJECTED
         po.rejected_reason = reason
         po.save(update_fields=['status', 'rejected_reason', 'updated_at'])
@@ -329,6 +387,13 @@ class PurchaseService:
         rather than inventing a type (unchanged from Phase 3.4 / BUG-25)."""
         if po.status not in cls._CANCELLABLE_STATUSES:
             raise ValueError(f"Cannot cancel a PO with status '{po.status}'.")
+
+        # BUG-57 close-out — same plain role check as SaleService.
+        # approve_sale(), matching PurchaseCancelView's own
+        # SupervisorRequiredMixin.
+        if not (cancelled_by.is_supervisor or cancelled_by.is_admin):
+            raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
+
         po.status = POStatus.CANCELLED
         po.cancelled_reason = reason
         po.cancelled_by = cancelled_by
@@ -445,9 +510,26 @@ class SaleService:
         wholesale) so a failure never partially deducts stock — this
         whole method is wrapped in one transaction, but the pre-check
         also gives a clean, single, specific error instead of an
-        arbitrary mid-loop one."""
+        arbitrary mid-loop one.
+
+        Phase 12.1 §7 — a minimal role check, not routed through the
+        ApprovalPolicy engine (plain sale completion was never in
+        Phase 12's ApprovalTxType scope — only PURCHASE_ORDER/ADJUSTMENT/
+        SALE_CANCEL are). Found during this phase's sweep as the
+        clearest, highest-stakes of several service methods that mutated
+        state with zero service-layer authorization, relying entirely on
+        SaleApproveView's SupervisorRequiredMixin — the one place a
+        sale's stock actually moves, previously reachable unauthorised by
+        any direct caller (a management command, a shell, a future API
+        path). Fixed here as a plain role check, matching what the view
+        already enforced; PurchaseService.reject()/cancel(),
+        AdjustmentService.reject(), SaleService.reject_sale() have the
+        same gap and are NOT fixed this phase — listed in
+        docs/project_memory.md §13, not silently left undocumented."""
         if sale.status != SaleStatus.PENDING:
             raise ValueError("Only pending sales can be approved.")
+        if not (approved_by.is_supervisor or approved_by.is_admin):
+            raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
 
         items = list(sale.items.select_related('product').all())
         for item in items:
@@ -520,6 +602,12 @@ class SaleService:
         one is purely informational, same as the precedent it follows."""
         if sale.status != SaleStatus.PENDING:
             raise ValueError("Only pending sales can be rejected.")
+
+        # BUG-57 close-out — same plain role check as approve_sale() just
+        # above, matching SaleRejectView's own SupervisorRequiredMixin.
+        if not (rejected_by.is_supervisor or rejected_by.is_admin):
+            raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
+
         sale.status = SaleStatus.REJECTED
         sale.rejected_reason = reason
         sale.save(update_fields=['status', 'rejected_reason', 'updated_at'])
@@ -544,12 +632,24 @@ class SaleService:
         stored alongside who/when, mirroring rejected_reason's own shape."""
         if sale.status not in cls._CANCELLABLE_STATUSES:
             raise ValueError(f"Cannot cancel a sale with status '{sale.status}'.")
+
+        # Phase 12 — ApprovalTxType.SALE_CANCEL: who may cancel is now
+        # policy-governed too, same gate shape as PurchaseService.approve()/
+        # AdjustmentService.approve() above.
+        policy, required_level, _ = resolve_for_transaction(sale)
+        allowed, denial_reason = can_approve(cancelled_by, sale)
+        if not allowed:
+            raise ApprovalAuthorityError(denial_reason)
+
         sale.status = SaleStatus.CANCELLED
         sale.cancelled_reason = reason
         sale.cancelled_by = cancelled_by
         sale.cancelled_at = timezone.now()
         sale.save(update_fields=['status', 'cancelled_reason', 'cancelled_by', 'cancelled_at', 'updated_at'])
-        audit.log_action(cancelled_by, audit.SALE_CANCELLED, 'sales', affected_id=sale.pk, status='success')
+        audit.log_action(
+            cancelled_by, audit.SALE_CANCELLED, 'sales', affected_id=sale.pk, status='success',
+            details={'policy_id': policy.pk if policy else None, 'required_level': required_level},
+        )
 
         # Phase 10 — reclassify here too, per instruction. Functionally a
         # no-op today: cancel_sale() only ever runs on DRAFT/PENDING sales
@@ -574,14 +674,112 @@ class AdjustmentService:
     Mirrors PurchaseService's approve/reject pattern per this task's own
     instruction. Unlike PurchaseOrder, InventoryAdjustment has no draft
     state (SCHEMA.md defaults status to PENDING on creation) — so there's
-    no submit_for_approval equivalent, only approve/reject applied
-    directly to an already-pending row."""
+    no submit_for_approval equivalent; create() below resolves the policy
+    once at request time (AUTO posts immediately, SUPERVISOR/ADMIN save
+    as PENDING), approve()/reject() apply to an already-pending row."""
+
+    @classmethod
+    @transaction.atomic
+    def create(cls, adjustment, requested_by):
+        """Phase 12 — adjustment: an unsaved InventoryAdjustment (product/
+        adjustment_type/quantity/reason_code/reason already set by the
+        caller's form; requested_by not yet). Resolves the applicable
+        policy BEFORE ever saving a PENDING row:
+
+        AUTO -> saved directly as APPROVED, stock posted immediately via
+        InventoryService, attributed to the creator, ONE audit entry
+        (ADJUSTMENT_AUTO_POSTED) naming the policy that authorised it —
+        never a PENDING row immediately followed by a second, fake
+        "approved" call (§6's own instruction: two log entries mimicking
+        a human review nobody actually did would pollute the approval
+        history).
+        SUPERVISOR/ADMIN -> saved as PENDING; the audience actually
+        empowered to act on it is notified (§6) — supervisors, or admins
+        only when the resolved policy requires ADMIN.
+
+        Phase 12.1 §4 — resolution goes through
+        resolve_adjustment_with_cumulative_cap(), not the plain
+        resolve_for_transaction(): an AUTO match can be deflected if it
+        would push this product's trailing-window AUTO-posted total over
+        its policy's cumulative_value_cap, in which case resolution
+        continues from the next-priority policy and a
+        ADJUSTMENT_AUTO_DEFLECTED audit entry records both figures —
+        "the trail that makes the control provable.\""""
+        adjustment.requested_by = requested_by
+        policy, required_level, deflected_from, cumulative_total = resolve_adjustment_with_cumulative_cap(adjustment)
+        adjustment.resolved_policy = policy
+
+        if required_level == ApprovalOutcome.AUTO:
+            adjustment.status = AdjustmentStatus.APPROVED
+            adjustment.approved_by = requested_by
+            adjustment.approved_at = timezone.now()
+            adjustment.was_auto_posted = True
+            adjustment.save()
+
+            movement_kwargs = dict(
+                product=adjustment.product,
+                quantity=adjustment.quantity,
+                movement_type=MovementType.ADJUSTMENT,
+                reference_type='InventoryAdjustment',
+                reference_id=adjustment.pk,
+                performed_by=requested_by,
+                notes=f'Auto-approved adjustment ({policy.name}): {adjustment.reason}',
+            )
+            if adjustment.adjustment_type == AdjustmentType.INCREASE:
+                InventoryService.increase_stock(**movement_kwargs)
+            else:
+                InventoryService.decrease_stock(**movement_kwargs)
+
+            audit.log_action(
+                requested_by, audit.ADJUSTMENT_AUTO_POSTED, 'adjustments', affected_id=adjustment.pk,
+                status='success', details={
+                    'quantity': adjustment.quantity, 'type': adjustment.adjustment_type,
+                    'policy_id': policy.pk, 'policy_name': policy.name,
+                },
+            )
+            return adjustment
+
+        adjustment.status = AdjustmentStatus.PENDING
+        adjustment.save()
+        audit.log_action(
+            requested_by, audit.ADJUSTMENT_REQUESTED, 'adjustments',
+            affected_id=adjustment.pk, status='success',
+        )
+        if deflected_from is not None:
+            audit.log_action(
+                requested_by, audit.ADJUSTMENT_AUTO_DEFLECTED, 'adjustments', affected_id=adjustment.pk,
+                status='success', details={
+                    'deflected_from_policy_id': deflected_from.pk,
+                    'deflected_from_policy_name': deflected_from.name,
+                    'cumulative_window_days': deflected_from.cumulative_window_days,
+                    'cumulative_cap': str(deflected_from.cumulative_value_cap),
+                    'existing_cumulative_total': str(cumulative_total),
+                    'this_adjustment_value': str(Decimal(adjustment.quantity) * adjustment.product.purchase_price),
+                    'new_policy_id': policy.pk if policy else None,
+                    'new_required_level': required_level,
+                },
+            )
+        _notify_pending_audience(
+            required_level,
+            NotificationType.ADJ_PENDING, f'Adjustment Pending Approval: {adjustment.product.name}',
+            f'{requested_by.full_name} requested a '
+            f'{adjustment.get_adjustment_type_display().lower()} adjustment for '
+            f'{adjustment.product.name}.',
+            link='/adjustments/',
+        )
+        return adjustment
 
     @classmethod
     @transaction.atomic
     def approve(cls, adjustment, approved_by):
         if adjustment.status != AdjustmentStatus.PENDING:
             raise ValueError("Only pending adjustments can be approved.")
+
+        # Phase 12 — same service-layer gate as PurchaseService.approve().
+        policy, required_level, _ = resolve_for_transaction(adjustment)
+        allowed, reason = can_approve(approved_by, adjustment)
+        if not allowed:
+            raise ApprovalAuthorityError(reason)
 
         movement_kwargs = dict(
             product=adjustment.product,
@@ -608,10 +806,14 @@ class AdjustmentService:
             f'{adjustment.product.name} has been approved.',
             link=f'/adjustments/{adjustment.pk}/',
         )
-        # 13_AUDIT.md's own usage example shows exactly this call shape.
+        # 13_AUDIT.md's own usage example shows exactly this call shape,
+        # extended with policy_id/required_level (§6) alongside it.
         audit.log_action(
             approved_by, audit.ADJUSTMENT_APPROVED, 'adjustments', affected_id=adjustment.pk,
-            status='success', details={'quantity': adjustment.quantity, 'type': adjustment.adjustment_type},
+            status='success', details={
+                'quantity': adjustment.quantity, 'type': adjustment.adjustment_type,
+                'policy_id': policy.pk if policy else None, 'required_level': required_level,
+            },
         )
         return adjustment
 
@@ -620,6 +822,13 @@ class AdjustmentService:
     def reject(cls, adjustment, rejected_by, reason):
         if adjustment.status != AdjustmentStatus.PENDING:
             raise ValueError("Only pending adjustments can be rejected.")
+
+        # BUG-57 close-out — same plain role check as SaleService.
+        # approve_sale(), matching AdjustmentRejectView's own
+        # SupervisorRequiredMixin.
+        if not (rejected_by.is_supervisor or rejected_by.is_admin):
+            raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
+
         adjustment.status = AdjustmentStatus.REJECTED
         adjustment.rejected_reason = reason
         adjustment.save(update_fields=['status', 'rejected_reason', 'updated_at'])

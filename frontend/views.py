@@ -49,6 +49,7 @@ from frontend import audit
 from frontend import reports as report_lib
 from frontend.forms import (
     AdjustmentForm,
+    ApprovalPolicyForm,
     CategoryForm,
     ProductForm,
     PurchaseOrderForm,
@@ -60,10 +61,15 @@ from frontend.forms import (
     parse_line_items,
 )
 from frontend.mixins import AdminRequiredMixin, AnyStaffMixin, SupervisorRequiredMixin
+from frontend.approvals import abc_staleness_info, can_approve, resolve_for_transaction
 from frontend.classification import run_full_classification
 from frontend.forecasting import backfill_actual_demand, run_full_forecast
 from frontend.models import (
+    AdjustmentReason,
     AdjustmentStatus,
+    ApprovalOutcome,
+    ApprovalPolicy,
+    ApprovalTxType,
     AuditLog,
     Category,
     DemandForecast,
@@ -99,6 +105,7 @@ from frontend.notifications import (
 from frontend.validators import generate_strong_password, validate_product_image
 from frontend.services import (
     AdjustmentService,
+    ApprovalAuthorityError,
     InsufficientStockError,
     InventoryService,
     PurchaseService,
@@ -206,9 +213,10 @@ def profile_view(request):
             # — any file of any type/size would silently become the user's
             # avatar. Reuses validate_product_image() unchanged: its check
             # (extension + size) is generic image validation with nothing
-            # product-specific in it, already reused as-is for
-            # SystemSettings.company_logo (frontend/forms.py) — same
-            # precedent, not a new mechanism.
+            # product-specific in it. Phase 13's SystemSettings.company_logo
+            # gets its own validate_company_logo() instead (SVG support, a
+            # profile photo doesn't need) — same precedent, different
+            # validator once the two fields' real requirements diverged.
             try:
                 validate_product_image(image)
             except ValidationError as exc:
@@ -1106,6 +1114,16 @@ class PurchaseListCreateView(AnyStaffMixin, View):
             # hiding the button here is UX only, cancel() itself is the
             # real enforcement (Phase 8.5 pattern).
             po.cancellable = po.status in (POStatus.DRAFT, POStatus.PENDING)
+            # Phase 12 — §8b: shown-but-disabled-with-reason, not hidden,
+            # when the current user can't act on this specific PO's
+            # resolved policy (SupervisorRequiredMixin is only the floor).
+            if po.status == POStatus.PENDING:
+                _, po.required_level, _ = resolve_for_transaction(po)
+                po.can_approve, po.approve_denied_reason = can_approve(request.user, po)
+            else:
+                po.required_level = ""
+                po.can_approve = False
+                po.approve_denied_reason = ""
             po.receive_items_json = json.dumps([
                 {
                     "item_id": item.pk, "product_name": item.product.name,
@@ -1190,7 +1208,10 @@ class PurchaseSubmitView(AnyStaffMixin, View):
 
 
 class PurchaseApproveView(SupervisorRequiredMixin, View):
-    """05_PURCHASES.md: "Who approves | Supervisor or Admin only"."""
+    """05_PURCHASES.md: "Who approves | Supervisor or Admin only" — that's
+    still the floor (SupervisorRequiredMixin). Phase 12's ApprovalPolicy
+    engine, enforced inside PurchaseService.approve() itself, can narrow
+    it further to Admin-only for a specific PO's own resolved value."""
 
     def post(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
@@ -1198,6 +1219,8 @@ class PurchaseApproveView(SupervisorRequiredMixin, View):
             PurchaseService.approve(po, request.user)
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1212,6 +1235,8 @@ class PurchaseRejectView(SupervisorRequiredMixin, View):
             PurchaseService.reject(po, request.user, form.cleaned_data["reason"])
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1264,6 +1289,8 @@ class PurchaseCancelView(SupervisorRequiredMixin, View):
             PurchaseService.cancel(po, request.user, form.cleaned_data["reason"])
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1312,6 +1339,15 @@ class SaleListCreateView(AnyStaffMixin, View):
             sale.is_cancelled = sale.status == SaleStatus.CANCELLED
             sale.status_badge = self._STATUS_BADGE.get(sale.status, "badge-indigo")
             sale.cancellable = sale.status in (SaleStatus.DRAFT, SaleStatus.PENDING)
+            # Phase 12 — §8b: same shown-but-disabled-with-reason pattern
+            # as Purchases/Adjustments, for ApprovalTxType.SALE_CANCEL.
+            if sale.cancellable:
+                _, sale.required_level, _ = resolve_for_transaction(sale)
+                sale.can_cancel, sale.cancel_denied_reason = can_approve(request.user, sale)
+            else:
+                sale.required_level = ""
+                sale.can_cancel = False
+                sale.cancel_denied_reason = ""
             if sale.status == SaleStatus.PENDING:
                 counts["pending"] += 1
             if sale.transaction_date == today:
@@ -1401,6 +1437,8 @@ class SaleApproveView(SupervisorRequiredMixin, View):
             return JsonResponse({"success": False, "error": str(e)}, status=400)
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1416,6 +1454,8 @@ class SaleRejectView(SupervisorRequiredMixin, View):
             SaleService.reject_sale(sale, request.user, form.cleaned_data["reason"])
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1435,6 +1475,8 @@ class SaleCancelView(SupervisorRequiredMixin, View):
             SaleService.cancel_sale(sale, request.user, form.cleaned_data["reason"])
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1629,6 +1671,17 @@ class AdjustmentListCreateView(AnyStaffMixin, View):
         cutoff = now - timedelta(days=30)
         for adjustment in adjustments:
             adjustment.status_badge = self._STATUS_BADGE.get(adjustment.status, "badge-indigo")
+            # Phase 12 — §8b: the approve control is shown-but-disabled
+            # with a reason when the current user isn't the one who can
+            # act on it, never hidden. Only meaningful for PENDING rows —
+            # everything else has no approve action to gate at all.
+            if adjustment.status == AdjustmentStatus.PENDING:
+                _, adjustment.required_level, _ = resolve_for_transaction(adjustment)
+                adjustment.can_approve, adjustment.approve_denied_reason = can_approve(request.user, adjustment)
+            else:
+                adjustment.required_level = ""
+                adjustment.can_approve = False
+                adjustment.approve_denied_reason = ""
             if adjustment.status == AdjustmentStatus.PENDING:
                 counts["pending"] += 1
             if adjustment.created_at.year == now.year and adjustment.created_at.month == now.month:
@@ -1644,6 +1697,7 @@ class AdjustmentListCreateView(AnyStaffMixin, View):
             "counts": counts,
             # Not filtered to is_active — see AdjustmentForm's docstring.
             "products": Product.objects.order_by("name"),
+            "reason_codes": AdjustmentReason.choices,
         }
         return render(request, "adjustments/adjustments.html", context)
 
@@ -1652,26 +1706,27 @@ class AdjustmentListCreateView(AnyStaffMixin, View):
         if not form.is_valid():
             return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
 
+        # Phase 12 — AdjustmentService.create() now owns the whole
+        # request-time decision (AUTO posts immediately, SUPERVISOR/ADMIN
+        # saves PENDING and notifies the right audience) — moved out of
+        # this view so the service layer is the boundary that must hold
+        # regardless of caller, matching approve()'s own gate.
         adjustment = form.save(commit=False)
-        adjustment.requested_by = request.user
-        adjustment.save()
-        audit.log_action(
-            request.user, audit.ADJUSTMENT_REQUESTED, "adjustments",
-            affected_id=adjustment.pk, status="success", request=request,
-        )
-        # Mirrors PurchaseService.submit_for_approval()'s notify_supervisors()
-        # call — same "a request now needs a supervisor's attention" shape.
-        notify_supervisors(
-            NotificationType.ADJ_PENDING, f"Adjustment Pending Approval: {adjustment.product.name}",
-            f"{request.user.full_name} requested a "
-            f"{adjustment.get_adjustment_type_display().lower()} adjustment for "
-            f"{adjustment.product.name}.",
-            link="/adjustments/",
-        )
+        try:
+            AdjustmentService.create(adjustment, request.user)
+        except InsufficientStockError as e:
+            # Only reachable for an AUTO-outcome DECREASE adjustment
+            # against insufficient stock — a PENDING one never touches
+            # stock at creation time.
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
         return JsonResponse({"success": True})
 
 
 class AdjustmentApproveView(SupervisorRequiredMixin, View):
+    """SupervisorRequiredMixin is the floor (any supervisor/admin may
+    reach this URL) — AdjustmentService.approve()'s own can_approve()
+    call (Phase 12) is the finer-grained gate that can still refuse a
+    genuine supervisor when the resolved policy requires ADMIN."""
 
     def post(self, request, pk):
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
@@ -1679,6 +1734,8 @@ class AdjustmentApproveView(SupervisorRequiredMixin, View):
             AdjustmentService.approve(adjustment, request.user)
         except (ValueError, InsufficientStockError) as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
 
 
@@ -1693,7 +1750,21 @@ class AdjustmentRejectView(SupervisorRequiredMixin, View):
             AdjustmentService.reject(adjustment, request.user, form.cleaned_data["reason"])
         except ValueError as e:
             return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except ApprovalAuthorityError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=403)
         return JsonResponse({"success": True})
+
+
+class AdjustmentPDFView(AnyStaffMixin, View):
+    """Phase 13 — new: no per-adjustment PDF existed before this (only
+    the whole-Adjustments report table did). Same treatment as
+    PurchaseOrderPDFView/SaleTransactionPDFView above: AnyStaffMixin,
+    since this is just another way of viewing a record already visible
+    on the Adjustments list page, not a stricter/looser access level."""
+
+    def get(self, request, pk):
+        adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
+        return report_lib.generate_adjustment_pdf(adjustment)
 
 # Phase 8.99j — closes BUG-43: both views had zero auth requirement at
 # all (reachable by anyone, logged in or not), found in Phase 8.97's
@@ -1894,6 +1965,12 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
         for c in slow_watch:
             c.days_to_dead = max(settings_obj.dead_stock_threshold_days - c.days_since_last_sale, 0)
 
+        # Phase 12.1 §5b — ABC is now an authority input (ApprovalPolicy
+        # row 20), and recompute is manual: silent staleness there is
+        # worse than no ABC at all, so it's surfaced here and on the
+        # Approval Policy screen, not just computed quietly.
+        abc_last_recomputed_at, abc_stale = abc_staleness_info()
+
         context = {
             "active_nav": "slow-moving",
             "classifications": classifications,
@@ -1909,6 +1986,8 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
                 "slow": counts[StockClassification.SLOW],
                 "dead": counts[StockClassification.DEAD],
             },
+            "abc_last_recomputed_at": abc_last_recomputed_at,
+            "abc_stale": abc_stale,
         }
         return render(request, "intelligence/slow_moving.html", context)
 
@@ -1970,9 +2049,15 @@ class ReportsView(SupervisorRequiredMixin, View):
     they're never rendered to the browser)."""
 
     def get(self, request):
-        sales_title, sales_headers, sales_rows = report_lib.build_sales_report(request)
+        # Phase 13 Task 4 — build_sales_report()'s per-transaction rows
+        # are no longer used on this page at all (the panel dropped its
+        # detailed table for an aggregate/chart shape, matching the other
+        # report panels); build_sales_report() itself is untouched and
+        # still backs the Sales Report's CSV export.
         sales_qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED)
         sales_summary = report_lib.sales_report_summary(sales_qs)
+        sales_breakdown = report_lib.sales_status_breakdown(request)
+        sales_chart_data = report_lib.sales_daily_revenue(request)
         low_stock_title, low_stock_headers, low_stock_rows = report_lib.build_low_stock_report(request)
 
         audit.log_action(request.user, audit.REPORT_GENERATED, "reports", status="success",
@@ -1983,9 +2068,9 @@ class ReportsView(SupervisorRequiredMixin, View):
         context = {
             "active_nav": "reports",
             "categories": Category.objects.filter(is_active=True).order_by("name"),
-            "sales_headers": sales_headers,
-            "sales_rows": sales_rows,
             "sales_summary": sales_summary,
+            "sales_breakdown": sales_breakdown,
+            "sales_chart_data": sales_chart_data,
             "low_stock_headers": low_stock_headers,
             "low_stock_rows": low_stock_rows,
         }
@@ -2003,8 +2088,19 @@ class ReportExportView(SupervisorRequiredMixin, View):
             return JsonResponse({"success": False, "error": "Unknown report type."}, status=404)
 
         export_format = request.GET.get("format")
-        title, headers, rows = builder(request)
         filename_base = report_type.replace("-", "_")
+
+        # Phase 13 Task 4 — the Sales Report's PDF is now the same
+        # aggregate/summary shape its on-page panel shows, not
+        # build_sales_report()'s per-transaction rows; CSV is untouched
+        # (still the detailed export), so this only short-circuits the
+        # pdf branch, before build_sales_report() ever runs.
+        if report_type == "sales" and export_format == "pdf":
+            audit.log_action(request.user, audit.REPORT_EXPORTED_PDF, "reports", status="success",
+                              details={"report": report_type}, request=request)
+            return report_lib.generate_sales_summary_pdf(request)
+
+        title, headers, rows = builder(request)
 
         if export_format == "pdf":
             audit.log_action(request.user, audit.REPORT_EXPORTED_PDF, "reports", status="success",
@@ -2385,4 +2481,138 @@ class SettingsView(AdminRequiredMixin, View):
 
         form.save()
         audit.log_action(request.user, audit.SETTINGS_UPDATED, "settings", status="success", request=request)
+        return JsonResponse({"success": True})
+
+
+# ------------------------------------------------- Approval Policy (Phase 12)
+# §8a — admin-only: the admin defines which transactions a supervisor is
+# permitted to approve, and a supervisor must never even reach the page
+# where that boundary is set (§2's own framing) — AdminRequiredMixin
+# throughout, same gate as Settings/Users/Audit Log.
+#
+# Phase 12.2 — simplified back down to "list the policies that exist,
+# let an admin add one": the rule simulator, the unreachable-rule
+# warning, the cumulative-usage panel, and ABC as a display/matching
+# concept are all removed from this screen (ApprovalPolicySimulateView
+# deleted outright). cumulative_window_days/cumulative_value_cap and
+# their enforcement in frontend.approvals are untouched — only the
+# analysis-oriented UI around them is gone; the condition column still
+# shows the cap when one is set.
+
+_POLICY_AUDIT_FIELDS = [
+    "name", "transaction_type", "reason_code", "min_value",
+    "max_value", "max_variance_pct", "required_level",
+    "block_self_approval", "priority", "is_active", "notes",
+]
+
+
+def _policy_snapshot(policy):
+    """Plain-dict before/after snapshot for AuditLog.details — §4's own
+    instruction: "the policy table must be at least as auditable as the
+    transactions it governs." An admin who can silently raise the
+    supervisor ceiling has defeated the entire control."""
+    return {f: (None if getattr(policy, f) is None else str(getattr(policy, f))) for f in _POLICY_AUDIT_FIELDS}
+
+
+class ApprovalPolicyListCreateView(AdminRequiredMixin, View):
+    """GET renders every policy grouped by transaction_type, ordered by
+    priority (matching ApprovalPolicy.Meta.ordering); POST creates one."""
+
+    def get(self, request):
+        policies = list(ApprovalPolicy.objects.order_by("transaction_type", "priority"))
+        by_type = {}
+        for policy in policies:
+            policy.edit_json = json.dumps({
+                "name": policy.name, "transaction_type": policy.transaction_type,
+                "reason_code": policy.reason_code,
+                "min_value": str(policy.min_value),
+                "max_value": str(policy.max_value) if policy.max_value is not None else "",
+                "max_variance_pct": str(policy.max_variance_pct) if policy.max_variance_pct is not None else "",
+                "cumulative_window_days": policy.cumulative_window_days or "",
+                "cumulative_value_cap": str(policy.cumulative_value_cap) if policy.cumulative_value_cap is not None else "",
+                "required_level": policy.required_level,
+                "block_self_approval": policy.block_self_approval,
+                "priority": policy.priority, "notes": policy.notes,
+            })
+            by_type.setdefault(policy.transaction_type, []).append(policy)
+
+        # Template needs an ordered list, not a dict keyed by variable
+        # value (Django templates can't do `dict[var]` lookup without a
+        # custom filter) — one group per ApprovalTxType, including empty
+        # ones, in the enum's own declared order.
+        grouped_policies = [
+            {"value": value, "label": label, "policies": by_type.get(value, [])}
+            for value, label in ApprovalTxType.choices
+        ]
+
+        context = {
+            "active_nav": "settings",
+            "grouped_policies": grouped_policies,
+            "tx_types": ApprovalTxType.choices,
+            "outcomes": ApprovalOutcome.choices,
+            "reason_codes": AdjustmentReason.choices,
+        }
+        return render(request, "settings/approval_policies.html", context)
+
+    def post(self, request):
+        form = ApprovalPolicyForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+        policy = form.save()
+        audit.log_action(
+            request.user, audit.APPROVAL_POLICY_CREATED, "settings", affected_id=policy.pk,
+            status="success", details={"after": _policy_snapshot(policy)}, request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class ApprovalPolicyUpdateView(AdminRequiredMixin, View):
+
+    def post(self, request, pk):
+        policy = get_object_or_404(ApprovalPolicy, pk=pk)
+        before = _policy_snapshot(policy)
+        form = ApprovalPolicyForm(request.POST, instance=policy)
+        if not form.is_valid():
+            return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
+        policy = form.save()
+        audit.log_action(
+            request.user, audit.APPROVAL_POLICY_UPDATED, "settings", affected_id=policy.pk,
+            status="success", details={"before": before, "after": _policy_snapshot(policy)}, request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class ApprovalPolicyDeactivateView(AdminRequiredMixin, View):
+
+    def post(self, request, pk):
+        policy = get_object_or_404(ApprovalPolicy, pk=pk)
+        before = _policy_snapshot(policy)
+        policy.is_active = False
+        policy.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.APPROVAL_POLICY_DEACTIVATED, "settings", affected_id=policy.pk,
+            status="success", details={"before": before, "after": _policy_snapshot(policy)}, request=request,
+        )
+        return JsonResponse({"success": True})
+
+
+class ApprovalPolicyReactivateView(AdminRequiredMixin, View):
+
+    def post(self, request, pk):
+        policy = get_object_or_404(ApprovalPolicy, pk=pk)
+        before = _policy_snapshot(policy)
+        policy.is_active = True
+        conflict = ApprovalPolicy.objects.filter(
+            transaction_type=policy.transaction_type, priority=policy.priority, is_active=True,
+        ).exclude(pk=policy.pk).exists()
+        if conflict:
+            return JsonResponse({
+                "success": False,
+                "error": "Another active policy already uses this priority for this transaction type.",
+            }, status=400)
+        policy.save(update_fields=["is_active", "updated_at"])
+        audit.log_action(
+            request.user, audit.APPROVAL_POLICY_REACTIVATED, "settings", affected_id=policy.pk,
+            status="success", details={"before": before, "after": _policy_snapshot(policy)}, request=request,
+        )
         return JsonResponse({"success": True})

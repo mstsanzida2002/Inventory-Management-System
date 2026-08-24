@@ -111,14 +111,17 @@
               <td>
                 <div class="widget-actions">
                   {% if adjustment.status == 'pending' %}
-                    {# AdjustmentApproveView/AdjustmentRejectView: SupervisorRequiredMixin #}
+                    {# AdjustmentApproveView/AdjustmentRejectView: SupervisorRequiredMixin is the floor; Phase 12's can_approve() narrows further per-adjustment — shown-but-disabled-with-reason, never hidden (§8b). #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
-                      <button class="pill-btn approve adj-approve-btn" type="button" aria-label="Approve adjustment"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
-                      <button class="pill-btn reject adj-reject-btn" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                      {% if adjustment.required_level == 'admin' %}<span class="badge badge-danger" title="Requires administrator approval">Admin</span>{% endif %}
+                      <button class="pill-btn approve adj-approve-btn" type="button" aria-label="Approve adjustment" {% if not adjustment.can_approve %}disabled title="{{ adjustment.approve_denied_reason }}"{% endif %}><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                      <button class="pill-btn reject adj-reject-btn" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-circle-slash"></use></svg></button>
                     {% endif %}
-                  {% else %}
-                    <button class="pill-btn" type="button" aria-label="View adjustment"><svg class="icon icon-sm"><use href="#icon-external"></use></svg></button>
                   {% endif %}
+                  {# Phase 13 — was a decorative "View adjustment" button with no handler at all; now a real download, same pill-btn-as-link pattern purchases.html/sales.html already use for their own PDF exports. #}
+                  <a class="pill-btn" href="{% url 'frontend:adjustment_pdf' adjustment.pk %}" aria-label="Download PDF" title="Download PDF">
+                    <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
+                  </a>
                 </div>
               </td>
             </tr>
@@ -203,6 +206,21 @@
             <label class="form-label" for="adjustment-quantity">Quantity<span class="required-mark">*</span></label>
             <input class="input input-plain" type="number" id="adjustment-quantity" name="quantity" placeholder="0" min="1" step="1">
             <div class="field-error" id="adjustment-quantity-error" role="alert"></div>
+          </div>
+
+          <div class="field field-full">
+            {# Phase 12 — a structured code alongside the free-text reason below, so ApprovalPolicy can route on it (§4). Required: no blank option. #}
+            <label class="form-label" for="adjustment-reason-code">Reason category<span class="required-mark">*</span></label>
+            <div class="select-wrap">
+              <select class="input select" id="adjustment-reason-code" name="reason_code">
+                <option value="" selected disabled>Select a category</option>
+                {% for value, label in reason_codes %}
+                  <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+              <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
+            </div>
+            <div class="field-error" id="adjustment-reason-code-error" role="alert"></div>
           </div>
 
           <div class="field field-full">

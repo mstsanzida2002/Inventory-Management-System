@@ -26,6 +26,25 @@
     </div>
   </div>
 
+  {% comment %}
+    Phase 12.1 §5b — ABC class is now an authority input (ApprovalPolicy
+    row 20 escalates class-A adjustments to Admin), and recompute is
+    manual (no Celery) — silent staleness here is worse than no ABC at
+    all, so it's surfaced directly rather than left implicit.
+  {% endcomment %}
+  {% if abc_stale %}
+    <div class="form-alert form-alert-warning">
+      <svg class="icon icon-sm"><use href="#icon-alert-triangle"></use></svg>
+      {% if abc_last_recomputed_at %}
+        ABC class last recomputed {{ abc_last_recomputed_at|date:"d M Y, H:i" }} &mdash; over 30 days ago. Products' revenue-contribution class may no longer reflect recent sales; an unclassified product resolves as the strictest class (A) for approval routing, never silently downgraded.
+      {% else %}
+        ABC class has never been recomputed. Every product resolves as class A (strictest) for approval routing until "Run classification now" is used.
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="text-slate text-xs" style="margin-top:-0.5rem; margin-bottom: var(--sp-4);">ABC class last recomputed {{ abc_last_recomputed_at|date:"d M Y, H:i" }}.</p>
+  {% endif %}
+
   {# --------------------------------------------------------------- KPIs #}
   <div class="kpi-grid">
 
@@ -123,6 +142,7 @@
                   <th>Last sold</th>
                   <th>Turnover</th>
                   <th>Classification</th>
+                  <th>ABC</th>
                   <th>Recommendation</th>
                 </tr>
               </thead>
@@ -134,6 +154,8 @@
                     <td class="mono">{{ c.last_sold_label }}</td>
                     <td class="mono">{{ c.turnover_rate }}x</td>
                     <td><span class="badge {{ c.badge }}">{{ c.get_classification_display }}</span></td>
+                    {# Phase 12.1 §5b: blank means never computed — resolves as 'A' (strictest) for approval routing, but shown honestly as "Unclassified" here, not as a fabricated "A". #}
+                    <td>{% if c.abc_class %}<span class="badge badge-indigo">{{ c.abc_class }}</span>{% else %}<span class="text-slate text-xs">Unclassified</span>{% endif %}</td>
                     <td class="text-sm">{{ c.recommendation }}</td>
                   </tr>
                 {% endfor %}

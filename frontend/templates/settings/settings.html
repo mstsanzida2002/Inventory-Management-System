@@ -149,26 +149,21 @@
       </div>
     </div>
 
-    {# ---------------------------------------------------- Notifications #}
-    <div class="panel">
-      <div class="panel-header">
-        <h3>Notifications</h3>
-      </div>
-      <div class="panel-body">
-        <div class="flex flex-col gap-3">
-          <label class="checkbox-row">
-            <input type="checkbox" name="email_notifications_enabled" id="settings-email-notifications" {% if settings.email_notifications_enabled %}checked{% endif %}>
-            Enable email notifications
-          </label>
-          <label class="checkbox-row">
-            <input type="checkbox" name="low_stock_email_enabled" id="settings-low-stock-email" {% if settings.low_stock_email_enabled %}checked{% endif %}>
-            Send low-stock alerts by email
-          </label>
-        </div>
-      </div>
-    </div>
-
   </form>
+
+  {# --------------------------------------------- Approval authority (Phase 12) #}
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>Approval authority</h3>
+        <p class="panel-sub">The supervisor approves transactions; this defines which ones a supervisor is permitted to approve, by value and reason — the rest escalate to Admin.</p>
+      </div>
+      <a class="btn btn-secondary" href="{% url 'frontend:approval_policies' %}">
+        <svg class="icon icon-sm"><use href="#icon-shield"></use></svg>
+        Manage approval policies
+      </a>
+    </div>
+  </div>
 
 {% endblock %}
 

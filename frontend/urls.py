@@ -91,6 +91,7 @@ urlpatterns = [
     path("adjustments/", views.AdjustmentListCreateView.as_view(), name="adjustments"),
     path("adjustments/<int:pk>/approve/", views.AdjustmentApproveView.as_view(), name="adjustment_approve"),
     path("adjustments/<int:pk>/reject/", views.AdjustmentRejectView.as_view(), name="adjustment_reject"),
+    path("adjustments/<int:pk>/pdf/", views.AdjustmentPDFView.as_view(), name="adjustment_pdf"),
     path("ai/forecasting/", views.DemandForecastingView.as_view(), name="forecasting"),
     path("ai/slow-moving/", views.SlowMovingDeadStockView.as_view(), name="slow_moving"),
     path("reports/", views.ReportsView.as_view(), name="reports"),
@@ -107,4 +108,8 @@ urlpatterns = [
     path("audit-log/", views.AuditLogListView.as_view(), name="audit_log"),
     path("audit-log/export/", views.AuditLogExportView.as_view(), name="audit_log_export"),
     path("settings/", views.SettingsView.as_view(), name="settings"),
+    path("settings/approval-policies/", views.ApprovalPolicyListCreateView.as_view(), name="approval_policies"),
+    path("settings/approval-policies/<int:pk>/update/", views.ApprovalPolicyUpdateView.as_view(), name="approval_policy_update"),
+    path("settings/approval-policies/<int:pk>/deactivate/", views.ApprovalPolicyDeactivateView.as_view(), name="approval_policy_deactivate"),
+    path("settings/approval-policies/<int:pk>/reactivate/", views.ApprovalPolicyReactivateView.as_view(), name="approval_policy_reactivate"),
 ]

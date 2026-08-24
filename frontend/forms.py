@@ -25,6 +25,7 @@ from django import forms
 from django.utils import timezone
 
 from frontend.models import (
+    ApprovalPolicy,
     Category,
     InventoryAdjustment,
     Product,
@@ -346,7 +347,13 @@ class AdjustmentForm(forms.ModelForm):
 
     class Meta:
         model = InventoryAdjustment
-        fields = ["product", "adjustment_type", "quantity", "reason"]
+        # Phase 12 — reason_code added: a required, machine-matchable
+        # classification of the narrative reason, so ApprovalPolicy can
+        # route on it (§4). No blank choice offered (required=True stays
+        # ModelForm's default for a model field with no blank=True) —
+        # unlike reason (free text), a reason_code always has one of the
+        # real AdjustmentReason values to pick, "Other" included.
+        fields = ["product", "adjustment_type", "quantity", "reason_code", "reason"]
 
     def clean_quantity(self):
         # PositiveIntegerField's own form field allows 0, but an
@@ -387,18 +394,35 @@ class UserForm(forms.ModelForm):
 
 
 class SystemSettingsForm(forms.ModelForm):
-    """settings.html's mock already lists exactly SystemSettings' own
-    fields (its own template comment says so, and checking against
-    SCHEMA.md §13 found no mismatch) — every field below maps 1:1, nothing
-    invented, nothing dropped."""
+    """settings.html's mock originally listed exactly SystemSettings' own
+    fields 1:1 (checked against SCHEMA.md §13, no mismatch found).
+
+    Phase 12.2 — email_notifications_enabled/low_stock_email_enabled
+    removed from this form (and the settings page's own "Notifications"
+    panel): the admin-facing control is gone, deliberately, not the
+    notification system itself. Both model fields are untouched and
+    still exist on SystemSettings — this ModelForm simply no longer
+    binds or saves them, so a settings.html POST can never change either
+    value again. email_notifications_enabled is still read by
+    frontend.notifications._maybe_send_email() (the gate for every
+    system email — low-stock, PO/adjustment/sale pending, etc.) and now
+    stays frozen at whatever value the DB row already holds (default
+    True) — see docs/project_memory.md §13 for the full disclosure,
+    including the one remaining way to change it (Django's own /admin/,
+    where SystemSettings is still registered with every model field
+    editable). low_stock_email_enabled was already dead code before this
+    change — grepped and confirmed nothing in the codebase ever read it
+    (InventoryService._send_low_stock_notification() calls
+    notify_supervisors() unconditionally); removing its UI control has
+    no behavioural effect at all."""
 
     class Meta:
         model = SystemSettings
         fields = [
             "company_name", "company_logo", "company_address", "company_email", "company_phone",
+            "company_tax_number", "company_website",
             "default_reorder_level", "forecast_period_weeks", "forecast_retrain_days",
             "slow_moving_threshold_days", "dead_stock_threshold_days", "session_timeout_seconds",
-            "email_notifications_enabled", "low_stock_email_enabled",
         ]
 
     # PositiveIntegerFields with no blank=True on the model (same shape as
@@ -420,7 +444,12 @@ class SystemSettingsForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         for name in self.fields:
             self.fields[name].required = False
-        self.fields["company_logo"].validators.append(validate_product_image)
+        # Phase 13 — company_logo's own validate_company_logo (SVG-capable,
+        # unlike Product's validate_product_image) is already attached via
+        # the model field's own `validators=` kwarg; ModelForm picks that
+        # up automatically, so no manual append is needed or correct here
+        # (stacking validate_product_image on top would reject every SVG
+        # this field is specifically meant to accept).
 
     def clean(self):
         cleaned = super().clean()
@@ -440,3 +469,67 @@ class ReasonForm(forms.Form):
         "required": "A reason is required.",
         "min_length": "A reason is required.",
     })
+
+
+class ApprovalPolicyForm(forms.ModelForm):
+    """Phase 12 — admin-only (frontend.mixins.AdminRequiredMixin gates
+    every view that uses this). reason_code stays a plain CharField (not
+    a ChoiceField) so a policy can leave it blank ("matches anything") —
+    a required ChoiceField would force every policy to name a specific
+    reason, which would make the catch-all rows in §9's seed table
+    (priority 50: "any value -> Supervisor") impossible to express.
+
+    Phase 12.2 — abc_class removed entirely (field, matching condition,
+    form input): too much complexity for the value it added to approval
+    routing. ABC itself is untouched elsewhere (InventoryClassification,
+    frontend.approvals.recompute_abc_classes()) — this form just no
+    longer has anything to say about it."""
+
+    class Meta:
+        model = ApprovalPolicy
+        fields = [
+            "name", "transaction_type", "reason_code",
+            "min_value", "max_value", "max_variance_pct",
+            "required_level", "block_self_approval", "priority", "notes",
+            "cumulative_window_days", "cumulative_value_cap",
+        ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in (
+            "reason_code", "max_value", "max_variance_pct",
+            "cumulative_window_days", "cumulative_value_cap", "notes",
+        ):
+            self.fields[name].required = False
+
+    def clean_priority(self):
+        value = self.cleaned_data.get("priority")
+        if value is not None and value < 1:
+            raise forms.ValidationError("Priority must be a positive number.")
+        return value
+
+    def clean(self):
+        cleaned = super().clean()
+        min_value = cleaned.get("min_value")
+        max_value = cleaned.get("max_value")
+        if min_value is not None and max_value is not None and max_value < min_value:
+            raise forms.ValidationError("Max value can't be less than min value.")
+        # Phase 12.1 §4 — both set or both blank; one without the other
+        # is a half-configured cap that would silently do nothing
+        # (resolve_adjustment_with_cumulative_cap() requires both fields
+        # set to activate).
+        window = cleaned.get("cumulative_window_days")
+        cap = cleaned.get("cumulative_value_cap")
+        if bool(window) != (cap is not None):
+            self.add_error("cumulative_value_cap", "Set both cumulative window and cap, or leave both blank.")
+        return cleaned
+
+    def clean_reason_code(self):
+        value = self.cleaned_data.get("reason_code") or ""
+        # Phase 12 — only meaningful for ADJUSTMENT policies; not
+        # validated against AdjustmentReason's choices here (a blank
+        # string already means "matches anything" for every transaction
+        # type, and this field is a plain CharField precisely so it
+        # doesn't have to be one of a fixed set — see this form's own
+        # class docstring).
+        return value.strip()

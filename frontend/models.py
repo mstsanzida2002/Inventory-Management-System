@@ -11,6 +11,7 @@ from django.db import models
 from django.utils import timezone
 
 from frontend.pricing import calculate_line_total
+from frontend.validators import validate_company_logo
 
 
 class TimeStampedModel(models.Model):
@@ -484,16 +485,48 @@ class AdjustmentStatus(models.TextChoices):
     REJECTED = 'rejected', 'Rejected'
 
 
+class AdjustmentReason(models.TextChoices):
+    """Phase 12 — a structured code alongside the existing free-text
+    `reason`, since ApprovalPolicy needs something machine-matchable to
+    route on (§4). The free-text field stays required too: this is a
+    classification of the narrative, not a replacement for it."""
+    DAMAGE = 'damage', 'Damaged / Broken'
+    EXPIRY = 'expiry', 'Expired / Obsolete'
+    COUNT_CORRECTION = 'count_correction', 'Physical Count Correction'
+    RECEIVING_ERROR = 'receiving_error', 'Receiving Error Correction'
+    SHRINKAGE_UNKNOWN = 'shrinkage_unknown', 'Unexplained Loss / Shrinkage'
+    OTHER = 'other', 'Other'
+
+
 class InventoryAdjustment(TimeStampedModel):
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     adjustment_type = models.CharField(max_length=10, choices=AdjustmentType.choices)
     quantity = models.PositiveIntegerField()
+    # Phase 12 — required choice field (form-level: no blank option in
+    # AdjustmentForm). default=OTHER exists only so the migration adding
+    # this column to existing rows has somewhere to land — every row
+    # created through the real form always supplies an explicit value;
+    # existing rows were backfilled to OTHER rather than guessed at from
+    # free text (§4's own instruction).
+    reason_code = models.CharField(max_length=20, choices=AdjustmentReason.choices, default=AdjustmentReason.OTHER)
     reason = models.TextField()
     status = models.CharField(max_length=10, choices=AdjustmentStatus.choices, default=AdjustmentStatus.PENDING)
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='adjustments_requested')
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='adjustments_approved', null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     rejected_reason = models.TextField(blank=True)
+    # Phase 12.1 §4/§6 — which policy actually resolved this adjustment,
+    # and whether that resolution was AUTO. Previously only existed
+    # inside AuditLog.details (a JSON blob you'd have to parse back out
+    # to compare against) — found as a real gap by this phase's own
+    # discovery question. SET_NULL, not CASCADE/PROTECT: deactivating or
+    # deleting a policy later must never retroactively corrupt or block
+    # deletion of adjustment history that already happened under it.
+    resolved_policy = models.ForeignKey(
+        'ApprovalPolicy', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='resolved_adjustments',
+    )
+    was_auto_posted = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'inventory_adjustments'
@@ -530,6 +563,25 @@ class StockClassification(models.TextChoices):
     DEAD = 'dead', 'Dead Stock'
 
 
+class ABCClass(models.TextChoices):
+    """Phase 12 — cumulative-revenue-contribution class (80/15/5 split),
+    recomputed by frontend.approvals.recompute_abc_classes(). Lives on
+    this model, not Product or InventoryRecord: this is already the one
+    place a product's *derived, batch-recomputed, sales-history-driven*
+    classification lives (StockClassification/turnover_rate are the same
+    kind of field) — Product is static catalog data, InventoryRecord is
+    live per-movement stock state, neither is where a periodic analytics
+    pass belongs."""
+    A = 'A', 'A — Top revenue contributors'
+    B = 'B', 'B — Mid revenue contributors'
+    C = 'C', 'C — Low / no revenue contribution'
+    # No 'unclassified' member here — deliberately. The model field's own
+    # blank value ('') is that fourth state (Phase 12.1 §5b). Keeping it
+    # out of ABCClass.choices means a genuinely-computed class is always
+    # one of these three named values; blank can only ever mean "never
+    # computed."
+
+
 class InventoryClassification(TimeStampedModel):
     product = models.OneToOneField(Product, on_delete=models.CASCADE, related_name='classification')
     classification = models.CharField(max_length=10, choices=StockClassification.choices)
@@ -538,6 +590,20 @@ class InventoryClassification(TimeStampedModel):
     days_since_last_sale = models.PositiveIntegerField(default=0)
     recommendation = models.TextField(blank=True)
     classified_at = models.DateTimeField(auto_now=True)
+    # Phase 12's own default was 'C' (never blank) — corrected in Phase
+    # 12.1 §5b, at the time because ABC was briefly an *approval-routing*
+    # input (ApprovalPolicy row 20) and defaulting to 'C' let a
+    # newly-stocked high-value product sit unescalated indefinitely.
+    # Phase 12.2 removed ABC from approval routing entirely (too much
+    # complexity for the value it added there — see frontend/approvals.py's
+    # module docstring), but the blank default stays: "never computed" is
+    # still a more honest state than a fabricated 'C' for analytics
+    # purposes too — an analyst asking "is this product low-value" should
+    # get "unknown" rather than a guess dressed up as a real answer.
+    # Not touched by classify_product()'s update_or_create() (its
+    # `defaults` dict deliberately omits this field) — recomputed only by
+    # recompute_abc_classes(), a separate pass on a separate cadence.
+    abc_class = models.CharField(max_length=1, choices=ABCClass.choices, blank=True, default='')
 
     class Meta:
         db_table = 'inventory_classifications'
@@ -618,10 +684,21 @@ class AuditLog(models.Model):
 class SystemSettings(TimeStampedModel):
     """Singleton — only one row should ever exist."""
     company_name = models.CharField(max_length=200, default='My Company')
-    company_logo = models.ImageField(upload_to='company/', blank=True, null=True)
+    # Phase 13 — FileField, not ImageField: a FileField skips Django's
+    # Pillow-based "is this really an image" check, which is required to
+    # accept SVG logos (Pillow cannot open SVG at all). validate_company_logo
+    # (frontend/validators.py) does the type/size checking an ImageField
+    # would otherwise have done for free, PNG/JPG included.
+    company_logo = models.FileField(upload_to='company/', blank=True, null=True, validators=[validate_company_logo])
     company_address = models.TextField(blank=True)
     company_email = models.EmailField(blank=True)
     company_phone = models.CharField(max_length=20, blank=True)
+    # Phase 13 — a document header needs these too; both optional, no
+    # migration data to backfill (every existing row's value is simply
+    # blank, same as company_address/email/phone already were before
+    # anyone filled them in).
+    company_tax_number = models.CharField(max_length=50, blank=True, verbose_name='Tax / BIN number')
+    company_website = models.URLField(blank=True)
     # Inventory thresholds
     default_reorder_level = models.PositiveIntegerField(default=10)
     # AI settings
@@ -629,6 +706,17 @@ class SystemSettings(TimeStampedModel):
     forecast_retrain_days = models.PositiveIntegerField(default=7)
     slow_moving_threshold_days = models.PositiveIntegerField(default=60)
     dead_stock_threshold_days = models.PositiveIntegerField(default=180)
+    # Phase 12.1 §5b — a single global timestamp for the whole
+    # recompute_abc_classes() pass (it processes every product in one
+    # run, so one timestamp is accurate, not an approximation), since
+    # InventoryClassification.abc_class is updated via a bulk
+    # queryset .update() call that bypasses TimeStampedModel's own
+    # auto_now updated_at entirely — .update() never calls save(), so
+    # updated_at would silently never reflect an ABC recompute at all.
+    # ABC is now an authority input (policy row 20), so silent staleness
+    # here is worse than no ABC — surfaced on the policy screen and the
+    # classification page, warned past ~30 days.
+    abc_last_recomputed_at = models.DateTimeField(null=True, blank=True)
     # Session
     session_timeout_seconds = models.PositiveIntegerField(default=3600)
     # Notifications
@@ -654,3 +742,115 @@ class SystemSettings(TimeStampedModel):
     def get_settings(cls):
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+    @classmethod
+    def get_company_profile(cls):
+        """Phase 13 — the single accessor every PDF (and anything else
+        that needs the company's own identity) reads through, instead of
+        each caller reaching into SystemSettings' fields directly. Every
+        value is a plain string (never None), so a caller never has to
+        special-case a blank field — an empty string is exactly as easy
+        to skip in a template/PDF as a real one is to print.
+        `logo_path`/`logo_is_svg` are derived here once rather than
+        making every PDF builder re-check the extension itself."""
+        obj = cls.get_settings()
+        logo_path = ''
+        logo_is_svg = False
+        if obj.company_logo:
+            try:
+                logo_path = obj.company_logo.path
+                logo_is_svg = logo_path.lower().endswith('.svg')
+            except (ValueError, NotImplementedError):
+                # No file actually on disk for this storage backend, or a
+                # storage backend with no local path concept — same as
+                # having no logo at all, not an error.
+                logo_path = ''
+        return {
+            'name': obj.company_name or '',
+            'logo_path': logo_path,
+            'logo_is_svg': logo_is_svg,
+            'logo_url': obj.company_logo.url if obj.company_logo else '',
+            'address': obj.company_address or '',
+            'email': obj.company_email or '',
+            'phone': obj.company_phone or '',
+            'tax_number': obj.company_tax_number or '',
+            'website': obj.company_website or '',
+        }
+
+
+# --------------------------------------------------- 14. Approval Policy
+# Phase 12 — generalises the old, view-level "is this user a supervisor?"
+# static role check into a policy engine: the admin defines which
+# transactions a supervisor may approve, per transaction type/value/
+# reason/ABC class, not just per role. See frontend/approvals.py for the
+# resolver (resolve_required_level()/can_approve()) and
+# docs/project_memory.md §13 for the full disclosure — including the
+# finding that there was no pre-existing purchase-order approval ceiling
+# anywhere in this codebase to migrate from, despite this phase's own
+# brief assuming one.
+
+class ApprovalTxType(models.TextChoices):
+    PURCHASE_ORDER = 'purchase_order', 'Purchase Order'
+    ADJUSTMENT = 'adjustment', 'Inventory Adjustment'
+    SALE_CANCEL = 'sale_cancel', 'Sale Cancellation'
+
+
+class ApprovalOutcome(models.TextChoices):
+    AUTO = 'auto', 'Auto-approve (no human approval)'
+    SUPERVISOR = 'supervisor', 'Supervisor or Admin'
+    ADMIN = 'admin', 'Admin only'
+
+
+class ApprovalPolicy(TimeStampedModel):
+    """Admin-authored rule. Resolves WHO is competent to approve a given
+    transaction. Lower `priority` wins within a transaction_type; first
+    active match short-circuits (frontend.approvals.resolve_required_level()).
+    No match -> caller fails closed to ADMIN, never to SUPERVISOR/AUTO."""
+    name = models.CharField(max_length=120)
+    transaction_type = models.CharField(max_length=30, choices=ApprovalTxType.choices)
+
+    # --- matching conditions. Blank/null means "matches anything." ---
+    # Phase 12.2 — abc_class was here (matched ApprovalPolicy against
+    # InventoryClassification.abc_class) and is removed: too much
+    # complexity for the value it added as an approval-routing input.
+    # ABC itself is untouched and still lives on InventoryClassification
+    # for inventory analysis/dead-stock work — see that model and
+    # frontend.approvals.recompute_abc_classes().
+    reason_code = models.CharField(max_length=40, blank=True)
+    min_value = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    max_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    max_variance_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
+    # --- outcome ---
+    required_level = models.CharField(max_length=20, choices=ApprovalOutcome.choices)
+    block_self_approval = models.BooleanField(default=True)
+
+    # Phase 12.1 §4 — closes the salami-slicing hole in the AUTO path:
+    # without this, N consecutive just-under-threshold adjustments on the
+    # same product move an unbounded amount of stock with zero human
+    # approval events, each individually indistinguishable from
+    # measurement noise. Both null (the default) -> no cap, current
+    # behaviour unchanged. Only meaningful for a required_level=AUTO
+    # policy — frontend.approvals only ever consults these for
+    # InventoryAdjustment resolution (see resolve_adjustment_with_
+    # cumulative_cap()); harmless if set on a non-AUTO/non-adjustment row.
+    cumulative_window_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    cumulative_value_cap = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+
+    priority = models.PositiveSmallIntegerField(db_index=True)
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'approval_policies'
+        ordering = ['transaction_type', 'priority']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['transaction_type', 'priority'],
+                condition=models.Q(is_active=True),
+                name='uniq_active_policy_priority_per_type',
+            ),
+        ]
+
+    def __str__(self):
+        return f"[{self.transaction_type}#{self.priority}] {self.name} -> {self.required_level}"

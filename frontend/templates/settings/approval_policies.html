@@ -1,0 +1,158 @@
+{% extends 'dashboard_base.html' %}
+{% load static %}
+
+{% block browser_title %}Approval Policies{% endblock %}
+{% block page_eyebrow %}Administration{% endblock %}
+{% block page_title %}Approval Policies{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+    Phase 12 — Approval Authority Matrix. "The supervisor approves
+    transactions. The admin defines which transactions the supervisor is
+    permitted to approve." Admin-only (AdminRequiredMixin) — a supervisor
+    never reaches this page at all, let alone this URL.
+
+    Phase 12.2 — simplified back down to one job: list the policies that
+    exist, and let an admin add one. The rule simulator, the
+    unreachable-rule warning, the cumulative-usage panel, and ABC as a
+    display/matching concept are all gone from this page — see
+    docs/project_memory.md §13. Editing/activating/deactivating stay.
+  {% endcomment %}
+
+  <div class="page-heading-row">
+    <div>
+      <h2 style="margin-bottom:0.2rem;">Approval policies</h2>
+      <p class="text-slate">Rules resolve in priority order (lowest first); the first active match decides who may approve. No match escalates to Admin — never to Supervisor, never to Auto.</p>
+    </div>
+    <div class="flex gap-3 page-heading-actions">
+      <a class="btn btn-secondary" href="{% url 'frontend:settings' %}">
+        <svg class="icon icon-sm"><use href="#icon-chevron-left"></use></svg>
+        Back to settings
+      </a>
+      <button class="btn btn-primary" type="button" data-modal-open="addPolicyModal">
+        <svg class="icon icon-sm"><use href="#icon-plus"></use></svg>
+        Add policy
+      </button>
+    </div>
+  </div>
+
+  {# ------------------------------------------------------ Policy groups #}
+  {% for group in grouped_policies %}
+    <div class="panel" style="margin-bottom: var(--sp-6);" data-tx-group="{{ group.value }}">
+      <div class="panel-header">
+        <h3>{{ group.label }}</h3>
+      </div>
+      <div class="panel-body no-top-pad">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Priority</th>
+                <th>Name</th>
+                <th>Condition</th>
+                <th>Outcome</th>
+                <th>Self-approval</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for policy in group.policies %}
+                <tr data-policy-id="{{ policy.pk }}" data-policy="{{ policy.edit_json }}">
+                  <td class="mono">{{ policy.priority }}</td>
+                  <td>{{ policy.name }}</td>
+                  <td class="text-sm text-slate">
+                    {% if policy.reason_code %}{{ policy.reason_code }} &middot; {% endif %}
+                    {% if policy.max_value %}৳{{ policy.min_value|floatformat:0 }}&ndash;{{ policy.max_value|floatformat:0 }}{% else %}৳{{ policy.min_value|floatformat:0 }}+{% endif %}
+                    {% if policy.max_variance_pct %} &middot; variance {{ policy.max_variance_pct }}%{% endif %}
+                    {% if policy.cumulative_value_cap %} &middot; capped ৳{{ policy.cumulative_value_cap|floatformat:0 }}/{{ policy.cumulative_window_days }}d{% endif %}
+                  </td>
+                  <td>
+                    <span class="badge {% if policy.required_level == 'admin' %}badge-danger{% elif policy.required_level == 'auto' %}badge-success{% else %}badge-indigo{% endif %}">
+                      {{ policy.get_required_level_display }}
+                    </span>
+                  </td>
+                  <td class="text-sm text-slate">{% if policy.block_self_approval %}Blocked{% else %}Allowed{% endif %}</td>
+                  <td><span class="badge {% if policy.is_active %}badge-success{% else %}badge-danger{% endif %}">{% if policy.is_active %}Active{% else %}Inactive{% endif %}</span></td>
+                  <td>
+                    <div class="widget-actions">
+                      <button class="pill-btn policy-edit-btn" type="button" aria-label="Edit policy"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
+                      {% if policy.is_active %}
+                        <button class="pill-btn reject policy-deactivate-btn" type="button" aria-label="Deactivate policy"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+                      {% else %}
+                        <button class="pill-btn policy-reactivate-btn" type="button" aria-label="Reactivate policy"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="7" class="text-slate text-sm">No policies for this transaction type yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+
+  {# -------------------------------------------------- Add policy modal #}
+  <div class="modal-overlay" id="addPolicyModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addPolicyModalTitle">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="addPolicyModalTitle">Add approval policy</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required. Leave a condition blank to match anything.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+      </div>
+      <form class="modal-body" id="addPolicyForm" method="post" action="{% url 'frontend:approval_policies' %}" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="addPolicyFormError" hidden></div>
+        {% include "settings/_approval_policy_fields.html" with prefix="policy" %}
+      </form>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="addPolicyForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save policy
+        </button>
+      </div>
+    </div>
+  </div>
+
+  {# ------------------------------------------------- Edit policy modal #}
+  <div class="modal-overlay" id="editPolicyModal" data-modal aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editPolicyModalTitle">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="editPolicyModalTitle">Edit approval policy</h3>
+          <p class="modal-subtitle">Fields marked <span class="required-mark">*</span> are required.</p>
+        </div>
+        <button type="button" class="pill-btn" data-modal-close aria-label="Close"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
+      </div>
+      <form class="modal-body" id="editPolicyForm" method="post" action="" novalidate>
+        {% csrf_token %}
+        <div class="form-alert form-alert-error" id="editPolicyFormError" hidden></div>
+        {% include "settings/_approval_policy_fields.html" with prefix="edit-policy" %}
+      </form>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="submit" form="editPolicyForm" class="btn btn-primary">
+          <svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg>
+          Save changes
+        </button>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/modal.js' %}"></script>
+  <script src="{% static 'js/form-validation.js' %}"></script>
+  <script src="{% static 'js/dom-utils.js' %}"></script>
+  <script src="{% static 'js/modal-form.js' %}"></script>
+  <script src="{% static 'js/row-actions.js' %}"></script>
+  <script src="{% static 'js/approval-policy-form.js' %}"></script>
+{% endblock %}

@@ -155,6 +155,17 @@ AUTH_USER_MODEL = 'frontend.User'
 # extends it) redirect unauthenticated users to.
 LOGIN_URL = 'frontend:login'
 
+# frontend.views.login()/logout_view() redirect explicitly
+# ("frontend:dashboard"/"frontend:login") and never read these two —
+# Django's own defaults ('/accounts/profile/', None) were simply never
+# overridden, so nothing here was actually broken. Set anyway for
+# correctness: anything that ever falls back to Django's own
+# LoginView/LogoutView redirect behavior (the admin's own login form
+# with no `next`, for one) should land somewhere this project serves,
+# not Django's stock default.
+LOGIN_REDIRECT_URL = 'frontend:dashboard'
+LOGOUT_REDIRECT_URL = 'frontend:login'
+
 # Account lockout (Phase 4) — 01_AUTH.md's business rules table describes
 # these as "configurable," but SCHEMA.md's SystemSettings model has no
 # matching fields; only ENVIRONMENT.md documents them, as env vars. Used

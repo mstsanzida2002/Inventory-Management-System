@@ -1827,7 +1827,8 @@ actual Celery tasks/Beat schedule for either AI feature, and persisting to
 | Product/supplier catalog | `mock-catalog.js` | Purchase, Sale forms | Any future form needing a product or supplier picker |
 | Repeatable line-items editor | `line-items.js` | Purchase, Sale forms | Any future multi-line-item form |
 | Chart color palette | `chart-colors.js` | dashboard.js, forecasting.js, slow-moving.js (loaded globally by `dashboard_base.html`) | Any new Chart.js instance — never hardcode chart colors again |
-| Generic table filter | `table-filter.js` | Forecasting, Slow-Moving pages | Any future filterable/searchable table with an empty state |
+| Generic table filter | `table-filter.js` | Suppliers, Adjustments, Users, Reports' low-stock panel (client-side, bounded/non-transactional tables — see the Pagination Overhaul entry below; NOT Forecasting/Slow-Moving anymore, moved server-side in that pass) | Any small, bounded table that will never need real pagination |
+| Shared pagination partial | `includes/pagination.html` | Products, Purchases, Sales, Inventory, Audit Log, Slow-Moving, Forecasting, Notifications, Movement History (9 tables — see Pagination Overhaul entry) | Any new server-paginated table's Previous/Next + "Showing X-Y of Z" block |
 | Async loading-state button | `async-run-button.js` | Forecasting, Slow-Moving "Run" buttons | Any future simulated-async action button |
 | SVG icon sprite | `includes/icons.html` | All dashboard-shell pages, login, and now landing (fixed — see §15) | Any new icon — add a `<symbol>` here, don't inline new raw SVGs |
 | Sidebar nav | `includes/sidebar.html` | All 10 dashboard pages | N/A — single shared instance, extend its route table when adding a new page |
@@ -7117,3 +7118,297 @@ the pre-save instance is the obvious source) — closing REQ 17.10 for
 every settings field, not just classifier weights. Explicitly not built
 in this pass — the plan is recorded so it isn't rediscovered from
 scratch when Step 4 starts.
+
+## Phase — BUG-64 Fix, Settings Audit Diff, Forecasting/Classification Doc (2026-08-24)
+
+Closed BUG-64 for real (`ForecastSummaryAPIView` now reads
+`frontend.forecasting.latest_forecast_batch()` instead of aggregating
+every `DemandForecast` row ever created), built the
+`AI_CLASSIFIER_WEIGHTS_CHANGED`/`SETTINGS_UPDATED`-diff plan recorded in
+the previous phase entry (BUG-82, `docs/bugsfound.md`), and added a
+verified "Relationship to Demand Forecasting" section to
+`docs/DEAD_STOCK_DETECTION.md`. Full detail in `docs/bugsfound.md`
+BUG-64/BUG-82.
+
+**Numbering collision, caught before it shipped**: the previous phase's
+own six-part audit pass had already used BUG-75 → BUG-81 (recorded in
+that phase's own entry above, easy to miss since this entry's task
+description called for "closing two audit gaps" without naming numbers).
+The new settings-diff bug was drafted as BUG-75 first, then caught by
+scanning `bugsfound.md` for existing `BUG-7[0-9]` rows before finishing
+— renumbered to BUG-82 (next free number) and moved to the end of the
+table to keep ascending order. Worth a standing habit: grep the highest
+existing `BUG-NN` before assigning a new one, don't infer it from
+whatever the task description happens to say the baseline was.
+
+**PART A (BUG-64)**: fixed via the same `latest_forecast_batch()`
+dedup-by-latest-run-per-`(product, period, period_start)` function the
+dashboard widget and `DemandForecastingView` already shared — one
+definition of "current forecast" now backs all three surfaces, not a
+second divergent one in the API. `.create()` and the intentional
+cross-run accumulation (REQ 9.9) untouched. Live-verified on the dev
+server: ran `run_full_forecast()` twice for real (764 total
+`DemandForecast` rows across all runs this session), API reported
+`total_forecasts: 191` (the deduped batch, not 764) and
+`products_forecasted: 40` — confirmed identical across the API, the
+dashboard's `forecast_insights['products_forecasted']`, and the
+forecasting page's own `products_forecasted` via a live Django test
+client against the dev DB (not just the automated test).
+
+**PART B1/B2 (BUG-82)**: built together, not staged — the diff mechanism
+turned out small enough (one snapshot helper, diffed before/after
+`form.save()`) that generalizing straight to a full field-level diff
+for every `SystemSettingsForm` field cost barely more than the
+classifier-only version, so both landed in one pass rather than B1 first
+per the original plan. `SETTINGS_UPDATED` now always carries the diff
+(empty `{}` only when nothing changed); `AI_CLASSIFIER_WEIGHTS_CHANGED`
+fires alongside it, filtered to the ten stagnation-index fields, only
+when at least one of them is part of the diff. One subtlety that would
+have silently broken this: a `ModelForm`'s own `full_clean()` mutates
+`form.instance` (the same `SystemSettings` object) to the new values
+*before* `form.is_valid()` returns, so the "before" snapshot has to be
+taken before the form is even constructed, not after `is_valid()`
+returns `False`/`True`. Also found and closed a real display gap while
+verifying this live: `/audit-log/` never rendered `details` at all, for
+any of the 66 action constants — the new diff payload would have been
+invisible outside a raw DB query. Added a "Details" column
+(`_format_audit_details()`, `frontend/views.py`) rendering
+`field: old → new`, comma-joined. Live-verified: changed
+`weight_recency`/`weight_coverage` via the real Settings page as
+`verify_admin`, confirmed `/audit-log/` showed exactly
+`weight_recency: 0.40 → 0.45; weight_coverage: 0.20 → 0.15` attributed
+to Naomi Whitfield — then reverted the live weights back to the 0.40/
+0.30/0.20/0.10 defaults (this was a verification action, not a real
+settings change worth leaving in the dev DB).
+
+**PART C**: every claim in the new doc section was checked against real
+`frontend.*` line numbers, not carried forward from the task
+description — one claim needed a real check rather than a restatement:
+"forecasting never reads stock levels" was verified by grepping
+`current_stock`/`InventoryRecord` across the whole of
+`frontend/forecasting.py` and confirming both terms appear in exactly
+one place (`run_full_forecast()`'s clamp/notification step,
+lines 449-471), never inside `build_features()`/`train_model()`/
+`predict_demand()`, and never in `FEATURE_COLUMNS`.
+
+**Tests**: 410 -> 416 (net +6: `ForecastSummaryConsistencyTests` — 1,
+runs `run_full_forecast()` twice for real and asserts the API/dashboard/
+forecasting-page counts are identical, not merely plausible;
+`SettingsAuditDiffTests` — 5, covering old/new/actor on a weight change,
+a non-classifier change NOT emitting the classifier event, the
+field-level diff on `SETTINGS_UPDATED`, an identical resubmit producing
+an empty diff rather than a fabricated one, and append-only immutability
+on the new constant's own rows). Full suite: 416/416 passing.
+
+**Multi-line `{# #}` check**: the one touched template
+(`audit/audit_log.html`) uses `{% comment %}/{% endcomment %}`, not
+`{# #}`, for its one existing multi-line note — grepped clean, no risk.
+
+Not committed — reported back for review per instruction.
+
+## Phase — PDF Export Redesign, REQ 17.2 (2026-08-24)
+
+Discovery first: most of the requested "redesign" (live company header/
+logo, shared `frontend/pdf.py` module, page numbers, timestamp, graceful
+no-logo/blank-settings degradation) was already built in Phase 13 and
+already tested (`PDFCompanyBrandingTests`/`PDFDocumentQualityTests`).
+Real scope narrowed to three genuine gaps, plus two real bugs caught
+only by actually opening the generated PDFs — full detail in
+`docs/bugsfound.md` BUG-81/83/84.
+
+**Design tokens, verified not assumed**: the task's own quoted hex
+values (`#5A63D6`/`#9B74AE`/`#E0A254`/`#0F172A`) don't match
+`frontend/static/css/tokens.css`'s real ones (`#3D4FE0`/`#F2A93B`/
+`#10162B`; no violet defined in the built CSS at all) — but
+`frontend/pdf.py`'s own `BRAND_INDIGO`/`BRAND_AMBER`/`INK` already
+matched the *real* tokens exactly. No code change needed; no violet
+fabricated to satisfy a token that isn't part of the actual design
+system.
+
+**Generating user**: `render_document()`/`render_tabular_report()`
+gained an optional `generated_by`, threaded through all 12 real PDF
+views (`request.user.full_name`); `_draw_footer()` renders "Generated
+{datetime} by {name}" when supplied, unchanged otherwise — every
+pre-existing direct-call test (no `generated_by`) still passes.
+
+**REQ 18.7 loading indicator**: new `frontend/static/js/pdf-download.js`
+(loaded globally, same pattern as `row-actions.js`) fetches the PDF as
+a blob and triggers the save itself, instead of a plain navigation —
+the only way JS can observe "generation finished" for an attachment
+response. Spinner + "Generating…" on all 13 real PDF controls; CSV
+untouched (fast, no indicator needed).
+
+**Capital-at-risk ranking (Step 4)**: built for the classification
+report specifically, per instruction — `current_stock * purchase_price`
+for DEAD/SLOW products only (`None`, not 0, for classes it doesn't
+apply to, so those sort last rather than tying with a genuinely-zero-
+risk dead product), new "Capital at Risk" column, rows now ranked by it
+descending instead of `-classified_at`.
+
+**BUG-83, the real find of this pass**: `render_tabular_report()`'s
+`colWidths=None` let one long unwrapped `Recommendation` sentence
+dictate a table width past the page, silently clipping the leftmost
+columns off — no error, both existing automated checks stayed green.
+Only surfaced by opening the PDF. Fixed at the root (`_guess_col_widths()`
++ every cell wrapped in `Paragraph`), including a second, smaller
+version of the same bug the first fix attempt introduced (a flat 70pt
+numeric width forced "Recommended Reorder Qty" to hard-wrap mid-word) —
+caught the same way, by regenerating and re-opening rather than trusting
+the first fix. Standing lesson: for this class of bug, "tests pass" and
+"looks right" are different claims — the task's own insistence on
+opening real output is why this was found at all.
+
+**Tests**: 416 → 419 (net +3: `PDFGeneratedByTests` (2),
+`ClassificationReportCapitalAtRiskTests` (1); the size-floor assertion
+was added to the existing `test_every_report_type_exports_valid_pdf_and_csv`
+rather than as a new test). Full suite: 419/419 passing.
+
+**Live-verified**: uploaded a real logo + full company profile through
+`/settings/`; generated all 9 report types and all 3 per-record PDFs on
+the live dev server and opened every one (multimodal PDF read, not just
+byte counts) — logo, header, footer, generated-by, page numbers, and
+the capital-at-risk ranking all confirmed correct by eye.
+
+Not committed — reported back for review per instruction.
+
+---
+
+## Phase — Pagination Overhaul, Two Explainer Panels Removed (2026-08-25)
+
+Tables used to render every row at once, with several pages carrying
+decorative Previous/Next controls that never actually paginated. Fixed
+across every table that needed it, replacing `table-filter.js`'s
+client-side row-hiding with real server-side filtering + pagination
+wherever a table could realistically outgrow one page.
+
+**The one shared pattern** (`frontend/filters.py` + `frontend/templates/
+includes/pagination.html`), used by every page below rather than a
+fourth ad-hoc approach: `Paginator(...).get_page(request.GET.get("page"))`
+(clamps an out-of-range/non-numeric `?page=` instead of raising),
+`pagination_querystring()`/`toggle_querystring()` (current GET params,
+`page` stripped, re-attached to every Previous/Next/toggle link so a
+filter or toggle survives a page change), and one `filter_X(request,
+base_qs)` function per table mirroring `filter_movements()`'s existing
+shape (`frontend/reports.py`, unmoved — still that file's own function,
+not relocated into `filters.py` for the sake of it). Page size **10**
+for every newly-paginated table; **Movement History stays at 50** — a
+deliberate divergence, not an oversight, since its own inline markup
+(now the same shared partial) already worked at that size and 46_9's
+task explicitly said to leave it alone.
+
+**Server-paginated now** (9 tables): Products, Purchases, Sales,
+Inventory, Audit Log, Slow-Moving/Dead-Stock, Demand Forecasting,
+Notifications, Movement History (already was — its inline markup was
+extracted into the shared partial rather than left as its own copy).
+**Still client-side `table-filter.js`, deliberately** (small, bounded,
+non-transactional tables): Suppliers, Adjustments, Users, and the
+Reports page's low-stock panel — see the §8 component table above, now
+corrected to say so (it previously listed Forecasting/Slow-Moving as
+`table-filter.js` consumers, stale since this pass). `frontend/static/
+js/inventory.js` and `audit-log.js` were deleted outright, not left
+unreferenced — each file's entire content was a single now-dead
+`TableFilter.init()` call.
+
+**KPI cards read global totals**, not the filtered/paginated subset —
+a separate `.aggregate()` per view (`Count`/`Sum`/`Avg` with `filter=Q(...)`),
+computed once, independent of whatever page/search/toggle the request
+also carries. Confirmed unaffected by a filter via
+`ProductKPIAndExportPaginationTests.test_kpi_cards_show_global_totals_unaffected_by_filter`.
+Same reasoning extends exports: `ProductExportView`/`AuditLogExportView`
+run the same `filter_X()` the list page does but never the pagination —
+an export always covers the whole matching set, not the visible 10.
+
+**Two real bugs found and fixed, not just refactored** — both logged in
+`docs/bugsfound.md`: **BUG-85**, Audit Log's old `[:500]` cap silently
+made rows 501+ of a 6,000+-row ledger invisible *and unsearchable*, in
+the one module whose entire purpose is completeness (REQ 16.10).
+**BUG-86**, Notifications' old `[:100]` cap did the same, plus a second-
+order bug: `unread_count` was summed over that same capped slice, so a
+user past 100 notifications with an unread one beyond the cut saw an
+undercounted total. Fixed by computing `unread_count` as its own global
+`Notification.objects.filter(..., is_read=False).count()` — the same
+query the navbar bell badge (`NotificationUnreadCountView`) already
+used, so the two numbers can no longer disagree.
+
+**Segmented toggles** (Audit Log's status, Slow-Moving's classification,
+Forecasting's period) converted from client-side `<button data-value>` +
+row-hiding to real `<a href="?...">` links, following Movement History's
+own `movement_type` pattern exactly: clicking resets to page 1 (the
+toggle's own querystring helper strips both `page` and the toggle's own
+param, so the link never carries a stale page number). `.segmented
+button` CSS extended to `.segmented a` so the real links look identical
+to the old buttons. Forecasting's period toggle is a full page reload
+now (not a client-side swap): `forecasting.js`'s `initTrendChart()` was
+changed to open on whichever period the reload landed on (read off the
+server-rendered `.is-active` toggle link) instead of always hardcoding
+weekly, and the old `periodToggle.addEventListener(...)` → client-side
+`setPeriod()` click handler was removed as dead code, since a real link
+click navigates on its own.
+
+**Phase 4 — two explainer panels removed**, markup/CSS/JS only, content
+preserved elsewhere: Demand Forecasting's "How this forecast works" and
+Slow-Moving's "Classification rules." The classification-rules content
+was already fully documented in `docs/DEAD_STOCK_DETECTION.md`'s
+"Classification Logic" section (verified complete, not assumed) before
+the panel was deleted; the AI Insight blurb's dangling `See
+"Classification rules" for the full precedence` was repointed to that
+doc. Both templates grepped for multi-line `{# #}` comments before
+finishing (this bug has recurred three times) — none found in either.
+
+**Tests**: 419 → 440 (net +21: `AuditLogPaginationTests` (10, the
+deepest single suite — 510 rows, one forced to the old cap's blind spot
+and proven reachable both by direct paging and by search),
+`ProductKPIAndExportPaginationTests` (2), `RemainingTablesRowCountTests`
+(5, one per remaining paginated table), `EmptyPaginatedTableRendersCleanlyTests`
+(2), `RemovedExplainerPanelTests` (2)). Two pre-existing tests
+(`InventoryListViewTests.test_renders_real_records_matching_the_database`,
+`ProductUpdateDeactivateViewTests.test_deletable_flag_reflects_history`)
+read the old `records`/`products` context keys directly — updated to
+`page`, the new key every rewritten view now uses; not new bugs, just
+fallout from the context-key rename. Full suite: 440/440 passing.
+
+**Live-verified on the dev server**: every paginated table loaded, paged
+forward/back, filtered-then-paged, and toggled-then-paged via a scripted
+session (`urllib`, cookie-jar login as `verify_admin`) rather than by
+eye alone, confirming row counts and that filter/toggle state survives
+a page change. Sales specifically timed before/after against the real
+seeded 1,420-row table, via a `git stash`/`git stash pop` round-trip so
+"before" meant the actual old unpaginated code, not a description of
+it: **old — 1.6-1.85s, 1.24MB response, 1,420 rows rendered in one
+request; new — 0.24-0.26s, 43.7KB, 10 rows** — roughly 7x faster and
+28x smaller per request, the clearest evidence the old "Previous/Next"
+controls were cosmetic.
+
+**Deviations from the approved plan, disclosed rather than worked
+around**: (1) Forecasting's period toggle has no "All periods" state
+(unlike Audit Log's All/Success/Failure) — the client-side filter it
+replaced defaulted to weekly via `segmentDefault: "weekly"`, so an
+absent `?period=` now resolves to `"weekly"` in both `filters.
+filter_forecasts()` and the view's own context, rather than showing
+both periods mixed together. (2) Slow-Moving's `target_days_of_cover`/
+`extreme_coverage_days` context keys became dead (only the removed
+panel read them) and were dropped from `SlowMovingDeadStockView`'s
+context; `slow_threshold`/`min_sale_events` were already-dead context
+before this pass (used by neither the removed panel nor anything else)
+and were deliberately left alone, out of scope. (3) Not literally every
+one of Phase 5's ten behaviors was re-proven on all 9 paginated tables
+individually — `AuditLogPaginationTests` carries the full battery
+(row-count/page-boundary/search-survives/toggle-survives-and-resets/
+beyond-the-old-cap) once, against the mechanism those behaviors actually
+exercise (shared `filters.paginate()`/pagination.html, not per-table
+logic); every other table gets its own "renders exactly 10 when more
+exist" proof on top of that rather than the full battery repeated eight
+more times.
+
+**Known dead context keys, so they aren't rediscovered later as a
+mystery**: `SlowMovingDeadStockView`'s context still carries
+`slow_threshold` (`settings_obj.slow_moving_threshold_days`) and
+`min_sale_events` (`settings_obj.min_sale_events`) — neither is read
+anywhere in `slow_moving.html` (confirmed by grep: zero matches). This
+predates the pagination pass entirely; it is not something this pass
+introduced, and not the same as `target_days_of_cover`/
+`extreme_coverage_days` above, which only went dead *because* this pass
+removed the one panel that read them. Left alone deliberately — genuine
+dead code, out of scope for a pagination task to clean up on its own.
+
+Not committed — reported back for review per instruction.

@@ -134,16 +134,12 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    // Pagination pass (2026-08-25) — search/status are real server-side
+    // GET params now (frontend.filters.filter_sales()), submitted via the
+    // page's own <form method="get">; client-side TableFilter would only
+    // ever see the current page's 10 rows.
     var tableBody = getField("salesTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
-
-    if (window.TableFilter && tableBody) {
-      TableFilter.init({
-        tableBodyId: "salesTableBody",
-        searchInputId: "saleSearch",
-        selectFilters: [{ id: "saleStatusFilter", attr: "data-status" }]
-      });
-    }
 
     if (!getField(FORM_ID)) return;
 

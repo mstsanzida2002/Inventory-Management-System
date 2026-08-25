@@ -458,7 +458,8 @@
   padding: 3px;
   gap: 2px;
 }
-.segmented button {
+.segmented button,
+.segmented a {
   border: none; background: none; cursor: pointer;
   font-family: var(--font-body);
   font-size: var(--fs-xs);
@@ -467,7 +468,14 @@
   padding: 0.4rem 0.85rem;
   border-radius: var(--radius-pill);
 }
-.segmented button.is-active { background: var(--c-white); color: var(--c-ink); box-shadow: var(--shadow-sm); }
+/* Pagination pass (2026-08-25) — segmented toggles that now navigate to a
+   real GET param (audit log's status, slow-moving's classification,
+   forecasting's period) are real <a> links, not buttons, so a full page
+   load re-queries the server instead of a client-side row-hide;
+   text-decoration/display reset since a link isn't a button by default. */
+.segmented a { text-decoration: none; display: inline-block; }
+.segmented button.is-active,
+.segmented a.is-active { background: var(--c-white); color: var(--c-ink); box-shadow: var(--shadow-sm); }
 
 .chart-wrap { position: relative; width: 100%; }
 

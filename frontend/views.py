@@ -38,7 +38,7 @@ from django.contrib.auth.views import PasswordResetConfirmView
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, Sum
+from django.db.models import Avg, Count, F, Q, Sum
 from django.db.models.functions import TruncMonth, TruncWeek
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -46,6 +46,7 @@ from django.utils import timezone
 from django.views import View
 
 from frontend import audit
+from frontend import filters
 from frontend import reports as report_lib
 from frontend.forms import (
     AdjustmentForm,
@@ -673,12 +674,30 @@ class ProductListCreateView(AnyStaffMixin, View):
     supports a Promise-returning onSubmit, see that file's header)."""
 
     def get(self, request):
-        products = list(
-            Product.objects.select_related("category", "supplier").order_by("-created_at")
+        # PDF/Table Pagination pass (2026-08-25) — counts are now global,
+        # not filtered: an .aggregate() over the whole table, computed
+        # once, independent of whatever page/search/category/status the
+        # request also carries. Loading every product into Python just to
+        # count it would defeat the pagination below; see
+        # docs/project_memory.md for the "KPI cards show the whole
+        # business, not the current search" reasoning. Mirrors the same
+        # branching the per-row loop used to do (out_of_stock first, then
+        # low_stock, else in_stock — mutually exclusive by construction,
+        # so in_stock = total - the other two is exact, not an estimate).
+        counts = Product.objects.aggregate(
+            total=Count("id"),
+            out_of_stock=Count("id", filter=Q(current_stock__lte=0)),
+            low_stock=Count("id", filter=Q(current_stock__gt=0, reorder_level__gt=0, current_stock__lte=F("reorder_level"))),
         )
-        counts = {"total": 0, "in_stock": 0, "low_stock": 0, "out_of_stock": 0}
+        counts["in_stock"] = counts["total"] - counts["out_of_stock"] - counts["low_stock"]
+
+        qs = filters.filter_products(
+            request, Product.objects.select_related("category", "supplier").order_by("-created_at")
+        )
+        page = filters.paginate(request, qs, 10)
+
         history_ids = _product_ids_with_history()
-        for product in products:
+        for product in page.object_list:
             # Phase 8.99i — same "compute once, reuse for both the row's
             # own display and the delete endpoint's own enforcement" split
             # as _user_ids_with_history() (Phase 8.99f-2).
@@ -692,14 +711,10 @@ class ProductListCreateView(AnyStaffMixin, View):
             # InventoryRecord at all.
             if product.current_stock <= 0:
                 product.stock_label, product.stock_badge = "Out of stock", "badge-danger"
-                counts["out_of_stock"] += 1
             elif product.reorder_level and product.current_stock <= product.reorder_level:
                 product.stock_label, product.stock_badge = "Low stock", "badge-warning"
-                counts["low_stock"] += 1
             else:
                 product.stock_label, product.stock_badge = "In stock", "badge-success"
-                counts["in_stock"] += 1
-            counts["total"] += 1
             # Phase 8.99e — same "compute once server-side, read via a
             # data-* attribute" pattern PurchaseOrder.receive_items_json
             # already uses for the Receive modal: lets the Edit modal be
@@ -717,11 +732,15 @@ class ProductListCreateView(AnyStaffMixin, View):
 
         context = {
             "active_nav": "products",
-            "products": products,
+            "page": page,
             "counts": counts,
             "categories": Category.objects.filter(is_active=True).order_by("name"),
             "suppliers": Supplier.objects.filter(is_active=True).order_by("company_name"),
             "unit_choices": UnitOfMeasurement.choices,
+            "q": request.GET.get("q", ""),
+            "category_id": request.GET.get("category", ""),
+            "status": request.GET.get("status", ""),
+            "querystring": filters.pagination_querystring(request),
         }
         return render(request, "products/products.html", context)
 
@@ -886,13 +905,20 @@ class ProductExportView(AnyStaffMixin, View):
     """Phase 8.98 (BUG-44) — Products' "Export" button was decorative.
     Real CSV now, via `frontend/reports.py`'s shared `generate_csv_response()`
     (the same CSV-writing utility every export in this app uses) rather
-    than a new export mechanism. Exports the full product list, not the
-    current `table-filter.js` selection — that filter is client-side only
-    (Phase 8.7), with no server-side equivalent to read yet; stated here
-    rather than silently only exporting whatever happened to be visible."""
+    than a new export mechanism.
+
+    Pagination pass (2026-08-25) — the filter is server-side now
+    (`frontend.filters.filter_products()`, same function the list page
+    itself calls), so this export honors it for real: whatever's
+    filtered/searched on screen is exactly what exports, the same
+    guarantee Movement History's own export already gives. Not the
+    current *page* — an export of 10 rows would be worse than useless —
+    the whole matching set, same as before the filter existed."""
 
     def get(self, request):
-        products = Product.objects.select_related("category", "supplier").order_by("name")
+        products = filters.filter_products(
+            request, Product.objects.select_related("category", "supplier").order_by("name")
+        )
         headers = [
             "SKU", "Name", "Category", "Supplier", "Brand",
             "Current Stock", "Reorder Level", "Unit", "Purchase Price", "Selling Price", "Active",
@@ -1192,13 +1218,29 @@ class PurchaseListCreateView(AnyStaffMixin, View):
     }
 
     def get(self, request):
-        orders = list(
-            PurchaseOrder.objects.select_related("supplier", "created_by")
-            .prefetch_related("items__product").order_by("-created_at")
-        )
-        counts = {"open": 0, "pending": 0, "received_month": 0, "value_month": 0}
+        # Pagination pass (2026-08-25) — global counts via .aggregate(),
+        # independent of the filtered/paginated queryset below (see
+        # ProductListCreateView's own note on why: loading every PO into
+        # Python just to count it would defeat the pagination).
         now = timezone.now()
-        for po in orders:
+        counts = PurchaseOrder.objects.aggregate(
+            open=Count("id", filter=~Q(status__in=[POStatus.RECEIVED, POStatus.REJECTED, POStatus.CANCELLED])),
+            pending=Count("id", filter=Q(status=POStatus.PENDING)),
+            received_month=Count("id", filter=Q(
+                status__in=[POStatus.RECEIVED, POStatus.PARTIAL],
+                created_at__year=now.year, created_at__month=now.month,
+            )),
+            value_month=Sum("total_cost", filter=Q(created_at__year=now.year, created_at__month=now.month)),
+        )
+        counts["value_month"] = counts["value_month"] or 0
+
+        qs = filters.filter_purchases(
+            request,
+            PurchaseOrder.objects.select_related("supplier", "created_by").prefetch_related("items__product").order_by("-created_at"),
+        )
+        page = filters.paginate(request, qs, 10)
+
+        for po in page.object_list:
             po.item_count = po.items.count()
             po.status_badge = self._STATUS_BADGE.get(po.status, "badge-indigo")
             # Phase 8.99c — mirrors PurchaseService._CANCELLABLE_STATUSES
@@ -1224,18 +1266,10 @@ class PurchaseListCreateView(AnyStaffMixin, View):
                 }
                 for item in po.items.all()
             ])
-            if po.status not in (POStatus.RECEIVED, POStatus.REJECTED, POStatus.CANCELLED):
-                counts["open"] += 1
-            if po.status == POStatus.PENDING:
-                counts["pending"] += 1
-            if po.created_at.year == now.year and po.created_at.month == now.month:
-                if po.status in (POStatus.RECEIVED, POStatus.PARTIAL):
-                    counts["received_month"] += 1
-                counts["value_month"] += po.total_cost
 
         context = {
             "active_nav": "purchases",
-            "orders": orders,
+            "page": page,
             "counts": counts,
             "suppliers": Supplier.objects.filter(is_active=True).order_by("company_name"),
             "products": Product.objects.filter(is_active=True).order_by("name"),
@@ -1243,6 +1277,9 @@ class PurchaseListCreateView(AnyStaffMixin, View):
             # computed so the Expected Delivery date input's real min=
             # attribute agrees with PurchaseOrderForm's own validation.
             "today": timezone.localdate(),
+            "q": request.GET.get("q", ""),
+            "status": request.GET.get("status", ""),
+            "querystring": filters.pagination_querystring(request),
         }
         return render(request, "purchases/purchases.html", context)
 
@@ -1418,17 +1455,29 @@ class SaleListCreateView(AnyStaffMixin, View):
     }
 
     def get(self, request):
-        sales = list(
-            SaleTransaction.objects.select_related("created_by")
-            .prefetch_related("items").order_by("-created_at")
-        )
-        counts = {"pending": 0, "revenue_today": 0, "transactions_today": 0, "cancelled_30d": 0, "avg_order_30d": 0}
+        # Pagination pass (2026-08-25) — global counts via .aggregate(),
+        # same reasoning as ProductListCreateView's own note. Avg() over
+        # the exact same COMPLETED+cutoff filter as the old manual
+        # total/count division is the identical number, not an estimate.
         today = timezone.now().date()
         cutoff = today - timedelta(days=30)
-        completed_30d_total, completed_30d_count = 0, 0
-        for sale in sales:
+        counts = SaleTransaction.objects.aggregate(
+            pending=Count("id", filter=Q(status=SaleStatus.PENDING)),
+            transactions_today=Count("id", filter=Q(transaction_date=today)),
+            revenue_today=Sum("total_amount", filter=Q(status=SaleStatus.COMPLETED, transaction_date=today)),
+            cancelled_30d=Count("id", filter=Q(status=SaleStatus.CANCELLED, transaction_date__gte=cutoff)),
+            avg_order_30d=Avg("total_amount", filter=Q(status=SaleStatus.COMPLETED, transaction_date__gte=cutoff)),
+        )
+        counts["revenue_today"] = counts["revenue_today"] or 0
+        counts["avg_order_30d"] = counts["avg_order_30d"] or 0
+
+        qs = filters.filter_sales(
+            request, SaleTransaction.objects.select_related("created_by").prefetch_related("items").order_by("-created_at")
+        )
+        page = filters.paginate(request, qs, 10)
+
+        for sale in page.object_list:
             sale.item_count = sale.items.count()
-            sale.is_cancelled = sale.status == SaleStatus.CANCELLED
             sale.status_badge = self._STATUS_BADGE.get(sale.status, "badge-indigo")
             sale.cancellable = sale.status in (SaleStatus.DRAFT, SaleStatus.PENDING)
             # Phase 12 — §8b: same shown-but-disabled-with-reason pattern
@@ -1440,29 +1489,15 @@ class SaleListCreateView(AnyStaffMixin, View):
                 sale.required_level = ""
                 sale.can_cancel = False
                 sale.cancel_denied_reason = ""
-            if sale.status == SaleStatus.PENDING:
-                counts["pending"] += 1
-            if sale.transaction_date == today:
-                counts["transactions_today"] += 1
-                # Phase 8.99b: "revenue" now means realized revenue —
-                # only a COMPLETED sale has actually moved stock/money.
-                # Counting draft/pending/rejected sales here would
-                # overstate today's revenue with sales that may never
-                # actually go through.
-                if sale.status == SaleStatus.COMPLETED:
-                    counts["revenue_today"] += sale.total_amount
-            if sale.is_cancelled and sale.transaction_date >= cutoff:
-                counts["cancelled_30d"] += 1
-            if sale.status == SaleStatus.COMPLETED and sale.transaction_date >= cutoff:
-                completed_30d_total += sale.total_amount
-                completed_30d_count += 1
-        if completed_30d_count:
-            counts["avg_order_30d"] = completed_30d_total / completed_30d_count
+
         context = {
             "active_nav": "sales",
-            "sales": sales,
+            "page": page,
             "counts": counts,
             "products": Product.objects.filter(is_active=True).order_by("name"),
+            "q": request.GET.get("q", ""),
+            "status": request.GET.get("status", ""),
+            "querystring": filters.pagination_querystring(request),
         }
         return render(request, "sales/sales.html", context)
 
@@ -1615,22 +1650,26 @@ _INVENTORY_STATUS_BADGE = {
 class InventoryListView(AnyStaffMixin, View):
 
     def get(self, request):
-        records = list(
-            InventoryRecord.objects.select_related("product", "product__category", "product__supplier")
-            .order_by("product__name")
+        # Pagination pass (2026-08-25) — global counts via .aggregate(),
+        # same reasoning as ProductListCreateView's own note.
+        counts = InventoryRecord.objects.aggregate(
+            total_skus=Count("id"),
+            total_value=Sum("total_value"),
+            low_stock=Count("id", filter=Q(status=InventoryStatus.LOW_STOCK)),
+            out_of_stock=Count("id", filter=Q(status=InventoryStatus.OUT_OF_STOCK)),
         )
-        counts = {"total_value": 0, "total_skus": 0, "low_stock": 0, "out_of_stock": 0}
-        for record in records:
+        counts["total_value"] = counts["total_value"] or 0
+
+        qs = filters.filter_inventory(
+            request,
+            InventoryRecord.objects.select_related("product", "product__category", "product__supplier").order_by("product__name"),
+        )
+        page = filters.paginate(request, qs, 10)
+
+        for record in page.object_list:
             record.status_badge = _INVENTORY_STATUS_BADGE.get(record.status, "badge-indigo")
             latest_movement = record.product.movements.order_by("-created_at").first()
             record.last_movement_at = latest_movement.created_at if latest_movement else None
-
-            counts["total_skus"] += 1
-            counts["total_value"] += record.total_value
-            if record.status == InventoryStatus.LOW_STOCK:
-                counts["low_stock"] += 1
-            elif record.status == InventoryStatus.OUT_OF_STOCK:
-                counts["out_of_stock"] += 1
 
         # BUG-65 (docs/bugsfound.md) — INVENTORY_VIEWED was defined in
         # 13_AUDIT.md's constant list but never fired anywhere; this is
@@ -1638,7 +1677,14 @@ class InventoryListView(AnyStaffMixin, View):
         # REPORT_GENERATED calls already establish in this codebase.
         audit.log_action(request.user, audit.INVENTORY_VIEWED, "inventory", status="success", request=request)
 
-        context = {"active_nav": "inventory", "records": records, "counts": counts}
+        context = {
+            "active_nav": "inventory",
+            "page": page,
+            "counts": counts,
+            "q": request.GET.get("q", ""),
+            "status": request.GET.get("status", ""),
+            "querystring": filters.pagination_querystring(request),
+        }
         return render(request, "inventory/inventory.html", context)
 
 
@@ -1947,9 +1993,17 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
             key=lambda f: -f.recommended_reorder_qty,
         )[:4]
 
+        filtered_rows = filters.filter_forecasts(table_rows, request)
+        page = filters.paginate(request, filtered_rows, 10)
+
         context = {
             "active_nav": "forecasting",
-            "forecasts": table_rows,
+            "page": page,
+            "q": request.GET.get("q", ""),
+            "category_name": request.GET.get("category", ""),
+            "period": request.GET.get("period", "") or "weekly",
+            "querystring": filters.pagination_querystring(request),
+            "period_toggle_querystring": filters.toggle_querystring(request, "period"),
             "categories": Category.objects.filter(is_active=True).order_by("name"),
             "products_forecasted": len({f.product_id for f in table_rows}),
             "avg_confidence_pct": avg_confidence_pct,
@@ -2035,18 +2089,52 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
 
     def get(self, request):
         settings_obj = SystemSettings.get_settings()
-        classifications = list(
-            InventoryClassification.objects.select_related("product", "product__category")
-            .order_by("product__name")
+
+        # Pagination pass (2026-08-25) — global counts via .aggregate(),
+        # same reasoning as ProductListCreateView's own note: independent
+        # of whatever search/category/classification the request also
+        # carries.
+        counts_agg = InventoryClassification.objects.aggregate(
+            fast=Count("id", filter=Q(classification=StockClassification.FAST)),
+            slow=Count("id", filter=Q(classification=StockClassification.SLOW)),
+            dead=Count("id", filter=Q(classification=StockClassification.DEAD)),
+            insufficient_data=Count("id", filter=Q(classification=StockClassification.INSUFFICIENT_DATA)),
         )
         counts = {
-            StockClassification.FAST: 0,
-            StockClassification.SLOW: 0,
-            StockClassification.DEAD: 0,
-            StockClassification.INSUFFICIENT_DATA: 0,
+            StockClassification.FAST: counts_agg["fast"],
+            StockClassification.SLOW: counts_agg["slow"],
+            StockClassification.DEAD: counts_agg["dead"],
+            StockClassification.INSUFFICIENT_DATA: counts_agg["insufficient_data"],
         }
-        for c in classifications:
-            counts[c.classification] = counts.get(c.classification, 0) + 1
+
+        # dead_watch/slow_watch stay Python-side (not worth a DB NULLS
+        # LAST for a ~44-row table): Prompt 2 — days_since_last_sale is
+        # genuinely nullable (a Force-DEAD override on a product that's
+        # never sold at all still classifies DEAD with no real number to
+        # rank by) — `-(days or 0)` ranks a None the same as a real 0
+        # would: last, not first. INSUFFICIENT_DATA is excluded from both
+        # lists — not a problem state to flag.
+        dead_and_slow = list(
+            InventoryClassification.objects.filter(classification__in=[StockClassification.DEAD, StockClassification.SLOW])
+        )
+        dead_watch = sorted(
+            (c for c in dead_and_slow if c.classification == StockClassification.DEAD),
+            key=lambda c: -(c.days_since_last_sale or 0),
+        )[:2]
+        slow_watch = sorted(
+            (c for c in dead_and_slow if c.classification == StockClassification.SLOW),
+            key=lambda c: -(c.days_since_last_sale or 0),
+        )[:1]
+        for c in slow_watch:
+            c.days_to_dead = max(settings_obj.dead_stock_threshold_days - (c.days_since_last_sale or 0), 0)
+
+        qs = filters.filter_classifications(
+            request,
+            InventoryClassification.objects.select_related("product", "product__category").order_by("product__name"),
+        )
+        page = filters.paginate(request, qs, 10)
+
+        for c in page.object_list:
             c.badge = self._BADGE.get(c.classification, "badge-neutral")
             c.search_blob = f"{c.product.name} {c.product.sku}".lower()
             if c.last_sold_date is None:
@@ -2058,25 +2146,9 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             else:
                 c.last_sold_label = f"{c.days_since_last_sale} days ago"
 
-        # Prompt 2 — days_since_last_sale is now genuinely nullable (BUG
-        # fix, docs/bugsfound.md); the DEAD/SLOW branches below only ever
-        # see rows with a real integer here (INSUFFICIENT_DATA rows have
-        # no meaningful days_since_last_sale to rank by and are excluded
-        # from both watch lists — they're not a problem state to flag).
-        dead_watch = sorted(
-            (c for c in classifications if c.classification == StockClassification.DEAD),
-            key=lambda c: -(c.days_since_last_sale or 0),
-        )[:2]
-        slow_watch = sorted(
-            (c for c in classifications if c.classification == StockClassification.SLOW),
-            key=lambda c: -(c.days_since_last_sale or 0),
-        )[:1]
-        for c in slow_watch:
-            c.days_to_dead = max(settings_obj.dead_stock_threshold_days - (c.days_since_last_sale or 0), 0)
-
         context = {
             "active_nav": "slow-moving",
-            "classifications": classifications,
+            "page": page,
             "counts": counts,
             "total_flagged": counts[StockClassification.SLOW] + counts[StockClassification.DEAD],
             "categories": Category.objects.filter(is_active=True).order_by("name"),
@@ -2088,14 +2160,17 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             "dead_index_threshold": settings_obj.dead_index_threshold,
             "min_observation_days": settings_obj.min_observation_days,
             "min_sale_events": settings_obj.min_sale_events,
-            "target_days_of_cover": settings_obj.target_days_of_cover,
-            "extreme_coverage_days": settings_obj.extreme_coverage_days,
             "chart_data": {
                 "fast": counts[StockClassification.FAST],
                 "slow": counts[StockClassification.SLOW],
                 "dead": counts[StockClassification.DEAD],
                 "insufficient_data": counts[StockClassification.INSUFFICIENT_DATA],
             },
+            "q": request.GET.get("q", ""),
+            "category_name": request.GET.get("category", ""),
+            "classification": request.GET.get("classification", ""),
+            "querystring": filters.pagination_querystring(request),
+            "classification_toggle_querystring": filters.toggle_querystring(request, "classification"),
         }
         return render(request, "intelligence/slow_moving.html", context)
 
@@ -2256,17 +2331,23 @@ _NOTIF_ICON_DEFAULT = ("icon-bell", "background:var(--c-slate-100); color:var(--
 
 
 class NotificationListView(LoginRequiredMixin, View):
+    """BUG-86 (docs/bugsfound.md) — used to hard-cap at [:100] with no
+    pagination, and derived unread_count from that same capped slice
+    (silently undercounting once a user passed 100 notifications with an
+    unread one beyond the cut). Now paginates the full ordered queryset
+    and computes unread_count as its own global count, the same query
+    NotificationUnreadCountView (navbar bell badge) already uses."""
 
     def get(self, request):
-        notifications = list(
-            Notification.objects.filter(recipient=request.user).order_by("-created_at")[:100]
-        )
-        for notif in notifications:
+        qs = Notification.objects.filter(recipient=request.user).order_by("-created_at")
+        page = filters.paginate(request, qs, 10)
+        for notif in page.object_list:
             notif.icon_name, notif.icon_style = _NOTIF_ICON.get(notif.type, _NOTIF_ICON_DEFAULT)
-        unread_count = sum(1 for n in notifications if not n.is_read)
+        unread_count = Notification.objects.filter(recipient=request.user, is_read=False).count()
         context = {
             "active_nav": "notifications",
-            "notifications": notifications,
+            "page": page,
+            "querystring": filters.pagination_querystring(request),
             "unread_count": unread_count,
         }
         return render(request, "notifications/notifications.html", context)
@@ -2534,19 +2615,51 @@ class UserDeleteView(AdminRequiredMixin, View):
 # AuditLog.save()/delete() already raise PermissionError on any attempt to
 # mutate an existing row (Phase 1) — this view only ever reads.
 
+def _format_audit_details(details):
+    """AI_CLASSIFIER_WEIGHTS_CHANGED/SETTINGS_UPDATED (frontend/audit.py)
+    now log a field-level {"field": {"old": ..., "new": ...}} diff instead
+    of an empty details={} — this is the only place that payload becomes
+    readable rather than raw JSON a reader has to mentally parse."""
+    if not details:
+        return None
+    parts = []
+    for field, change in details.items():
+        if isinstance(change, dict) and "old" in change and "new" in change:
+            parts.append(f"{field}: {change['old']} → {change['new']}")
+        else:
+            parts.append(f"{field}: {change}")
+    return "; ".join(parts)
+
+
 class AuditLogListView(AdminRequiredMixin, View):
+    """Pagination pass (2026-08-25), BUG-85 (docs/bugsfound.md) — this
+    view used to hard-cap at `[:500]`: rows 501+ of a real, currently
+    6000+-row and growing ledger were neither visible NOR reachable by
+    the (client-side, only-searches-what's-in-the-DOM) search box —
+    silently, with no indication to the user that the log they were
+    looking at wasn't the whole log. REQ 16.10 is append-only
+    *completeness*; a cap that quietly drops most of the table is the
+    opposite of that. Real Paginator now, no cap: filter first
+    (frontend.filters.filter_audit_log(), server-side, searches every
+    matching row not just the current page's 10), then paginate."""
 
     def get(self, request):
-        logs = list(
-            AuditLog.objects.select_related("user").order_by("-timestamp")[:500]
-        )
-        for log in logs:
+        qs = filters.filter_audit_log(request, AuditLog.objects.select_related("user").order_by("-timestamp"))
+        page = filters.paginate(request, qs, 10)
+
+        for log in page.object_list:
             log.user_label = log.user.full_name if log.user else "System"
+            log.details_display = _format_audit_details(log.details)
+
         context = {
             "active_nav": "audit-log",
-            "logs": logs,
-            "total_count": AuditLog.objects.count(),
+            "page": page,
             "modules": sorted(AuditLog.objects.values_list("module", flat=True).distinct()),
+            "q": request.GET.get("q", ""),
+            "module_filter": request.GET.get("module", ""),
+            "status": request.GET.get("status", ""),
+            "querystring": filters.pagination_querystring(request),
+            "status_toggle_querystring": filters.toggle_querystring(request, "status"),
         }
         return render(request, "audit/audit_log.html", context)
 
@@ -2555,10 +2668,16 @@ class AuditLogExportView(AdminRequiredMixin, View):
     """Phase 8.98 (BUG-44) — same `AdminRequiredMixin` as AuditLogListView
     itself, per 13_AUDIT.md's "Admin only" rule — the export must never be
     a way around that gate. Reuses the shared `generate_csv_response()`.
-    Exports the full log, not just the on-screen page's 500-row cap."""
+
+    Pagination pass (2026-08-25) — filter-aware now
+    (`frontend.filters.filter_audit_log()`, the same function the list
+    page calls), matching the page's own BUG-85 fix: this always exported
+    the *full*, uncapped log (unaffected by the page's old [:500]), and
+    still exports the full *matching* set now that a filter exists to
+    match against — never just the current page."""
 
     def get(self, request):
-        logs = AuditLog.objects.select_related("user").order_by("-timestamp")
+        logs = filters.filter_audit_log(request, AuditLog.objects.select_related("user").order_by("-timestamp"))
         headers = ["Timestamp", "User", "Action", "Module", "Affected ID", "Status", "IP Address"]
         rows = [
             [

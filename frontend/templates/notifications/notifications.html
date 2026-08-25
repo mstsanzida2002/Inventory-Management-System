@@ -14,12 +14,17 @@
     notifications.js. Icon/tint per row comes from views.py's
     _NOTIF_ICON map — same exact styling the Phase 3.6 mock hardcoded per
     notification type, now data-driven off Notification.type instead.
+
+    Pagination pass (2026-08-25), BUG-86 — paginated for real instead of
+    the old hard [:100] cap, which also silently undercounted
+    unread_count for any user past 100 notifications. unread_count is now
+    its own global count, unaffected by which page is showing.
   {% endcomment %}
 
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Notifications</h2>
-      <p class="text-slate">{{ unread_count }} unread of {{ notifications|length }} shown &mdash; low-stock alerts, purchase order approvals, and AI insights land here.</p>
+      <p class="text-slate">{{ unread_count }} unread of {{ page.paginator.count }} total &mdash; low-stock alerts, purchase order approvals, and AI insights land here.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
       <button class="btn btn-secondary" type="button" id="markAllReadBtn">
@@ -32,7 +37,7 @@
   <div class="panel">
     <div class="panel-body no-top-pad">
       <div class="widget-list" id="notificationsList" data-base-url="{% url 'frontend:notifications' %}">
-        {% for notif in notifications %}
+        {% for notif in page %}
           <div class="widget-row" data-notification-id="{{ notif.pk }}" style="align-items:flex-start;{% if notif.is_read %} opacity:0.72;{% endif %}">
             <span class="widget-icon" style="{{ notif.icon_style }}">
               <svg class="icon icon-sm"><use href="#{{ notif.icon_name }}"></use></svg>
@@ -61,6 +66,8 @@
         {% endfor %}
       </div>
     </div>
+
+    {% include "includes/pagination.html" with page=page querystring=querystring item_label="notifications" %}
   </div>
 
 {% endblock %}

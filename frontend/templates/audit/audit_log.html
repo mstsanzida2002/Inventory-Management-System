@@ -12,10 +12,17 @@
     13_AUDIT.md's "Admin only" rule). AuditLog is IMMUTABLE — model-enforced
     (docs/bugsfound.md BUG-20's sibling fix) — so this page is, and will
     only ever be, a read-only viewer; no edit/delete controls exist here by
-    design. module/status filter client-side via table-filter.js
-    (audit-log.js), against real data-* attributes below; date range stays
-    decorative like every other list page's date filters — no other Phase
-    5-7 list page wired real server-side date filtering either.
+    design. Date range stays decorative like every other list page's date
+    filters — no other Phase 5-7 list page wired real server-side date
+    filtering either.
+
+    Pagination pass (2026-08-25), BUG-85 — search/module/status are real
+    server-side GET params now (frontend.filters.filter_audit_log()),
+    paginated for real instead of the old hard [:500] cap that silently
+    made rows 501+ of a 6000+-row ledger invisible and unsearchable. The
+    status toggle is a real link to ?status=..., not client-side
+    table-filter.js — a page reload, but one that can actually find a
+    match anywhere in the ledger, not just the current page's 10 rows.
   {% endcomment %}
 
   <div class="page-heading-row">
@@ -33,28 +40,33 @@
 
   <div class="panel">
     <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-4); padding-bottom: var(--sp-5);">
-      <div class="field" style="margin-bottom:0; flex:1; max-width:280px;">
-        <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" id="auditSearch" placeholder="Search by user or action...">
-      </div>
-      <div class="flex gap-3" style="flex-wrap:wrap; align-items:center;">
+      <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
+        <div class="field" style="margin-bottom:0; flex:1; max-width:280px;">
+          <svg class="field-icon"><use href="#icon-search"></use></svg>
+          <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search by user or action...">
+        </div>
         <div class="field" style="margin-bottom:0; max-width:150px;">
           <input class="input input-plain" type="date" aria-label="From date" value="2026-07-01">
         </div>
         <div class="field" style="margin-bottom:0; max-width:150px;">
           <input class="input input-plain" type="date" aria-label="To date" value="2026-07-30">
         </div>
-        <select class="input" id="auditModuleFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+        <select class="input" name="module" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
           <option value="">All modules</option>
           {% for module in modules %}
-            <option value="{{ module }}">{{ module|title }}</option>
+            <option value="{{ module }}" {% if module == module_filter %}selected{% endif %}>{{ module|title }}</option>
           {% endfor %}
         </select>
-        <div class="segmented" id="auditStatusToggle">
-          <button type="button" class="is-active" data-value="">All</button>
-          <button type="button" data-value="success">Success</button>
-          <button type="button" data-value="failure">Failure</button>
-        </div>
+        <input type="hidden" name="status" value="{{ status }}">
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        {% if q or module_filter or status %}
+          <a href="{% url 'frontend:audit_log' %}" class="btn btn-secondary">Clear</a>
+        {% endif %}
+      </form>
+      <div class="segmented" id="auditStatusToggle">
+        <a href="?{% if status_toggle_querystring %}{{ status_toggle_querystring }}&{% endif %}status=" class="{% if not status %}is-active{% endif %}">All</a>
+        <a href="?{% if status_toggle_querystring %}{{ status_toggle_querystring }}&{% endif %}status=success" class="{% if status == 'success' %}is-active{% endif %}">Success</a>
+        <a href="?{% if status_toggle_querystring %}{{ status_toggle_querystring }}&{% endif %}status=failure" class="{% if status == 'failure' %}is-active{% endif %}">Failure</a>
       </div>
     </div>
 
@@ -70,11 +82,12 @@
               <th>Affected ID</th>
               <th>Status</th>
               <th>IP address</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody id="auditTableBody">
-            {% for log in logs %}
-              <tr data-search="{{ log.user_label|lower }} {{ log.action|lower }}" data-module="{{ log.module }}" data-status="{{ log.status }}">
+            {% for log in page %}
+              <tr>
                 <td class="mono">{{ log.timestamp|date:"M d, Y H:i" }}</td>
                 <td{% if not log.user %} class="text-slate"{% endif %}>{{ log.user_label }}</td>
                 <td class="mono">{{ log.action }}</td>
@@ -88,33 +101,25 @@
                   {% endif %}
                 </td>
                 <td class="mono">{{ log.ip_address|default:"&mdash;" }}</td>
+                <td class="text-slate text-xs">{{ log.details_display|default:"&mdash;" }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="8" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                  {% if q or module_filter or status %}
+                    No log entries match this filter.
+                  {% else %}
+                    No log entries yet.
+                  {% endif %}
+                </td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
-
-        <div class="empty-state" id="auditEmptyState" hidden>
-          <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
-          <div class="empty-state-title">No log entries match your filters</div>
-          <p class="empty-state-text">Try a different search term, module, or status.</p>
-        </div>
       </div>
     </div>
 
-    <div class="panel-body" style="padding-top:0;">
-      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing {{ logs|length }} of {{ total_count }} log entries</p>
-        <div class="flex gap-2">
-          <button class="btn btn-secondary" type="button" disabled>Previous</button>
-          <button class="btn btn-secondary" type="button" disabled>Next</button>
-        </div>
-      </div>
-    </div>
+    {% include "includes/pagination.html" with page=page querystring=querystring item_label="log entries" %}
   </div>
 
-{% endblock %}
-
-{% block extra_js %}
-  <script src="{% static 'js/table-filter.js' %}"></script>
-  <script src="{% static 'js/audit-log.js' %}"></script>
 {% endblock %}

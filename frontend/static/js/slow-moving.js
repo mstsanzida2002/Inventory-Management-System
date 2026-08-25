@@ -1,7 +1,10 @@
 /* ==========================================================================
    SLOW-MOVING.JS — Slow-Moving & Dead Stock page: classification doughnut
-   chart + table filtering + "Run classification now". Table filtering is
-   handled by the shared table-filter.js; this file owns the chart (real
+   chart + "Run classification now". Search/category/classification are
+   real server-side GET params now (Pagination pass, 2026-08-25 —
+   frontend.filters.filter_classifications()), submitted via the page's
+   own <form method="get"> and the classification toggle's real links, so
+   this file no longer wires table-filter.js. It owns the chart (real
    counts, via {{ chart_data|json_script:"classificationChartData" }} —
    the same server-data-into-chart convention dashboard.js already uses)
    and the Run button's real POST (row-actions.js's postAction(), the same
@@ -76,16 +79,6 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initClassificationChart();
-
-    TableFilter.init({
-      tableBodyId: "classificationTableBody",
-      searchInputId: "classificationSearch",
-      selectFilters: [{ id: "classificationCategoryFilter", attr: "data-category" }],
-      segmentedId: "classificationToggle",
-      segmentAttr: "data-classification",
-      segmentDefault: "",
-      emptyStateId: "classificationEmptyState"
-    });
 
     AsyncRunButton.init({
       buttonId: "runClassificationBtn",

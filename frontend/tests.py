@@ -1898,7 +1898,7 @@ class ProductUpdateDeactivateViewTests(TestCase):
         )
         self.client.login(username='pedsuper', password='x')
         response = self.client.get(reverse('frontend:products'))
-        by_pk = {p.pk: p.deletable for p in response.context['products']}
+        by_pk = {p.pk: p.deletable for p in response.context['page']}
         self.assertFalse(by_pk[self.product.pk], "a product with real movement history must not be deletable")
         self.assertTrue(by_pk[self.other_product.pk], "a never-used product must be deletable")
 
@@ -4497,7 +4497,7 @@ class InventoryListViewTests(TestCase):
         response = self.client.get(reverse('frontend:inventory'))
         self.assertEqual(response.status_code, 200)
 
-        records = {r.product_id: r for r in response.context['records']}
+        records = {r.product_id: r for r in response.context['page']}
         self.assertEqual(len(records), 2)
         self.assertEqual(records[self.low_stock_product.pk].current_stock, 4)
         self.assertEqual(records[self.low_stock_product.pk].status, InventoryStatus.LOW_STOCK)
@@ -6953,3 +6953,277 @@ class EnsureDefaultPoliciesIdempotencyTests(TestCase):
         self.assertEqual(ApprovalPolicy.objects.count(), 9)
         ensure_default_policies()
         self.assertEqual(ApprovalPolicy.objects.count(), 9)
+
+
+# ------------------------------------------------------ Pagination overhaul
+# Phase 5 (2026-08-25) — the ten behaviors called for by the pagination
+# task, verified against the shared mechanism that actually implements
+# them (frontend.filters.paginate()/pagination_querystring()/
+# toggle_querystring(), frontend/templates/includes/pagination.html) —
+# common code, not per-table logic, so AuditLogPaginationTests below (the
+# richest fixture — 510 rows, mixed status, a distinctive oldest row) is
+# this pass's deepest single coverage point for row-count/page-boundary/
+# search-survives/toggle-survives-and-resets/beyond-the-old-cap.
+# RemainingTablesRowCountTests gives every other paginated table its own
+# "renders exactly 10 when more exist" proof on top of that, rather than
+# repeating the full behavior battery eight times over.
+
+class AuditLogPaginationTests(TestCase):
+    """BUG-85 (docs/bugsfound.md) — the old [:500] cap silently made rows
+    501+ of a real ledger invisible and unsearchable. 510 rows here (one
+    more than the old cap) with a single distinctively-named row forced
+    to the very oldest position (page 51 under the new page size of 10)
+    proves that row is reachable both by paging there directly and by
+    searching for it — the two ways BUG-85 said it used to be neither."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='pagadmin', email='pagadmin@example.com', password='x',
+            employee_id='EMP-9501', full_name='Pagination Admin', role=UserRole.ADMIN,
+        )
+        base = timezone.now()
+        logs = []
+        for i in range(510):
+            action = 'VERY_OLD_UNIQUE_ACTION_BEYOND_500' if i == 509 else f'BULK_ACTION_{i}'
+            status = 'failure' if i % 2 else 'success'
+            logs.append(AuditLog.objects.create(
+                user=self.admin, action=action, module='inventory', status=status,
+            ))
+        # AuditLog.timestamp is auto_now_add — reassigned explicitly (via
+        # .update(), which bypasses AuditLog.save()'s immutability guard,
+        # same as bulk_create/bulk_update would) so page/ordering math
+        # below doesn't depend on how tightly 510 sequential inserts
+        # happen to land in wall-clock time.
+        for i, log in enumerate(logs):
+            AuditLog.objects.filter(pk=log.pk).update(timestamp=base - timedelta(minutes=i))
+        self.client.login(username='pagadmin', password='x')
+
+    def test_page_one_renders_exactly_ten_rows(self):
+        response = self.client.get(reverse('frontend:audit_log'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['page'].object_list), 10)
+
+    def test_page_two_rows_do_not_overlap_page_one(self):
+        page1 = self.client.get(reverse('frontend:audit_log')).context['page'].object_list
+        page2 = self.client.get(reverse('frontend:audit_log'), {'page': 2}).context['page'].object_list
+        self.assertEqual(len(page2), 10)
+        self.assertEqual(set(l.pk for l in page1) & set(l.pk for l in page2), set())
+
+    def test_previous_disabled_on_first_page_next_disabled_on_last_page(self):
+        first = self.client.get(reverse('frontend:audit_log'))
+        self.assertContains(first, '<button class="btn btn-secondary" type="button" disabled>Previous</button>')
+        self.assertContains(first, '<a href="?page=2" class="btn btn-secondary">Next</a>')
+
+        last = self.client.get(reverse('frontend:audit_log'), {'page': 51})
+        self.assertEqual(last.context['page'].number, 51)
+        self.assertContains(last, '<button class="btn btn-secondary" type="button" disabled>Next</button>')
+
+    def test_out_of_range_page_number_does_not_500(self):
+        response = self.client.get(reverse('frontend:audit_log'), {'page': 9999})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['page'].number, 51)  # clamped to the real last page
+
+    def test_non_numeric_page_number_does_not_500(self):
+        response = self.client.get(reverse('frontend:audit_log'), {'page': 'not-a-number'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['page'].number, 1)
+
+    def test_search_term_survives_a_page_change(self):
+        response = self.client.get(reverse('frontend:audit_log'), {'q': 'BULK_ACTION', 'page': 2})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'q=BULK_ACTION')
+
+    def test_status_toggle_survives_a_page_change(self):
+        response = self.client.get(reverse('frontend:audit_log'), {'status': 'failure', 'page': 3})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['page'].number, 3)
+        self.assertContains(response, 'status=failure')
+
+    def test_status_toggle_click_resets_to_page_one(self):
+        """The toggle's own links must carry no `page` param, so clicking
+        one from deep on a page lands on get_page(None) == page 1, not
+        wherever the click happened to occur."""
+        response = self.client.get(reverse('frontend:audit_log'), {'status': 'failure', 'page': 3})
+        self.assertContains(response, 'href="?status=success"')
+        self.assertContains(response, 'href="?status="')
+
+    def test_row_beyond_the_old_500_cap_is_retrievable_by_search(self):
+        response = self.client.get(reverse('frontend:audit_log'), {'q': 'UNIQUE_ACTION_BEYOND_500'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'VERY_OLD_UNIQUE_ACTION_BEYOND_500')
+
+    def test_row_beyond_the_old_500_cap_is_reachable_by_paging(self):
+        response = self.client.get(reverse('frontend:audit_log'), {'page': 51})
+        self.assertContains(response, 'VERY_OLD_UNIQUE_ACTION_BEYOND_500')
+
+
+class ProductKPIAndExportPaginationTests(TestCase):
+    """KPI cards read from a separate .aggregate() over the whole table
+    (ProductListCreateView.get()), decoupled from whatever page/filter
+    the request also carries; ProductExportView runs the same filter the
+    list page does but never the pagination, so it covers the whole
+    matching set, not just the visible 10 rows."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='kpistaff', email='kpistaff@example.com', password='x',
+            employee_id='EMP-9601', full_name='KPI Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='KPI Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='KPI Supply', company_name='KPI Supply Co', contact_person='Ren',
+            email='kpisupply@example.com', phone='555-0700', address='1 KPI Way',
+        )
+        # 15 products (forces a second page at page size 10); the first 5
+        # are left at their InventoryService.initialize_for_product()
+        # default of zero stock ("Out of stock"), the other 10 stocked
+        # above their reorder_level ("In stock") — a real, non-trivial
+        # filtered subset for the "Out of stock" toggle to narrow.
+        for i in range(15):
+            product = Product.objects.create(
+                sku=f'KPI-SKU-{i:03d}', name=f'KPI Widget {i}', category=self.category,
+                supplier=self.supplier, purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+                reorder_level=10,
+            )
+            InventoryService.initialize_for_product(product)
+            if i >= 5:
+                InventoryService.increase_stock(
+                    product=product, quantity=20, movement_type=MovementType.PURCHASE,
+                    reference_type='TestSetup', reference_id=i, performed_by=self.user,
+                )
+        self.client.login(username='kpistaff', password='x')
+
+    def test_kpi_cards_show_global_totals_unaffected_by_filter(self):
+        unfiltered = self.client.get(reverse('frontend:products'))
+        filtered = self.client.get(reverse('frontend:products'), {'status': 'Out of stock'})
+        self.assertEqual(unfiltered.context['counts']['total'], 15)
+        self.assertEqual(filtered.context['counts']['total'], 15)
+        self.assertEqual(filtered.context['counts']['out_of_stock'], 5)
+        # the filtered PAGE itself is narrowed to the 5 matching rows...
+        self.assertEqual(filtered.context['page'].paginator.count, 5)
+        # ...but the KPI total card is not.
+        self.assertEqual(unfiltered.context['counts']['total'], filtered.context['counts']['total'])
+
+    def test_export_covers_the_whole_filtered_set_not_just_the_visible_page(self):
+        import csv
+        import io
+        response = self.client.get(reverse('frontend:product_export'), {'status': 'Out of stock'})
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.reader(io.StringIO(response.content.decode())))
+        data_rows = len(rows) - 1  # minus header
+        self.assertEqual(data_rows, 5, "export must cover all 5 filtered rows, not the page-1 slice")
+
+
+class RemainingTablesRowCountTests(TestCase):
+    """The rest of the paginated tables (Purchases, Sales, Inventory,
+    Forecasting, Notifications) each get their own lightweight "renders
+    exactly 10 when more than 10 rows exist" proof — the same
+    frontend.filters.paginate() call AuditLogPaginationTests already
+    exercises in depth, applied here to confirm each view actually wires
+    it, not to re-derive the mechanism's own behavior eight times over."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='rowcountuser', email='rowcountuser@example.com', password='x',
+            employee_id='EMP-9701', full_name='Row Count User', role=UserRole.ADMIN,
+        )
+        self.category = Category.objects.create(name='RowCount Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='RowCount Supply', company_name='RowCount Supply Co', contact_person='Kim',
+            email='rowcountsupply@example.com', phone='555-0800', address='1 RowCount Way',
+        )
+        self.client.login(username='rowcountuser', password='x')
+
+    def test_purchases_page_renders_exactly_ten_when_more_exist(self):
+        for _ in range(15):
+            PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.user)
+        response = self.client.get(reverse('frontend:purchases'))
+        self.assertEqual(len(response.context['page'].object_list), 10)
+
+    def test_sales_page_renders_exactly_ten_when_more_exist(self):
+        for _ in range(15):
+            SaleTransaction.objects.create(created_by=self.user)
+        response = self.client.get(reverse('frontend:sales'))
+        self.assertEqual(len(response.context['page'].object_list), 10)
+
+    def test_inventory_page_renders_exactly_ten_when_more_exist(self):
+        for i in range(15):
+            product = Product.objects.create(
+                sku=f'RC-INV-{i:03d}', name=f'RC Inv Widget {i}', category=self.category,
+                supplier=self.supplier, purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+            )
+            InventoryService.initialize_for_product(product)
+        response = self.client.get(reverse('frontend:inventory'))
+        self.assertEqual(len(response.context['page'].object_list), 10)
+
+    def test_forecasting_page_renders_exactly_ten_when_more_exist(self):
+        for i in range(15):
+            product = Product.objects.create(
+                sku=f'RC-FC-{i:03d}', name=f'RC Forecast Widget {i}', category=self.category,
+                supplier=self.supplier, purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+            )
+            DemandForecast.objects.create(
+                product=product, forecast_period=ForecastPeriod.WEEKLY,
+                period_start=timezone.localdate(), period_end=timezone.localdate() + timedelta(days=7),
+                forecasted_demand=Decimal('10.00'), recommended_reorder_qty=5,
+                confidence_score=Decimal('0.75'), model_version='test',
+            )
+        response = self.client.get(reverse('frontend:forecasting'))
+        self.assertEqual(len(response.context['page'].object_list), 10)
+
+    def test_notifications_page_renders_exactly_ten_when_more_exist(self):
+        for i in range(15):
+            Notification.objects.create(
+                recipient=self.user, type=NotificationType.LOW_STOCK,
+                title=f'Notif {i}', message='msg',
+            )
+        response = self.client.get(reverse('frontend:notifications'))
+        self.assertEqual(len(response.context['page'].object_list), 10)
+
+
+class EmptyPaginatedTableRendersCleanlyTests(TestCase):
+    """A paginated table with zero rows must never render "Page 1 of 0";
+    pagination.html's own {% if page.paginator.count %} guard means the
+    whole Previous/Next block is simply absent instead."""
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='emptysuper', email='emptysuper@example.com', password='x',
+            employee_id='EMP-9801', full_name='Empty Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.client.login(username='emptysuper', password='x')
+
+    def test_slow_moving_zero_rows_renders_no_pagination_controls(self):
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['page'].paginator.count, 0)
+        self.assertNotContains(response, 'Page 1 of 0')
+        self.assertContains(response, 'No classified products yet.')
+
+    def test_forecasting_zero_rows_renders_no_pagination_controls(self):
+        response = self.client.get(reverse('frontend:forecasting'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['page'].paginator.count, 0)
+        self.assertNotContains(response, 'Page 1 of 0')
+        self.assertContains(response, 'No forecasts yet.')
+
+
+class RemovedExplainerPanelTests(TestCase):
+    """Phase 4 — Demand Forecasting's "How this forecast works" panel and
+    Slow-Moving/Dead-Stock's "Classification rules" panel were removed;
+    that content now lives solely in docs/DEAD_STOCK_DETECTION.md."""
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='panelsuper', email='panelsuper@example.com', password='x',
+            employee_id='EMP-9901', full_name='Panel Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.client.login(username='panelsuper', password='x')
+
+    def test_forecasting_page_no_longer_has_how_it_works_panel(self):
+        response = self.client.get(reverse('frontend:forecasting'))
+        self.assertNotContains(response, 'How this forecast works')
+
+    def test_slow_moving_page_no_longer_has_classification_rules_panel(self):
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertNotContains(response, 'Classification rules')

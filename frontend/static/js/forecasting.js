@@ -1,13 +1,18 @@
 /* ==========================================================================
-   FORECASTING.JS — Demand Forecasting page: trend chart + table filtering
-   + the "Run forecast now" action. Table search/filter/empty-state is
-   handled by the shared table-filter.js; this file owns the chart (real
-   data via {{ chart_data|json_script:"forecastChartData" }}, the same
-   server-data-into-chart convention dashboard.js/slow-moving.js already
+   FORECASTING.JS — Demand Forecasting page: trend chart + the "Run
+   forecast now" action. Search/category/period are real server-side GET
+   params now (Pagination pass, 2026-08-25 — frontend.filters.filter_
+   forecasts()), submitted via the page's own <form method="get"> and the
+   period toggle's real links, so this file no longer wires
+   table-filter.js and no longer client-side-switches the chart on
+   toggle click — the toggle is a real navigation now, and the reload it
+   causes already re-renders {{ chart_data|json_script:"forecastChartData" }}
+   fresh; initTrendChart() just needs to open on whichever period the
+   reload landed on (read off the server-rendered is-active toggle link)
+   instead of always hardcoding weekly. This file still owns the chart
+   (same server-data-into-chart convention dashboard.js/slow-moving.js
    use) and the Run button's real POST (row-actions.js's postAction(),
-   same as Slow-Moving & Dead Stock's Run button — Phase 11 isn't the
-   first real backend call on an Intelligence page, no reason to invent a
-   second way to make one).
+   same as Slow-Moving & Dead Stock's Run button).
    ========================================================================== */
 
 (function () {
@@ -24,6 +29,11 @@
     }
   }
 
+  function activePeriod() {
+    var active = document.querySelector("#forecastPeriodToggle .is-active");
+    return (active && active.getAttribute("data-value")) || "weekly";
+  }
+
   function initTrendChart() {
     var canvas = document.getElementById("forecastTrendChart");
     if (!canvas || typeof Chart === "undefined") return null;
@@ -32,15 +42,16 @@
     var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     var ctx = canvas.getContext("2d");
     var TREND_DATA = readChartData();
+    var initial = TREND_DATA[activePeriod()] || TREND_DATA.weekly;
 
     var chart = new Chart(ctx, {
       type: "bar",
       data: {
-        labels: TREND_DATA.weekly.labels,
+        labels: initial.labels,
         datasets: [
           {
             label: "Forecasted demand",
-            data: TREND_DATA.weekly.demand,
+            data: initial.demand,
             backgroundColor: COLORS.indigo,
             borderRadius: 6,
             barThickness: 22,
@@ -48,7 +59,7 @@
           },
           {
             label: "Recommended reorder qty",
-            data: TREND_DATA.weekly.reorder,
+            data: initial.reorder,
             type: "line",
             borderColor: COLORS.amber,
             backgroundColor: COLORS.amberSoft,
@@ -92,39 +103,11 @@
       }
     });
 
-    return {
-      setPeriod: function (period) {
-        var range = TREND_DATA[period];
-        if (!range) return;
-        chart.data.labels = range.labels;
-        chart.data.datasets[0].data = range.demand;
-        chart.data.datasets[1].data = range.reorder;
-        chart.update();
-      }
-    };
+    return chart;
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    var trendChart = initTrendChart();
-
-    TableFilter.init({
-      tableBodyId: "forecastTableBody",
-      searchInputId: "forecastSearch",
-      selectFilters: [{ id: "forecastCategoryFilter", attr: "data-category" }],
-      segmentedId: "forecastPeriodToggle",
-      segmentAttr: "data-period",
-      segmentDefault: "weekly",
-      emptyStateId: "forecastEmptyState"
-    });
-
-    var periodToggle = document.getElementById("forecastPeriodToggle");
-    if (periodToggle && trendChart) {
-      periodToggle.addEventListener("click", function (event) {
-        var button = event.target.closest("button[data-value]");
-        if (!button) return;
-        trendChart.setPeriod(button.getAttribute("data-value"));
-      });
-    }
+    initTrendChart();
 
     AsyncRunButton.init({
       buttonId: "runForecastBtn",

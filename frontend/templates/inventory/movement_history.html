@@ -44,7 +44,7 @@
         <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
         Export CSV
       </a>
-      <a href="{% url 'frontend:movement_history_export' %}?{{ export_querystring }}{% if export_querystring %}&{% endif %}format=pdf" class="btn btn-secondary">
+      <a href="{% url 'frontend:movement_history_export' %}?{{ export_querystring }}{% if export_querystring %}&{% endif %}format=pdf" class="btn btn-secondary js-pdf-link">
         <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
         Export PDF
       </a>
@@ -142,25 +142,7 @@
       </div>
     </div>
 
-    <div class="panel-body" style="padding-top:0;">
-      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">
-          Showing {{ page.start_index }}&ndash;{{ page.end_index }} of {{ total_count }} movements
-        </p>
-        <div class="flex gap-2">
-          {% if page.has_previous %}
-            <a href="?{% if export_querystring %}{{ export_querystring }}&{% endif %}page={{ page.previous_page_number }}" class="btn btn-secondary">Previous</a>
-          {% else %}
-            <button class="btn btn-secondary" type="button" disabled>Previous</button>
-          {% endif %}
-          {% if page.has_next %}
-            <a href="?{% if export_querystring %}{{ export_querystring }}&{% endif %}page={{ page.next_page_number }}" class="btn btn-secondary">Next</a>
-          {% else %}
-            <button class="btn btn-secondary" type="button" disabled>Next</button>
-          {% endif %}
-        </div>
-      </div>
-    </div>
+    {% include "includes/pagination.html" with page=page querystring=export_querystring item_label="movements" %}
   </div>
 
 {% endblock %}

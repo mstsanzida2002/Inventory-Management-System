@@ -1,0 +1,33 @@
+{% comment %}
+  Shared pagination controls — the ONE definition every server-paginated
+  table uses (Movement History's own inline markup, extracted here so nine
+  tables don't each carry a copy). Expects:
+    page          — a django.core.paginator Page object (from get_page())
+    querystring   — current GET params with `page` stripped, urlencoded
+                     (so any filter/search/toggle survives Previous/Next)
+    item_label    — plural noun for the "Showing X-Y of Z {item_label}" line
+
+  Renders nothing at all when the table has zero rows — never "Page 1 of 0".
+{% endcomment %}
+{% if page.paginator.count %}
+  <div class="panel-body" style="padding-top:0;">
+    <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
+      <p class="text-slate text-xs" style="margin:0;">
+        Showing {{ page.start_index }}&ndash;{{ page.end_index }} of {{ page.paginator.count }} {{ item_label }}
+        {% if page.paginator.num_pages > 1 %}&middot; Page {{ page.number }} of {{ page.paginator.num_pages }}{% endif %}
+      </p>
+      <div class="flex gap-2">
+        {% if page.has_previous %}
+          <a href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page.previous_page_number }}" class="btn btn-secondary">Previous</a>
+        {% else %}
+          <button class="btn btn-secondary" type="button" disabled>Previous</button>
+        {% endif %}
+        {% if page.has_next %}
+          <a href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page.next_page_number }}" class="btn btn-secondary">Next</a>
+        {% else %}
+          <button class="btn btn-secondary" type="button" disabled>Next</button>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endif %}

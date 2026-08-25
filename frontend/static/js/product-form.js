@@ -264,17 +264,11 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    if (window.TableFilter && getField("productsTableBody")) {
-      TableFilter.init({
-        tableBodyId: "productsTableBody",
-        searchInputId: "productSearch",
-        selectFilters: [
-          { id: "productCategoryFilter", attr: "data-category" },
-          { id: "productStatusFilter", attr: "data-status" }
-        ]
-      });
-    }
-
+    // Pagination pass (2026-08-25) — search/category/status are real
+    // server-side GET params now (frontend.filters.filter_products()),
+    // submitted via the page's own <form method="get">; TableFilter's
+    // client-side row-hiding would only ever see the current page's 10
+    // rows, silently missing matches on later pages (REQ 14.11).
     var tableBody = getField("productsTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
 

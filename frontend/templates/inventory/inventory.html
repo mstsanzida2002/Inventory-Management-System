@@ -30,6 +30,7 @@
   </div>
 
   {# ------------------------------------------------------- Summary strip #}
+  <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All inventory &mdash; not affected by search or filters below</p>
   <div class="stat-strip">
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
@@ -63,17 +64,23 @@
 
   {# --------------------------------------------------------------- Records #}
   <div class="panel">
-    <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
-      <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
-        <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" id="inventorySearch" placeholder="Search by product, SKU or barcode...">
-      </div>
-      <select class="input" id="inventoryStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-        <option value="">All statuses</option>
-        <option value="available">Available</option>
-        <option value="low_stock">Low Stock</option>
-        <option value="out_of_stock">Out of Stock</option>
-      </select>
+    <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
+      <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
+        <div class="field" style="margin-bottom:0; flex:1; min-width:200px; max-width:360px;">
+          <svg class="field-icon"><use href="#icon-search"></use></svg>
+          <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search by product, SKU or barcode...">
+        </div>
+        <select class="input" name="status" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+          <option value="">All statuses</option>
+          <option value="available" {% if status == "available" %}selected{% endif %}>Available</option>
+          <option value="low_stock" {% if status == "low_stock" %}selected{% endif %}>Low Stock</option>
+          <option value="out_of_stock" {% if status == "out_of_stock" %}selected{% endif %}>Out of Stock</option>
+        </select>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        {% if q or status %}
+          <a href="{% url 'frontend:inventory' %}" class="btn btn-secondary">Clear</a>
+        {% endif %}
+      </form>
     </div>
 
     <div class="panel-body no-top-pad">
@@ -92,8 +99,8 @@
             </tr>
           </thead>
           <tbody id="inventoryTableBody">
-            {% for record in records %}
-            <tr data-search="{{ record.product.name|lower }} {{ record.product.sku|lower }} {{ record.product.barcode|lower }}" data-status="{{ record.status }}">
+            {% for record in page %}
+            <tr>
               <td>
                 {{ record.product.name }}
                 <div class="cell-sub">{{ record.product.sku }}</div>
@@ -113,7 +120,11 @@
             {% empty %}
             <tr>
               <td colspan="8" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
-                No inventory records yet — they're created automatically when a product is added.
+                {% if q or status %}
+                  No inventory records match this filter.
+                {% else %}
+                  No inventory records yet — they're created automatically when a product is added.
+                {% endif %}
               </td>
             </tr>
             {% endfor %}
@@ -122,20 +133,8 @@
       </div>
     </div>
 
-    <div class="panel-body" style="padding-top:0;">
-      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing {{ counts.total_skus }} of {{ counts.total_skus }} inventory records</p>
-        <div class="flex gap-2">
-          <button class="btn btn-secondary" type="button" disabled>Previous</button>
-          <button class="btn btn-secondary" type="button">Next</button>
-        </div>
-      </div>
-    </div>
+    {% include "includes/pagination.html" with page=page querystring=querystring item_label="inventory records" %}
   </div>
 
 {% endblock %}
 
-{% block extra_js %}
-  <script src="{% static 'js/table-filter.js' %}"></script>
-  <script src="{% static 'js/inventory.js' %}"></script>
-{% endblock %}

@@ -13,7 +13,7 @@
       <p class="text-slate">{{ counts.total }} product{{ counts.total|pluralize }} across {{ categories|length }} categor{{ categories|length|pluralize:"y,ies" }} and {{ suppliers|length }} supplier{{ suppliers|length|pluralize }}.</p>
     </div>
     <div class="flex gap-3 page-heading-actions">
-      <a href="{% url 'frontend:product_export' %}" class="btn btn-secondary">
+      <a href="{% url 'frontend:product_export' %}{% if querystring %}?{{ querystring }}{% endif %}" class="btn btn-secondary">
         <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
         Export
       </a>
@@ -25,6 +25,7 @@
   </div>
 
   {# ------------------------------------------------------- Summary strip #}
+  <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All products &mdash; not affected by search or filters below</p>
   <div class="stat-strip">
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-box"></use></svg>
@@ -58,25 +59,31 @@
 
   {# ------------------------------------------------------------- Products #}
   <div class="panel">
-    <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
-      <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
-        <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" id="productSearch" placeholder="Search products by name or SKU...">
-      </div>
-      <div class="filter-group">
-        <select class="input" id="productCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
-          <option value="">All categories</option>
-          {% for category in categories %}
-            <option value="{{ category.pk }}">{{ category.name }}</option>
-          {% endfor %}
-        </select>
-        <select class="input" id="productStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-          <option value="">All statuses</option>
-          <option value="In stock">In stock</option>
-          <option value="Low stock">Low stock</option>
-          <option value="Out of stock">Out of stock</option>
-        </select>
-      </div>
+    <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
+      <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
+        <div class="field" style="margin-bottom:0; flex:1; min-width:200px; max-width:360px;">
+          <svg class="field-icon"><use href="#icon-search"></use></svg>
+          <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search products by name or SKU...">
+        </div>
+        <div class="filter-group">
+          <select class="input" name="category" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+            <option value="">All categories</option>
+            {% for category in categories %}
+              <option value="{{ category.pk }}" {% if category_id == category.pk|stringformat:"s" %}selected{% endif %}>{{ category.name }}</option>
+            {% endfor %}
+          </select>
+          <select class="input" name="status" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+            <option value="">All statuses</option>
+            <option value="In stock" {% if status == "In stock" %}selected{% endif %}>In stock</option>
+            <option value="Low stock" {% if status == "Low stock" %}selected{% endif %}>Low stock</option>
+            <option value="Out of stock" {% if status == "Out of stock" %}selected{% endif %}>Out of stock</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        {% if q or category_id or status %}
+          <a href="{% url 'frontend:products' %}" class="btn btn-secondary">Clear</a>
+        {% endif %}
+      </form>
     </div>
 
     <div class="panel-body no-top-pad">
@@ -94,8 +101,8 @@
             </tr>
           </thead>
           <tbody id="productsTableBody" data-base-url="{% url 'frontend:products' %}">
-            {% for product in products %}
-            <tr data-product-id="{{ product.pk }}" data-product="{{ product.edit_json }}" data-search="{{ product.name|lower }} {{ product.sku|lower }}" data-category="{{ product.category.pk }}" data-status="{{ product.stock_label }}">
+            {% for product in page %}
+            <tr data-product-id="{{ product.pk }}" data-product="{{ product.edit_json }}">
               <td>
                 {{ product.name }}
                 <div class="cell-sub">{{ product.sku }}</div>
@@ -127,7 +134,11 @@
             {% empty %}
             <tr>
               <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
-                No products yet — click "Add product" to create the first one.
+                {% if q or category_id or status %}
+                  No products match this filter.
+                {% else %}
+                  No products yet — click "Add product" to create the first one.
+                {% endif %}
               </td>
             </tr>
             {% endfor %}
@@ -136,15 +147,7 @@
       </div>
     </div>
 
-    <div class="panel-body" style="padding-top:0;">
-      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing {{ counts.total }} of {{ counts.total }} products</p>
-        <div class="flex gap-2">
-          <button class="btn btn-secondary" type="button" disabled>Previous</button>
-          <button class="btn btn-secondary" type="button">Next</button>
-        </div>
-      </div>
-    </div>
+    {% include "includes/pagination.html" with page=page querystring=querystring item_label="products" %}
   </div>
 
   {# --------------------------------------------------- Add product modal #}
@@ -460,6 +463,5 @@
   <script src="{% static 'js/form-validation.js' %}"></script>
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
-  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/product-form.js' %}"></script>
 {% endblock %}

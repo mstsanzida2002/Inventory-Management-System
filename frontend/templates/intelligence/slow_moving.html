@@ -27,6 +27,7 @@
   </div>
 
   {# --------------------------------------------------------------- KPIs #}
+  <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All classified products &mdash; not affected by search or filters below</p>
   <div class="kpi-grid">
 
     <div class="kpi-card">
@@ -100,25 +101,32 @@
       </div>
 
       <div class="panel">
-        <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
-          <div class="field" style="margin-bottom:0; flex:1; max-width:300px;">
-            <svg class="field-icon"><use href="#icon-search"></use></svg>
-            <input type="search" class="input" id="classificationSearch" placeholder="Search by product or SKU...">
-          </div>
-          <div class="filter-group">
-            <select class="input" id="classificationCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
-              <option value="">All categories</option>
-              {% for category in categories %}
-                <option>{{ category.name }}</option>
-              {% endfor %}
-            </select>
-            <div class="segmented" id="classificationToggle">
-              <button type="button" class="is-active" data-value="">All</button>
-              <button type="button" data-value="fast">Fast</button>
-              <button type="button" data-value="slow">Slow</button>
-              <button type="button" data-value="dead">Dead</button>
-              <button type="button" data-value="insufficient_data">Insufficient Data</button>
+        <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
+          <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
+            <div class="field" style="margin-bottom:0; flex:1; min-width:180px; max-width:300px;">
+              <svg class="field-icon"><use href="#icon-search"></use></svg>
+              <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search by product or SKU...">
             </div>
+            <div class="filter-group">
+              <select class="input" name="category" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+                <option value="">All categories</option>
+                {% for category in categories %}
+                  <option {% if category.name == category_name %}selected{% endif %}>{{ category.name }}</option>
+                {% endfor %}
+              </select>
+              <input type="hidden" name="classification" value="{{ classification }}">
+              <button type="submit" class="btn btn-secondary">Filter</button>
+              {% if q or category_name or classification %}
+                <a href="{% url 'frontend:slow_moving' %}" class="btn btn-secondary">Clear</a>
+              {% endif %}
+            </div>
+          </form>
+          <div class="segmented" id="classificationToggle">
+            <a href="?{% if classification_toggle_querystring %}{{ classification_toggle_querystring }}&{% endif %}classification=" class="{% if not classification %}is-active{% endif %}">All</a>
+            <a href="?{% if classification_toggle_querystring %}{{ classification_toggle_querystring }}&{% endif %}classification=fast" class="{% if classification == 'fast' %}is-active{% endif %}">Fast</a>
+            <a href="?{% if classification_toggle_querystring %}{{ classification_toggle_querystring }}&{% endif %}classification=slow" class="{% if classification == 'slow' %}is-active{% endif %}">Slow</a>
+            <a href="?{% if classification_toggle_querystring %}{{ classification_toggle_querystring }}&{% endif %}classification=dead" class="{% if classification == 'dead' %}is-active{% endif %}">Dead</a>
+            <a href="?{% if classification_toggle_querystring %}{{ classification_toggle_querystring }}&{% endif %}classification=insufficient_data" class="{% if classification == 'insufficient_data' %}is-active{% endif %}">Insufficient Data</a>
           </div>
         </div>
 
@@ -137,8 +145,8 @@
                 </tr>
               </thead>
               <tbody id="classificationTableBody">
-                {% for c in classifications %}
-                  <tr data-search="{{ c.search_blob }}" data-category="{{ c.product.category.name }}" data-classification="{{ c.classification }}">
+                {% for c in page %}
+                  <tr>
                     <td>{{ c.product.name }}<div class="cell-sub">{{ c.product.sku }}</div></td>
                     <td>{{ c.product.category.name }}</td>
                     <td class="mono">{{ c.last_sold_label }}</td>
@@ -148,27 +156,23 @@
                     <td class="mono" title="Confidence: {% if c.confidence is not None %}{{ c.confidence }}{% else %}—{% endif %}">{% if c.stagnation_index is not None %}{{ c.stagnation_index }}{% else %}&mdash;{% endif %}</td>
                     <td class="text-sm">{{ c.recommendation }}</td>
                   </tr>
+                {% empty %}
+                  <tr>
+                    <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                      {% if q or category_name or classification %}
+                        No products match this filter.
+                      {% else %}
+                        No classified products yet.
+                      {% endif %}
+                    </td>
+                  </tr>
                 {% endfor %}
               </tbody>
             </table>
-
-            <div class="empty-state" id="classificationEmptyState" hidden>
-              <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
-              <div class="empty-state-title">No products match your filters</div>
-              <p class="empty-state-text">Try a different search term, category, or classification.</p>
-            </div>
           </div>
         </div>
 
-        <div class="panel-body" style="padding-top:0;">
-          <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-            <p class="text-slate text-xs" style="margin:0;">Showing {{ classifications|length }} of {{ classifications|length }} classified products</p>
-            <div class="flex gap-2">
-              <button class="btn btn-secondary" type="button" disabled>Previous</button>
-              <button class="btn btn-secondary" type="button" disabled>Next</button>
-            </div>
-          </div>
-        </div>
+        {% include "includes/pagination.html" with page=page querystring=querystring item_label="classified products" %}
       </div>
 
     </div>
@@ -278,7 +282,6 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/row-actions.js' %}"></script>
   <script src="{% static 'js/async-run-button.js' %}"></script>
   <script src="{% static 'js/slow-moving.js' %}"></script>

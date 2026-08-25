@@ -27,6 +27,7 @@
   </div>
 
   {# --------------------------------------------------------------- KPIs #}
+  <p class="text-slate text-xs" style="margin-bottom: var(--sp-2);">All forecasts &mdash; not affected by search or filters below</p>
   <div class="kpi-grid">
 
     <div class="kpi-card">
@@ -91,8 +92,8 @@
   <div class="flex items-center gap-3" style="margin-bottom: var(--sp-5); flex-wrap:wrap;">
     <span class="text-slate text-sm" style="font-weight:600;">Forecast period</span>
     <div class="segmented" id="forecastPeriodToggle">
-      <button type="button" class="is-active" data-value="weekly">Weekly</button>
-      <button type="button" data-value="monthly">Monthly</button>
+      <a href="?{% if period_toggle_querystring %}{{ period_toggle_querystring }}&{% endif %}period=weekly" data-value="weekly" class="{% if period == 'weekly' %}is-active{% endif %}">Weekly</a>
+      <a href="?{% if period_toggle_querystring %}{{ period_toggle_querystring }}&{% endif %}period=monthly" data-value="monthly" class="{% if period == 'monthly' %}is-active{% endif %}">Monthly</a>
     </div>
   </div>
 
@@ -116,18 +117,23 @@
       </div>
 
       <div class="panel">
-        <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
+        <form method="get" class="panel-header" style="align-items:center; padding-bottom: var(--sp-5); flex-wrap:wrap; gap: var(--sp-3);">
           <div class="field" style="margin-bottom:0; flex:1; max-width:320px;">
             <svg class="field-icon"><use href="#icon-search"></use></svg>
-            <input type="search" class="input" id="forecastSearch" placeholder="Search by product or SKU...">
+            <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search by product or SKU...">
           </div>
-          <select class="input" id="forecastCategoryFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
+          <select class="input" name="category" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:190px;">
             <option value="">All categories</option>
             {% for category in categories %}
-              <option>{{ category.name }}</option>
+              <option {% if category.name == category_name %}selected{% endif %}>{{ category.name }}</option>
             {% endfor %}
           </select>
-        </div>
+          <input type="hidden" name="period" value="{{ period }}">
+          <button type="submit" class="btn btn-secondary">Filter</button>
+          {% if q or category_name %}
+            <a href="?period={{ period }}" class="btn btn-secondary">Clear</a>
+          {% endif %}
+        </form>
 
         <div class="panel-body no-top-pad">
           <div class="table-scroll">
@@ -144,8 +150,8 @@
                 </tr>
               </thead>
               <tbody id="forecastTableBody">
-                {% for f in forecasts %}
-                  <tr data-search="{{ f.search_blob }}" data-category="{{ f.product.category.name }}" data-period="{{ f.period_type }}">
+                {% for f in page %}
+                  <tr>
                     <td>{{ f.product.name }}<div class="cell-sub">{{ f.product.sku }}</div></td>
                     <td>{{ f.product.category.name }}</td>
                     <td class="cell-sub">{{ f.period_start|date:"d M" }} &ndash; {{ f.period_end|date:"d M" }}</td>
@@ -154,27 +160,23 @@
                     <td class="mono">{{ f.recommended_reorder_qty }}</td>
                     <td><span class="confidence-bar"><span style="width:{{ f.confidence_pct }}%;"></span></span>{{ f.confidence_pct }}%</td>
                   </tr>
+                {% empty %}
+                  <tr>
+                    <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
+                      {% if q or category_name %}
+                        No forecasts match this filter.
+                      {% else %}
+                        No forecasts yet.
+                      {% endif %}
+                    </td>
+                  </tr>
                 {% endfor %}
               </tbody>
             </table>
-
-            <div class="empty-state" id="forecastEmptyState" hidden>
-              <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
-              <div class="empty-state-title">No forecasts match your filters</div>
-              <p class="empty-state-text">Try a different search term or category, or switch between weekly and monthly forecasts.</p>
-            </div>
           </div>
         </div>
 
-        <div class="panel-body" style="padding-top:0;">
-          <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-            <p class="text-slate text-xs" style="margin:0;">Showing forecasts for {{ products_forecasted }} of {{ products_forecasted }} products</p>
-            <div class="flex gap-2">
-              <button class="btn btn-secondary" type="button" disabled>Previous</button>
-              <button class="btn btn-secondary" type="button" disabled>Next</button>
-            </div>
-          </div>
-        </div>
+        {% include "includes/pagination.html" with page=page querystring=querystring item_label="forecasts" %}
       </div>
 
     </div>
@@ -232,7 +234,6 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/row-actions.js' %}"></script>
   <script src="{% static 'js/async-run-button.js' %}"></script>
   <script src="{% static 'js/forecasting.js' %}"></script>

@@ -21,6 +21,7 @@
   </div>
 
   {# ------------------------------------------------------- Summary strip #}
+  <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All sales &mdash; not affected by search or filters below</p>
   <div class="stat-strip">
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
@@ -61,19 +62,25 @@
 
   {# ------------------------------------------------------------------ Sales #}
   <div class="panel">
-    <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
-      <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
-        <svg class="field-icon"><use href="#icon-search"></use></svg>
-        <input type="search" class="input" id="saleSearch" placeholder="Search by invoice number or customer...">
-      </div>
-      <select class="input" id="saleStatusFilter" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
-        <option value="">All statuses</option>
-        <option value="draft">Draft</option>
-        <option value="pending">Pending Approval</option>
-        <option value="completed">Completed</option>
-        <option value="rejected">Rejected</option>
-        <option value="cancelled">Cancelled</option>
-      </select>
+    <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
+      <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
+        <div class="field" style="margin-bottom:0; flex:1; min-width:200px; max-width:360px;">
+          <svg class="field-icon"><use href="#icon-search"></use></svg>
+          <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search by invoice number or customer...">
+        </div>
+        <select class="input" name="status" style="padding:0.65rem 2.6rem 0.65rem 1.1rem; max-width:170px;">
+          <option value="">All statuses</option>
+          <option value="draft" {% if status == "draft" %}selected{% endif %}>Draft</option>
+          <option value="pending" {% if status == "pending" %}selected{% endif %}>Pending Approval</option>
+          <option value="completed" {% if status == "completed" %}selected{% endif %}>Completed</option>
+          <option value="rejected" {% if status == "rejected" %}selected{% endif %}>Rejected</option>
+          <option value="cancelled" {% if status == "cancelled" %}selected{% endif %}>Cancelled</option>
+        </select>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        {% if q or status %}
+          <a href="{% url 'frontend:sales' %}" class="btn btn-secondary">Clear</a>
+        {% endif %}
+      </form>
     </div>
 
     <div class="panel-body no-top-pad">
@@ -91,8 +98,8 @@
             </tr>
           </thead>
           <tbody id="salesTableBody" data-base-url="{% url 'frontend:sales' %}">
-            {% for sale in sales %}
-            <tr data-sale-id="{{ sale.pk }}" data-search="{{ sale.invoice_number|lower }} {{ sale.customer_name|lower }}" data-status="{{ sale.status }}">
+            {% for sale in page %}
+            <tr data-sale-id="{{ sale.pk }}">
               <td class="mono">{{ sale.invoice_number }}</td>
               <td>{{ sale.customer_name|default:"Walk-in customer" }}</td>
               <td class="mono">{{ sale.transaction_date|date:"d M Y" }}</td>
@@ -121,7 +128,7 @@
                       <button class="pill-btn reject sale-cancel-btn" type="button" aria-label="Cancel sale" {% if not sale.can_cancel %}disabled title="{{ sale.cancel_denied_reason }}"{% endif %}><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
                     {% endif %}
                   {% endif %}
-                  <a class="pill-btn" href="{% url 'frontend:sale_pdf' sale.pk %}" aria-label="Download PDF" title="Download PDF">
+                  <a class="pill-btn js-pdf-link" href="{% url 'frontend:sale_pdf' sale.pk %}" aria-label="Download PDF" title="Download PDF">
                     <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
                   </a>
                 </div>
@@ -130,7 +137,11 @@
             {% empty %}
             <tr>
               <td colspan="7" class="text-slate" style="text-align:center; padding: var(--sp-6) 0;">
-                No sales yet — click "New sale" to record the first one.
+                {% if q or status %}
+                  No sales match this filter.
+                {% else %}
+                  No sales yet — click "New sale" to record the first one.
+                {% endif %}
               </td>
             </tr>
             {% endfor %}
@@ -139,15 +150,7 @@
       </div>
     </div>
 
-    <div class="panel-body" style="padding-top:0;">
-      <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">
-        <p class="text-slate text-xs" style="margin:0;">Showing {{ sales|length }} of {{ sales|length }} sales</p>
-        <div class="flex gap-2">
-          <button class="btn btn-secondary" type="button" disabled>Previous</button>
-          <button class="btn btn-secondary" type="button">Next</button>
-        </div>
-      </div>
-    </div>
+    {% include "includes/pagination.html" with page=page querystring=querystring item_label="sales" %}
   </div>
 
   {% comment %}
@@ -247,6 +250,5 @@
   <script src="{% static 'js/dom-utils.js' %}"></script>
   <script src="{% static 'js/modal-form.js' %}"></script>
   <script src="{% static 'js/line-items.js' %}"></script>
-  <script src="{% static 'js/table-filter.js' %}"></script>
   <script src="{% static 'js/sale-form.js' %}"></script>
 {% endblock %}

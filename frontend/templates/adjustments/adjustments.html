@@ -119,7 +119,7 @@
                     {% endif %}
                   {% endif %}
                   {# Phase 13 — was a decorative "View adjustment" button with no handler at all; now a real download, same pill-btn-as-link pattern purchases.html/sales.html already use for their own PDF exports. #}
-                  <a class="pill-btn" href="{% url 'frontend:adjustment_pdf' adjustment.pk %}" aria-label="Download PDF" title="Download PDF">
+                  <a class="pill-btn js-pdf-link" href="{% url 'frontend:adjustment_pdf' adjustment.pk %}" aria-label="Download PDF" title="Download PDF">
                     <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
                   </a>
                 </div>

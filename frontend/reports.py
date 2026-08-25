@@ -49,6 +49,7 @@ from frontend.models import (
     PurchaseOrder,
     SaleStatus,
     SaleTransaction,
+    StockClassification,
 )
 from frontend.pricing import calculate_totals_breakdown
 
@@ -295,9 +296,10 @@ def generate_sales_summary_pdf(request):
     if date_from or date_to:
         filters_summary.append(f"Date: {date_from or 'any'} to {date_to or 'any'}")
 
+    generated_by = request.user.full_name if request.user.is_authenticated else None
     return pdf_lib.render_tabular_report(
         filename="sales_report.pdf", title="Sales Report", headers=headers, rows=rows,
-        filters_summary=filters_summary,
+        filters_summary=filters_summary, generated_by=generated_by,
     )
 
 
@@ -398,13 +400,39 @@ def build_ai_forecast_report(request):
 
 # ------------------------------------------------- 9. AI Slow-Moving/Dead Stock
 
+def _capital_at_risk(classification, stock_by_product):
+    """current_stock * purchase_price, for DEAD/SLOW products only — the
+    exact definition already recorded against Step 4 in
+    frontend/views.py's DashboardView.get() ("Slot left for capital-at-
+    risk ranking") and docs/09_DASHBOARD.md §4d, built here first since
+    this report is where it was actually requested. Money genuinely tied
+    up in a fast-mover or an unproven insufficient_data row isn't "at
+    risk" in the sense this metric means — those rows get None, not 0,
+    so they sort after every real ranked row rather than tying with a
+    dead product that happens to hold zero stock."""
+    if classification.classification not in (StockClassification.DEAD, StockClassification.SLOW):
+        return None
+    current_stock = stock_by_product.get(classification.product_id, 0)
+    return Decimal(current_stock) * classification.product.purchase_price
+
+
 def build_ai_classification_report(request):
     qs = InventoryClassification.objects.select_related("product", "product__category").order_by("-classified_at")
     category_id = _category_id(request)
     if category_id:
         qs = qs.filter(product__category_id=category_id)
 
-    headers = ["Product", "Classification", "Turnover Rate", "Last Sold", "Days Since Last Sale", "Recommendation"]
+    stock_by_product = dict(InventoryRecord.objects.values_list("product_id", "current_stock"))
+    ranked = [(c, _capital_at_risk(c, stock_by_product)) for c in qs]
+    # Step 4 — capital-at-risk ranking: the point of this report is
+    # deciding what to act on first, and a 95-index dead product holding
+    # Tk 200 of stock matters less than an 80-index slow product holding
+    # Tk 80,000 — sort by capital at risk, not by classification recency.
+    # Rows the metric doesn't apply to (fast/insufficient_data — always
+    # None) sort after every real-valued row, never tied at the top.
+    ranked.sort(key=lambda pair: pair[1] if pair[1] is not None else Decimal("-1"), reverse=True)
+
+    headers = ["Product", "Classification", "Turnover Rate", "Last Sold", "Days Since Last Sale", "Capital at Risk", "Recommendation"]
     rows = [
         [c.product.name, c.get_classification_display(), c.turnover_rate,
          # Prompt 2 (2026-08-24) — days_since_last_sale is genuinely
@@ -413,8 +441,9 @@ def build_ai_classification_report(request):
          # would otherwise produce for every never-sold/insufficient-data
          # row.
          c.last_sold_date or "—", c.days_since_last_sale if c.days_since_last_sale is not None else "—",
+         pdf_lib.format_currency(risk) if risk is not None else "—",
          c.recommendation]
-        for c in qs
+        for c, risk in ranked
     ]
     return "AI Slow-Moving & Dead Stock Report", headers, rows
 
@@ -443,7 +472,7 @@ def generate_csv_response(headers, rows, filename):
     return response
 
 
-def generate_pdf_response(title, headers, rows, filename, filters_summary=None):
+def generate_pdf_response(title, headers, rows, filename, filters_summary=None, generated_by=None):
     """`filters_summary` (Phase 8.99d): an optional list of "Label: value"
     strings rendered under the title, above the table — a report of a
     filtered subset that doesn't say what it was filtered by isn't a
@@ -454,10 +483,11 @@ def generate_pdf_response(title, headers, rows, filename, filters_summary=None):
     Phase 13 — delegates to frontend.pdf.render_tabular_report() for the
     actual document (shared header/footer/style with every other PDF in
     the system now, plus real "Page N of M" and a repeating table
-    header); this function's own signature is unchanged so every caller
-    (ReportExportView, MovementHistoryExportView) needed no changes."""
+    header); this function's own signature is unchanged (`generated_by`
+    added, optional) so every existing caller needed no changes."""
     return pdf_lib.render_tabular_report(
         filename=filename, title=title, headers=headers, rows=rows, filters_summary=filters_summary,
+        generated_by=generated_by,
     )
 
 
@@ -500,7 +530,7 @@ def _approver_signature(approved_by, approved_at, level_label=None):
     }
 
 
-def generate_purchase_order_pdf(po):
+def generate_purchase_order_pdf(po, generated_by=None):
     items = list(po.items.select_related("product").all())
     subtotal, discount_total, tax_total, grand_total = calculate_totals_breakdown(items)
 
@@ -543,10 +573,11 @@ def generate_purchase_order_pdf(po):
         ]),
         meta_extra=meta_extra, totals=totals, signatures=signatures,
         watermark_text=po.get_status_display().upper() if po.status in _WATERMARK_STATUSES else None,
+        generated_by=generated_by,
     )
 
 
-def generate_sale_transaction_pdf(sale):
+def generate_sale_transaction_pdf(sale, generated_by=None):
     items = list(sale.items.select_related("product").all())
     subtotal, discount_total, tax_total, grand_total = calculate_totals_breakdown(items)
 
@@ -584,10 +615,11 @@ def generate_sale_transaction_pdf(sale):
         party=("Bill To", [sale.customer_name or "Walk-in customer"]),
         meta_extra=meta_extra, totals=totals, signatures=signatures,
         watermark_text=sale.get_status_display().upper() if sale.status in _WATERMARK_STATUSES else None,
+        generated_by=generated_by,
     )
 
 
-def generate_adjustment_pdf(adjustment):
+def generate_adjustment_pdf(adjustment, generated_by=None):
     """Phase 13 — new: no per-adjustment document existed before this
     (only the whole-Adjustments report table did). No party block —
     an adjustment isn't transacted with a supplier or customer; this
@@ -626,4 +658,5 @@ def generate_adjustment_pdf(adjustment):
         col_widths=[130, 70, 70, 60, 145], col_aligns=["L", "L", "L", "C", "L"],
         party=None, meta_extra=meta_extra, totals=None, signatures=signatures,
         watermark_text="REJECTED" if adjustment.status == AdjustmentStatus.REJECTED else None,
+        generated_by=generated_by,
     )

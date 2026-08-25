@@ -109,7 +109,15 @@
         if (toField && toField.value) params.set("date_to", toField.value);
         if (categoryField && categoryField.value) params.set("category", categoryField.value);
 
-        window.location.href = base + "?" + params.toString();
+        var url = base + "?" + params.toString();
+        // REQ 18.7 (docs/bugsfound.md BUG-81) — PDF generation is slow
+        // enough to need a loading indicator; CSV is a near-instant text
+        // dump and stays a plain navigation, same as before.
+        if (format === "pdf" && window.PdfDownload) {
+          window.PdfDownload.fetchAndSave(url, button);
+        } else {
+          window.location.href = url;
+        }
       });
     });
   });

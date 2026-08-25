@@ -49,7 +49,7 @@
       <h4 style="margin-bottom:0.3rem;">Inventory Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Current stock, value, and status for every product.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'inventory' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'inventory' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'inventory' %}?format=csv">CSV</a>
       </div>
     </div>
@@ -59,7 +59,7 @@
       <h4 style="margin-bottom:0.3rem;">Purchase Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Purchase orders and line items by supplier and date.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'purchases' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'purchases' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'purchases' %}?format=csv">CSV</a>
       </div>
     </div>
@@ -76,7 +76,7 @@
       <h4 style="margin-bottom:0.3rem;">Inventory Movement Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Every stock change, in or out, with reference.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'movements' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'movements' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'movements' %}?format=csv">CSV</a>
       </div>
     </div>
@@ -86,7 +86,7 @@
       <h4 style="margin-bottom:0.3rem;">Inventory Adjustment Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Approved and rejected stock adjustments.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'adjustments' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'adjustments' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'adjustments' %}?format=csv">CSV</a>
       </div>
     </div>
@@ -103,7 +103,7 @@
       <h4 style="margin-bottom:0.3rem;">Out of Stock Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Products with zero units on hand.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'out-of-stock' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'out-of-stock' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'out-of-stock' %}?format=csv">CSV</a>
       </div>
     </div>
@@ -113,7 +113,7 @@
       <h4 style="margin-bottom:0.3rem;">AI Demand Forecast Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Forecasted demand and recommended reorder quantities.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-forecasts' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'ai-forecasts' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-forecasts' %}?format=csv">CSV</a>
       </div>
     </div>
@@ -123,7 +123,7 @@
       <h4 style="margin-bottom:0.3rem;">AI Slow-Moving &amp; Dead Stock Report</h4>
       <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Classification breakdown and recommendations.</p>
       <div class="flex gap-2">
-        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-classifications' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'ai-classifications' %}?format=pdf">PDF</a>
         <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'ai-classifications' %}?format=csv">CSV</a>
       </div>
     </div>

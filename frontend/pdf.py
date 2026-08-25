@@ -27,6 +27,7 @@ directly from that and are disclosed rather than silently worked around:
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 from django.http import HttpResponse
 from django.utils import timezone
@@ -36,6 +37,7 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.platypus import (
     BaseDocTemplate, Frame, KeepTogether, PageTemplate, Paragraph, Spacer,
@@ -112,6 +114,19 @@ def _styles():
         "grand_total_label": ParagraphStyle("grand_total_label", fontName="Helvetica-Bold", fontSize=12, leading=16, textColor=INK, alignment=TA_RIGHT),
         "grand_total_value": ParagraphStyle("grand_total_value", fontName="Helvetica-Bold", fontSize=12, leading=16, textColor=BRAND_INDIGO, alignment=TA_RIGHT),
         "sig_name": ParagraphStyle("sig_name", fontName="Helvetica-Bold", fontSize=9.5, leading=13, textColor=INK),
+        # render_tabular_report()'s own cells — matches _line_items_table()'s
+        # TableStyle FONTSIZE (8.5) exactly, so a Paragraph-wrapped cell
+        # looks identical to the plain-string cells it replaces, not a
+        # visibly different size next to them.
+        "table_cell": ParagraphStyle("table_cell", fontName="Helvetica", fontSize=8.5, leading=11, textColor=INK),
+        "table_cell_right": ParagraphStyle("table_cell_right", fontName="Helvetica", fontSize=8.5, leading=11, textColor=INK, alignment=TA_RIGHT),
+        # Header cells wrap too (see render_tabular_report()'s own note on
+        # why): a plain-string header ("Recommended Reorder Qty") sitting
+        # over a narrow numeric column doesn't wrap, doesn't clip — it
+        # just overflows into the next column's header, unreadable at the
+        # exact boundary the two headers meet.
+        "table_header": ParagraphStyle("table_header", fontName="Helvetica-Bold", fontSize=8.5, leading=11, textColor=colors.white),
+        "table_header_right": ParagraphStyle("table_header_right", fontName="Helvetica-Bold", fontSize=8.5, leading=11, textColor=colors.white, alignment=TA_RIGHT),
     }
 
 
@@ -213,7 +228,7 @@ def _wrap_detail_line(parts, max_chars):
     return ["  |  ".join(parts[:mid]), "  |  ".join(parts[mid:])]
 
 
-def _draw_footer(canvas, page_size, profile, generated_at):
+def _draw_footer(canvas, page_size, profile, generated_at, generated_by=None):
     canvas.saveState()
     page_w, _ = page_size
     canvas.setStrokeColor(BORDER)
@@ -222,7 +237,10 @@ def _draw_footer(canvas, page_size, profile, generated_at):
 
     canvas.setFont("Helvetica", 7.5)
     canvas.setFillColor(SLATE)
-    canvas.drawString(MARGIN, FOOTER_H - 6 * mm, f"Generated {format_datetime(generated_at)}")
+    generated_line = f"Generated {format_datetime(generated_at)}"
+    if generated_by:
+        generated_line += f" by {generated_by}"
+    canvas.drawString(MARGIN, FOOTER_H - 6 * mm, generated_line)
     canvas.drawString(MARGIN, FOOTER_H - 10 * mm, "This is a computer-generated document.")
     canvas.drawRightString(page_w - MARGIN, FOOTER_H - 10 * mm, (profile["name"] or "")[:60])
     # Page N of M is drawn by _NumberedCanvas itself, once the total page
@@ -230,10 +248,10 @@ def _draw_footer(canvas, page_size, profile, generated_at):
     canvas.restoreState()
 
 
-def _page_decorator(page_size, profile, watermark_text, generated_at):
+def _page_decorator(page_size, profile, watermark_text, generated_at, generated_by=None):
     def _decorate(canvas, doc):
         _draw_header(canvas, page_size, profile, watermark_text)
-        _draw_footer(canvas, page_size, profile, generated_at)
+        _draw_footer(canvas, page_size, profile, generated_at, generated_by)
     return _decorate
 
 
@@ -245,13 +263,13 @@ def _frame(page_size):
     )
 
 
-def _make_doc(buffer, title, page_size, profile, watermark_text=None, generated_at=None):
+def _make_doc(buffer, title, page_size, profile, watermark_text=None, generated_at=None, generated_by=None):
     generated_at = generated_at or timezone.now()
     doc = BaseDocTemplate(
         buffer, pagesize=page_size, title=title,
         leftMargin=MARGIN, rightMargin=MARGIN, topMargin=MARGIN, bottomMargin=MARGIN,
     )
-    decorate = _page_decorator(page_size, profile, watermark_text, generated_at)
+    decorate = _page_decorator(page_size, profile, watermark_text, generated_at, generated_by)
     doc.addPageTemplates([PageTemplate(id="main", frames=[_frame(page_size)], onPage=decorate)])
     return doc
 
@@ -392,18 +410,23 @@ def render_document(
     *, filename, doc_type_label, doc_number, issue_date, status_label, status_variant,
     table_headers, table_rows, col_widths, col_aligns,
     party=None, meta_extra=None, totals=None, signatures=None, watermark_text=None,
+    generated_by=None,
 ):
     """The shared shape every transactional document (Purchase Order,
     Sales Invoice, Stock Adjustment Note) is built from — see the Party
     block/Totals block/Signature block helpers above for what each
     optional section renders. `party`: (heading, [line, ...]) or None.
     `totals`: [(label, value_str, emphasized_bool), ...] or None.
-    `signatures`: [{'role','name','timestamp','level'}, ...] or None."""
+    `signatures`: [{'role','name','timestamp','level'}, ...] or None.
+    `generated_by`: the requesting user's display name, shown in the
+    footer alongside the generation timestamp — optional (every caller
+    that isn't a real request, direct test calls included, still
+    produces a valid document with no "by ..." clause)."""
     from frontend.models import SystemSettings
     profile = SystemSettings.get_company_profile()
     styles = _styles()
     buffer = BytesIO()
-    doc = _make_doc(buffer, f"{doc_type_label} {doc_number}", PORTRAIT, profile, watermark_text)
+    doc = _make_doc(buffer, f"{doc_type_label} {doc_number}", PORTRAIT, profile, watermark_text, generated_by=generated_by)
 
     elements = [Spacer(1, 2 * mm)]
 
@@ -436,29 +459,60 @@ def render_document(
     return _response(buffer, filename)
 
 
-def render_tabular_report(*, filename, title, headers, rows, filters_summary=None, watermark_text=None):
+def render_tabular_report(*, filename, title, headers, rows, filters_summary=None, watermark_text=None, generated_by=None):
     """The shared shape for the 9 REPORT_BUILDERS exports and Movement
     History's export — a title, an optional filters line, then one wide
     table. Same header/footer/palette as render_document(), no party/
     totals/signature blocks (a report is plural by nature; a single
     "totals" line across mixed rows wouldn't mean anything). Wide tables
-    (>6 columns) render landscape; narrower ones stay portrait."""
+    (>6 columns) render landscape; narrower ones stay portrait.
+    `generated_by`: see render_document()'s own docstring — same optional
+    footer credit, same graceful no-user fallback."""
     from frontend.models import SystemSettings
     profile = SystemSettings.get_company_profile()
     styles = _styles()
     page_size = LANDSCAPE if len(headers) > 6 else PORTRAIT
     buffer = BytesIO()
-    doc = _make_doc(buffer, title, page_size, profile, watermark_text)
+    doc = _make_doc(buffer, title, page_size, profile, watermark_text, generated_by=generated_by)
 
     elements = [Spacer(1, 2 * mm), Paragraph(title.upper(), styles["doc_title"]), Spacer(1, 2 * mm)]
     if filters_summary:
         elements.append(Paragraph("Filters: " + "; ".join(filters_summary), styles["small"]))
     elements.append(Spacer(1, 4 * mm))
 
-    display_rows = [[str(cell) for cell in row] for row in rows]
-    if not display_rows:
-        display_rows = [["No data available for the selected filters."] + [""] * (len(headers) - 1)]
-    elements.append(_line_items_table(headers, display_rows, None, _guess_aligns(headers)))
+    if not rows:
+        rows = [["No data available for the selected filters."] + [""] * (len(headers) - 1)]
+
+    # BUG found and fixed this pass — colWidths=None left every column's
+    # width to ReportLab's own auto-sizing, which sizes a column to fit
+    # its longest cell UNWRAPPED (Table only wraps Paragraph/flowable
+    # cells, and these were plain strings). A free-text column like
+    # "Recommendation" ("'Analog Wall Clock' is slow-moving..." — a full
+    # sentence) forced a natural width far wider than the page; the
+    # table still "built" with no error, but silently rendered wider
+    # than the frame, clipping the earliest columns (Product,
+    # Classification) off the left edge entirely — caught by actually
+    # opening the AI Slow-Moving/Dead Stock Report PDF, not by any
+    # automated test (a byte-count/magic-bytes check can't see a missing
+    # column). Fixed at the root: real colWidths sized to the page
+    # (_guess_col_widths(), numeric-hint columns narrow and fixed, the
+    # rest splitting what's left), and every cell wrapped in a Paragraph
+    # so long text wraps within its column instead of dictating one.
+    aligns = _guess_aligns(headers)
+    available_width = page_size[0] - 2 * MARGIN
+    col_widths = _guess_col_widths(headers, aligns, available_width)
+    cell_style = {"L": styles["table_cell"], "C": styles["table_cell"], "R": styles["table_cell_right"]}
+    # xml-escaped: Paragraph parses its text as mini-XML, so a raw '&'/'<'
+    # in a product name or free-text recommendation would otherwise be a
+    # parse error, not just a display glitch — plain strings never had
+    # this risk, this is the one new constraint wrapping cells introduces.
+    display_rows = [
+        [Paragraph(escape(str(cell)), cell_style[aligns[i]]) for i, cell in enumerate(row)]
+        for row in rows
+    ]
+    header_style = {"L": styles["table_header"], "C": styles["table_header"], "R": styles["table_header_right"]}
+    display_headers = [Paragraph(escape(str(h)), header_style[aligns[i]]) for i, h in enumerate(headers)]
+    elements.append(_line_items_table(display_headers, display_rows, col_widths, aligns))
 
     doc.build(elements, canvasmaker=_NumberedCanvas)
     return _response(buffer, filename)
@@ -469,5 +523,42 @@ def _guess_aligns(headers):
     metadata the way render_document()'s callers do — headers are plain
     strings. A conservative name-based guess (numeric-looking headers
     right-aligned, everything else left) beats left-aligning money."""
-    numeric_hints = ("qty", "quantity", "cost", "price", "total", "value", "amount", "stock", "level", "rate", "confidence", "days", "change", "%")
+    numeric_hints = ("qty", "quantity", "cost", "price", "total", "value", "amount", "stock", "level", "rate", "confidence", "days", "change", "%", "risk")
     return ["R" if any(hint in h.lower() for hint in numeric_hints) else "L" for h in headers]
+
+
+def _guess_col_widths(headers, aligns, available_width):
+    """Real, page-fitting colWidths for render_tabular_report() — the
+    fix for the bug documented at that function's own call site: passing
+    colWidths=None left auto-sizing free to make one long free-text
+    column (e.g. a Recommendation sentence) wide enough to push the
+    whole table past the frame, silently clipping earlier columns off
+    the page. 'R' columns (numeric — qty/price/rate/etc., per
+    _guess_aligns()'s own hints) are narrow and fixed-width; whatever's
+    left splits evenly across the 'L'/'C' (text) columns, which is what
+    Paragraph-wrapping (see the caller) actually needs room to wrap
+    into. Never used for render_document()'s own tables — those already
+    pass hand-tuned explicit widths for their fixed, known column sets.
+
+    numeric_width isn't a bare guess: a fixed 70pt was briefly tried and
+    still broke — "Recommended Reorder Qty" (a real header name) has no
+    single word that fits 70pt minus the table's own 12pt of cell
+    padding, so ReportLab's Paragraph wrapped it mid-word ("Recommende" /
+    "d Reorder Qty"), same bug's smaller sibling. Measured instead: the
+    widest *single word* across every 'R' header's own text, at the
+    exact bold 8.5pt the header row renders in, plus the same padding —
+    a word is the real wrap unit, not the whole header (which is allowed
+    to wrap across lines, just never mid-word)."""
+    numeric_hint_width = 70
+    cell_padding = 12  # _line_items_table's own LEFTPADDING(6) + RIGHTPADDING(6)
+    for header, align in zip(headers, aligns):
+        if align != "R":
+            continue
+        for word in str(header).split():
+            numeric_hint_width = max(numeric_hint_width, stringWidth(word, "Helvetica-Bold", 8.5) + cell_padding + 2)
+
+    text_cols = [i for i, a in enumerate(aligns) if a != "R"]
+    numeric_cols = len(aligns) - len(text_cols)
+    reserved = numeric_hint_width * numeric_cols
+    text_width = max(60, (available_width - reserved) / max(len(text_cols), 1))
+    return [numeric_hint_width if a == "R" else text_width for a in aligns]

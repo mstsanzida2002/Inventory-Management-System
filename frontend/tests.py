@@ -3459,6 +3459,117 @@ class PDFDocumentQualityTests(TestCase):
         self.assertGreater(int(match.group(1)), 1)
 
 
+class PDFGeneratedByTests(TestCase):
+    """REQ 17.2 redesign pass — the one genuinely missing header/footer
+    element Phase 13 didn't have: who generated the document. Everything
+    else the redesign asked for (live company header/logo, shared
+    frontend/pdf.py module, page numbers, timestamp, graceful degradation)
+    was already built and is covered by PDFCompanyBrandingTests/
+    PDFDocumentQualityTests above — this only covers `generated_by`."""
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='pdfredsuper', email='pdfredsuper@example.com', password='x',
+            employee_id='EMP-9701', full_name='Priya Featherstone', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Redesign Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Redesign Supply', company_name='Redesign Supply Co', contact_person='Jo',
+            email='redesignsupply@example.com', phone='555-0800', address='1 Redesign Way', is_active=True,
+        )
+        self.po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.supervisor)
+        product = Product.objects.create(
+            sku='PDFRED-SKU-001', name='Redesign Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+        PurchaseOrderItem.objects.create(purchase_order=self.po, product=product, ordered_qty=1, unit_price=Decimal('10.00'))
+
+    def test_generating_user_appears_in_footer_when_downloaded_through_the_real_view(self):
+        self.client.login(username='pdfredsuper', password='x')
+        response = self.client.get(reverse('frontend:purchase_pdf', args=[self.po.pk]))
+        text = _extract_pdf_text(response.content)
+        self.assertIn(b'Priya Featherstone', text)
+
+    def test_generated_by_omitted_gracefully_when_not_supplied(self):
+        """Direct calls (every pre-existing test in this file that calls
+        generate_purchase_order_pdf()/generate_sale_transaction_pdf()/
+        generate_adjustment_pdf() with no generated_by, plus any future
+        system/no-request caller) must still produce a valid document
+        with no dangling 'by ...' clause — not 'by None'."""
+        from frontend import reports as report_lib
+        response = report_lib.generate_purchase_order_pdf(self.po)
+        text = _extract_pdf_text(response.content)
+        self.assertNotIn(b'by None', text)
+        self.assertTrue(response.content.startswith(b'%PDF'))
+
+
+class ClassificationReportCapitalAtRiskTests(TestCase):
+    """Step 4's capital-at-risk ranking (current_stock * purchase_price,
+    DEAD/SLOW only — the exact definition already recorded against Step 4
+    in frontend/views.py's DashboardView.get() comment and
+    docs/09_DASHBOARD.md §4d), built here first per this task's explicit
+    instruction that the classification report must carry it."""
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='carsuper', email='carsuper@example.com', password='x',
+            employee_id='EMP-9711', full_name='Capital Super', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='Risk Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Risk Supply', company_name='Risk Supply Co', contact_person='Jo',
+            email='risksupply@example.com', phone='555-0900', address='1 Risk Way', is_active=True,
+        )
+
+    def _product(self, sku, purchase_price, stock, classification):
+        product = Product.objects.create(
+            sku=sku, name=sku, category=self.category, supplier=self.supplier,
+            purchase_price=Decimal(purchase_price), selling_price=Decimal(purchase_price) * 2,
+        )
+        InventoryService.initialize_for_product(product)
+        InventoryService.increase_stock(
+            product=product, quantity=stock, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.supervisor,
+        )
+        InventoryClassification.objects.create(product=product, classification=classification, recommendation='x')
+        return product
+
+    def test_capital_at_risk_ranks_dead_and_slow_by_value_not_recency(self):
+        # low-value dead product, classified most recently
+        low_value_dead = self._product('CAR-LOW-DEAD', '5.00', 4, StockClassification.DEAD)
+        # high-value slow product, classified longest ago -- must still
+        # outrank the low-value one if the sort is genuinely by risk
+        high_value_slow = self._product('CAR-HIGH-SLOW', '500.00', 40, StockClassification.SLOW)
+        InventoryClassification.objects.filter(product=low_value_dead).update(classified_at=timezone.now())
+        InventoryClassification.objects.filter(product=high_value_slow).update(classified_at=timezone.now() - timedelta(days=10))
+        self._product('CAR-FAST', '50.00', 100, StockClassification.FAST)
+
+        self.client.login(username='carsuper', password='x')
+        base = reverse('frontend:report_export', args=['ai-classifications'])
+
+        pdf_response = self.client.get(base + '?format=pdf')
+        pdf_text = _extract_pdf_text(pdf_response.content)
+        # The header wraps onto two lines in its own (now-narrow, numeric)
+        # column -- Paragraph splits "Capital at Risk" into separate Tj
+        # calls per line, so the literal contiguous substring is gone even
+        # though the PDF renders it correctly (verified visually). Assert
+        # on the actual risk values instead -- stronger anyway, since it
+        # proves the numbers rendered, not just that a header string did.
+        self.assertIn(b'Capital at', pdf_text)
+        self.assertIn(b'Tk 20,000.00', pdf_text)
+        self.assertIn(b'Tk 20.00', pdf_text)
+
+        csv_response = self.client.get(base + '?format=csv')
+        text = csv_response.content.decode()
+        self.assertIn('Capital at Risk', text)
+        self.assertLess(
+            text.index('CAR-HIGH-SLOW'), text.index('CAR-LOW-DEAD'),
+            "Tk 20,000 at risk must rank above Tk 20 despite being classified longer ago",
+        )
+        fast_row_line = [line for line in text.splitlines() if 'CAR-FAST' in line][0]
+        self.assertIn('—', fast_row_line, "capital-at-risk doesn't apply to fast-moving stock")
+
+
 # --------------------------------------------------------------- Phase 8
 # Audit Log, Notifications, Users & Roles, Settings, Reports. Real HTTP
 # round-trips through frontend/urls.py, same style as Phase 7's workflow
@@ -4228,6 +4339,10 @@ class ReportsViewTests(TestCase):
             self.assertEqual(pdf_response.status_code, 200, slug)
             self.assertEqual(pdf_response['Content-Type'], 'application/pdf')
             self.assertTrue(pdf_response.content.startswith(b'%PDF-'), f"{slug} PDF must start with the PDF magic bytes")
+            # REQ 17.2 redesign pass — a real rendered header/footer/table
+            # is never this small; catches a silently empty/broken PDF
+            # that still happens to start with the right magic bytes.
+            self.assertGreater(len(pdf_response.content), 1500, f"{slug} PDF must be a real document, not an empty stub")
 
             csv_response = self.client.get(base + '?format=csv')
             self.assertEqual(csv_response.status_code, 200, slug)

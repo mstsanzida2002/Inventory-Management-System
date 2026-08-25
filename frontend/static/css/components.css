@@ -43,6 +43,17 @@
 }
 .btn-ghost:hover { background: var(--c-slate-100); }
 
+/* REQ 18.7 — pdf-download.js's loading state for a PDF export link/button
+   mid-fetch. `<a>` has no :disabled, so this is a plain class the script
+   toggles itself; pointer-events:none is what actually blocks a second
+   click, opacity is just the visual echo of that (same look .pill-btn's
+   own :disabled already uses, applied here to an anchor). */
+.js-pdf-link.is-loading {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-block { width: 100%; }
 .btn-lg { padding: 1rem 2rem; font-size: var(--fs-md); }
 

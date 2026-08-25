@@ -1399,7 +1399,7 @@ class PurchaseOrderPDFView(AnyStaffMixin, View):
 
     def get(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
-        return report_lib.generate_purchase_order_pdf(po)
+        return report_lib.generate_purchase_order_pdf(po, generated_by=request.user.full_name)
 
 
 # ----------------------------------------------------------------- Sales
@@ -1586,7 +1586,7 @@ class SaleTransactionPDFView(AnyStaffMixin, View):
             request.user, audit.SALE_INVOICE_PRINTED, "sales",
             affected_id=sale.pk, status="success", request=request,
         )
-        return report_lib.generate_sale_transaction_pdf(sale)
+        return report_lib.generate_sale_transaction_pdf(sale, generated_by=request.user.full_name)
 
 
 # ------------------------------------------------------------- Inventory
@@ -1748,6 +1748,7 @@ class MovementHistoryExportView(AnyStaffMixin, View):
                 filters_summary.append("None — full ledger")
             return report_lib.generate_pdf_response(
                 title, headers, rows, "movement_history.pdf", filters_summary=filters_summary,
+                generated_by=request.user.full_name,
             )
 
         return report_lib.generate_csv_response(headers, rows, "movement_history.csv")
@@ -1868,7 +1869,7 @@ class AdjustmentPDFView(AnyStaffMixin, View):
 
     def get(self, request, pk):
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
-        return report_lib.generate_adjustment_pdf(adjustment)
+        return report_lib.generate_adjustment_pdf(adjustment, generated_by=request.user.full_name)
 
 # Phase 8.99j — closes BUG-43: both views had zero auth requirement at
 # all (reachable by anyone, logged in or not), found in Phase 8.97's
@@ -2212,7 +2213,9 @@ class ReportExportView(SupervisorRequiredMixin, View):
         if export_format == "pdf":
             audit.log_action(request.user, audit.REPORT_EXPORTED_PDF, "reports", status="success",
                               details={"report": report_type}, request=request)
-            return report_lib.generate_pdf_response(title, headers, rows, f"{filename_base}_report.pdf")
+            return report_lib.generate_pdf_response(
+                title, headers, rows, f"{filename_base}_report.pdf", generated_by=request.user.full_name,
+            )
         elif export_format == "csv":
             audit.log_action(request.user, audit.REPORT_EXPORTED_CSV, "reports", status="success",
                               details={"report": report_type}, request=request)

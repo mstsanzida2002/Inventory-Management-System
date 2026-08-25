@@ -127,8 +127,18 @@ AI_MODEL_RETRAIN_FAILED     = 'AI_MODEL_RETRAIN_FAILED'
 AI_FORECASTS_GENERATED      = 'AI_FORECASTS_GENERATED'
 AI_CLASSIFICATION_RUN       = 'AI_CLASSIFICATION_RUN'
 AI_CLASSIFICATION_FAILED    = 'AI_CLASSIFICATION_FAILED'
+AI_PRODUCT_RECLASSIFIED     = 'AI_PRODUCT_RECLASSIFIED'
+# BUG-82 (docs/bugsfound.md) — fires whenever a SETTINGS_UPDATED save
+# changes any of the ten stagnation-index knowledge-base fields (the
+# four factor weights, both index thresholds, target_days_of_cover,
+# extreme_coverage_days, min_observation_days, min_sale_events).
+AI_CLASSIFIER_WEIGHTS_CHANGED = 'AI_CLASSIFIER_WEIGHTS_CHANGED'
 
 # Settings
+# BUG-82 — details= is no longer always {}: SETTINGS_UPDATED now carries
+# a field-level diff, {"field": {"old": ..., "new": ...}} per changed
+# field, empty only when nothing actually changed. Closes REQ 17.10
+# ("configuration history") — see docs/bugsfound.md BUG-65/BUG-82.
 SETTINGS_UPDATED        = 'SETTINGS_UPDATED'
 ```
 

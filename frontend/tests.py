@@ -3984,6 +3984,66 @@ class SettingsViewTests(TestCase):
         self.assertNotEqual(SystemSettings.get_settings().company_name, 'Hacked Co')
 
 
+class SettingsAuditDiffTests(TestCase):
+    """BUG-82 (docs/bugsfound.md) — PART B1/B2: SETTINGS_UPDATED
+    used to fire with details={} regardless of what changed; it now
+    carries a field-level {"field": {"old": ..., "new": ...}} diff, and
+    AI_CLASSIFIER_WEIGHTS_CHANGED fires alongside it whenever any of the
+    ten stagnation-index knowledge-base fields specifically change."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='sadadmin', email='sadadmin@example.com', password='x',
+            employee_id='EMP-8040', full_name='Settings Audit Admin', role=UserRole.ADMIN,
+        )
+        self.client.login(username='sadadmin', password='x')
+
+    def test_classifier_weight_change_emits_ai_classifier_weights_changed_with_old_new_and_actor(self):
+        # Must still sum to 1.00 (SystemSettings.clean()) — only recency
+        # and turnover actually move from their 0.40/0.30 defaults.
+        response = self.client.post(reverse('frontend:settings'), {
+            'weight_recency': '0.50', 'weight_turnover': '0.20',
+            'weight_coverage': '0.20', 'weight_frequency': '0.10',
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+
+        entry = AuditLog.objects.get(action='AI_CLASSIFIER_WEIGHTS_CHANGED')
+        self.assertEqual(entry.user, self.admin)
+        self.assertEqual(entry.details['weight_recency'], {'old': '0.40', 'new': '0.50'})
+        self.assertEqual(entry.details['weight_turnover'], {'old': '0.30', 'new': '0.20'})
+        self.assertNotIn('weight_coverage', entry.details, "unchanged field must not appear in the diff")
+
+    def test_non_classifier_change_does_not_emit_classifier_event(self):
+        response = self.client.post(reverse('frontend:settings'), {'company_name': 'Renamed Co'})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(AuditLog.objects.filter(action='AI_CLASSIFIER_WEIGHTS_CHANGED').exists())
+
+    def test_settings_updated_carries_field_level_diff(self):
+        response = self.client.post(reverse('frontend:settings'), {'company_name': 'Diff Co'})
+        self.assertEqual(response.status_code, 200, response.content)
+
+        entry = AuditLog.objects.filter(action='SETTINGS_UPDATED').latest('timestamp')
+        self.assertEqual(entry.details['company_name']['new'], 'Diff Co')
+        self.assertNotEqual(entry.details['company_name']['old'], 'Diff Co')
+
+    def test_unchanged_resubmit_produces_empty_diff(self):
+        self.client.post(reverse('frontend:settings'), {'company_name': 'Same Co'})
+        self.client.post(reverse('frontend:settings'), {'company_name': 'Same Co'})
+        second = AuditLog.objects.filter(action='SETTINGS_UPDATED').latest('timestamp')
+        self.assertEqual(second.details, {}, "resubmitting identical values must not fabricate a diff")
+
+    def test_classifier_audit_entries_remain_append_only(self):
+        self.client.post(reverse('frontend:settings'), {
+            'weight_recency': '0.50', 'weight_turnover': '0.20',
+            'weight_coverage': '0.20', 'weight_frequency': '0.10',
+        })
+        entry = AuditLog.objects.get(action='AI_CLASSIFIER_WEIGHTS_CHANGED')
+        with self.assertRaises(PermissionError):
+            entry.save()
+        with self.assertRaises(PermissionError):
+            entry.delete()
+
+
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class CompanyLogoUploadTests(TestCase):
     """Phase 13 Task 2 — company_logo is a plain FileField (not

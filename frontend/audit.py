@@ -180,6 +180,14 @@ REPORT_EXPORTED_CSV = 'REPORT_EXPORTED_CSV'
 AI_MODEL_RETRAINED = 'AI_MODEL_RETRAINED'
 AI_MODEL_RETRAIN_FAILED = 'AI_MODEL_RETRAIN_FAILED'
 AI_FORECASTS_GENERATED = 'AI_FORECASTS_GENERATED'
+# BUG-82 (docs/bugsfound.md) — fires whenever an admin changes
+# any of the stagnation-index knowledge-base fields on SystemSettings
+# (the four factor weights, both index thresholds, target_days_of_cover,
+# extreme_coverage_days, min_observation_days, min_sale_events). Separate
+# from the generic SETTINGS_UPDATED below because these specific fields
+# directly change what SLOW/DEAD means for every product in the system —
+# worth being able to find without scanning every settings change.
+AI_CLASSIFIER_WEIGHTS_CHANGED = 'AI_CLASSIFIER_WEIGHTS_CHANGED'
 AI_CLASSIFICATION_RUN = 'AI_CLASSIFICATION_RUN'
 AI_CLASSIFICATION_FAILED = 'AI_CLASSIFICATION_FAILED'
 # Phase 10 — DEAD_STOCK_DETECTION.md's own Audit Actions table names this

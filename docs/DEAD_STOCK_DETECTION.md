@@ -545,3 +545,4 @@ fetch('/api/v1/ai/classifications/summary/')
 | `AI_CLASSIFICATION_RUN` | Full classification task completed |
 | `AI_CLASSIFICATION_FAILED` | Classification task failed |
 | `AI_PRODUCT_RECLASSIFIED` | Single product reclassified after sale |
+| `AI_CLASSIFIER_WEIGHTS_CHANGED` | An admin changed any of the ten stagnation-index knowledge-base fields on Settings (the four weights, both index thresholds, `target_days_of_cover`, `extreme_coverage_days`, `min_observation_days`, `min_sale_events`) — logs `{field: {old, new}}` for each changed field, alongside a `SETTINGS_UPDATED` entry carrying the full field-level diff for every changed field on the page, not just these ten (see docs/13_AUDIT.md and docs/bugsfound.md BUG-82) |

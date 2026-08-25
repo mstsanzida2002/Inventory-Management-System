@@ -2573,6 +2573,28 @@ class AuditLogExportView(AdminRequiredMixin, View):
 # pk=1 — Phase 3.4, BUG-21). This is the one and only place that form is
 # ever rendered/saved from.
 
+# REQ 17.10 (docs/13_AUDIT.md) follow-up, alongside AI_CLASSIFIER_WEIGHTS_CHANGED
+# above — SETTINGS_UPDATED used to fire with no details= payload at all, so an
+# admin could see *that* something changed but never *what*. _settings_snapshot()
+# is taken before and after form.save() (before is captured pre-bind: a
+# ModelForm's own is_valid()/full_clean() already mutates form.instance —
+# the same settings_obj — to the new values, so "before" must be read first)
+# and diffed field-by-field, same shape as _policy_snapshot()/_POLICY_AUDIT_FIELDS
+# below for ApprovalPolicy. AI_CLASSIFIER_WEIGHTS_CHANGED reuses this diff,
+# filtered to just the classifier-parameter subset, rather than computing its
+# own separate snapshot.
+_SETTINGS_AUDIT_FIELDS = SystemSettingsForm.Meta.fields
+_CLASSIFIER_AUDIT_FIELDS = [
+    "weight_recency", "weight_turnover", "weight_coverage", "weight_frequency",
+    "slow_index_threshold", "dead_index_threshold", "target_days_of_cover",
+    "extreme_coverage_days", "min_observation_days", "min_sale_events",
+]
+
+
+def _settings_snapshot(settings_obj):
+    return {f: (None if getattr(settings_obj, f) is None else str(getattr(settings_obj, f))) for f in _SETTINGS_AUDIT_FIELDS}
+
+
 class SettingsView(AdminRequiredMixin, View):
 
     def get(self, request):
@@ -2582,12 +2604,26 @@ class SettingsView(AdminRequiredMixin, View):
 
     def post(self, request):
         settings_obj = SystemSettings.get_settings()
+        before = _settings_snapshot(settings_obj)
+
         form = SystemSettingsForm(request.POST, request.FILES, instance=settings_obj)
         if not form.is_valid():
             return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
 
         form.save()
-        audit.log_action(request.user, audit.SETTINGS_UPDATED, "settings", status="success", request=request)
+        after = _settings_snapshot(settings_obj)
+        diff = {f: {"old": before[f], "new": after[f]} for f in _SETTINGS_AUDIT_FIELDS if before[f] != after[f]}
+
+        classifier_diff = {f: v for f, v in diff.items() if f in _CLASSIFIER_AUDIT_FIELDS}
+        if classifier_diff:
+            audit.log_action(
+                request.user, audit.AI_CLASSIFIER_WEIGHTS_CHANGED, "settings",
+                status="success", details=classifier_diff, request=request,
+            )
+        audit.log_action(
+            request.user, audit.SETTINGS_UPDATED, "settings",
+            status="success", details=diff, request=request,
+        )
         return JsonResponse({"success": True})
 
 

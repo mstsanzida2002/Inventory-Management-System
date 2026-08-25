@@ -78,7 +78,7 @@
       <svg class="icon"><use href="#icon-cpu"></use></svg>
       AI Insight
     </span>
-    <p class="text-slate text-sm" style="margin:0;">Override rules (extreme recency, coverage, or dormancy) are checked first, then a 0&ndash;100 stagnation index (slow at {{ slow_index_threshold }}+, dead at {{ dead_index_threshold }}+) built from four weighted factors &mdash; weights and thresholds configurable in System Settings. Products in stock fewer than {{ min_observation_days }} days are marked Insufficient Data instead of being scored, unless an override already applies. See "Classification rules" for the full precedence.</p>
+    <p class="text-slate text-sm" style="margin:0;">Override rules (extreme recency, coverage, or dormancy) are checked first, then a 0&ndash;100 stagnation index (slow at {{ slow_index_threshold }}+, dead at {{ dead_index_threshold }}+) built from four weighted factors &mdash; weights and thresholds configurable in System Settings. Products in stock fewer than {{ min_observation_days }} days are marked Insufficient Data instead of being scored, unless an override already applies. See docs/DEAD_STOCK_DETECTION.md for the full precedence.</p>
   </div>
 
   <div class="dash-grid">
@@ -223,56 +223,6 @@
 
           </div>
         </div>
-      </div>
-
-      <div class="card-flat">
-        <h4 style="margin-bottom: var(--sp-3);">Classification rules</h4>
-        <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">
-          Two layers, in order &mdash; not machine learning. Recalculated on every sale approval, and on demand via "Run classification now." No scheduler runs this automatically; a product that simply stops selling keeps its last classification until one of those two triggers fires again.
-        </p>
-
-        <p class="text-slate text-xs" style="margin-bottom: var(--sp-2); font-weight:600;">1. Override rules (checked first, on raw signals)</p>
-        <div class="flex flex-col gap-3" style="margin-bottom: var(--sp-4);">
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">No sale in &ge; {{ dead_threshold }} days, or never sold and in stock &ge; {{ dead_threshold }} days (stock on hand)</span>
-            <span class="badge badge-danger">Force dead</span>
-          </div>
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">&ge; {{ extreme_coverage_days }} days of stock on hand &mdash; unless the index below already calls it dead on its own</span>
-            <span class="badge badge-warning">Force slow</span>
-          </div>
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">Sold within the last 14 days, and &le; {{ target_days_of_cover }} days of cover</span>
-            <span class="badge badge-success">Force fast</span>
-          </div>
-        </div>
-
-        <p class="text-slate text-xs" style="margin-bottom: var(--sp-2); font-weight:600;">2. Not old enough to score</p>
-        <div class="flex flex-col gap-3" style="margin-bottom: var(--sp-4);">
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">In stock &lt; {{ min_observation_days }} days, and no override above fired</span>
-            <span class="badge badge-neutral">Insufficient data</span>
-          </div>
-        </div>
-
-        <p class="text-slate text-xs" style="margin-bottom: var(--sp-2); font-weight:600;">3. Weighted stagnation index (0&ndash;100) &mdash; only when nothing above decided it</p>
-        <div class="flex flex-col gap-3">
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">Index &lt; {{ slow_index_threshold }}</span>
-            <span class="badge badge-success">Fast-moving</span>
-          </div>
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">Index {{ slow_index_threshold }}&ndash;{{ dead_index_threshold|add:"-1" }}</span>
-            <span class="badge badge-warning">Slow-moving</span>
-          </div>
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">Index {{ dead_index_threshold }}+</span>
-            <span class="badge badge-danger">Dead stock</span>
-          </div>
-        </div>
-        <p class="text-slate text-xs" style="margin-top: var(--sp-4);">
-          The index blends four factors &mdash; recency, turnover, coverage (days of stock on hand vs. recent demand), and sale frequency (distinct weeks with a sale, not raw event count) &mdash; each scored 0&ndash;1 and combined using the weights set in System Settings. A row flagged by an override rule shows the reason in place of the index (e.g. "No sales in 210 days") &mdash; worth more than an opaque number.
-        </p>
       </div>
 
     </div>

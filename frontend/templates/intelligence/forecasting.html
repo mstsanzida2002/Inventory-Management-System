@@ -210,23 +210,6 @@
         </div>
       </div>
 
-      <div class="card-flat">
-        <h4 style="margin-bottom: var(--sp-3);">How this forecast works</h4>
-        <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">
-          A Scikit-learn model (HistGradientBoostingRegressor) is trained once, pooled across every product's history together, on historical sales aggregated weekly and monthly, then predicts demand for the next periods with a confidence score derived from real backtest accuracy.
-        </p>
-        <div class="flex flex-col gap-3">
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">&lt; 4 weeks of sales data</span>
-            <span class="badge badge-danger">Skipped</span>
-          </div>
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-slate text-xs">&ge; 4 weeks of data</span>
-            <span class="badge badge-success">Pooled model</span>
-          </div>
-        </div>
-      </div>
-
     </div>
 
   </div>

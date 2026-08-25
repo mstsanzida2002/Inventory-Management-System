@@ -122,6 +122,87 @@ Design Note #6 for the full reasoning**):
 
 ---
 
+## Relationship to Demand Forecasting
+
+Slow-moving/dead-stock classification (`frontend/classification.py`) and
+demand forecasting (`frontend/forecasting.py`, docs/DEMAND_FORECASTING.md)
+look similar from a distance — both are AI features reading sales history
+to say something about a product's future — but they solve opposite
+problems with no real overlap in inputs or outputs. Verified against the
+real code as it stands today, not the reference/spec code, after the
+BUG-64 fix and the dashboard AI Insights widgets (REQ 11.9/11.10) landed:
+
+1. **Forecasting is structurally incapable of producing a forecast for a
+   genuinely dead-stock product.** `get_sales_dataframe()`
+   (`frontend/forecasting.py:81-88`) pulls only `SaleItem` rows for
+   `COMPLETED` transactions; a product with zero completed sales ever
+   produces zero rows, so `predict_demand()`'s `df_raw.empty` check
+   (`frontend/forecasting.py:270-271`) returns `[]` before a model is
+   even consulted. Even a product with *some* history but not enough of
+   it never reaches a prediction either: `build_features()` creates
+   `lag_1..lag_4` by shifting each resampled period
+   (`frontend/forecasting.py:177-178`) and then calls
+   `resampled.dropna(inplace=True)` (`frontend/forecasting.py:191`),
+   which drops every row until `lag_4` is populated — a product needs at
+   least 5 resampled periods of history to survive with even one row
+   left. Classification's own `insufficient_data` gate
+   (`min_observation_days`, `frontend/classification.py:459`) and
+   forecasting's silent `[]` are two independent thresholds, not the
+   same mechanism reused twice.
+
+2. **The two features have opposite vocabularies for "stock don't match
+   demand."** Forecasting's only reorder signal,
+   `recommended_reorder_qty`, is clamped at
+   `max(0, forecasted_demand - current_stock)`
+   (`frontend/forecasting.py:453`) — it cannot go negative, so it has no
+   way to express "you're holding too much." Its companion notification,
+   `needs_replenishment()` (`frontend/forecasting.py:485-499`, called at
+   `frontend/forecasting.py:467`), fires only when
+   `forecasted_demand > current_stock`. There is no forecasting-side
+   signal for the opposite case — a product with plenty of stock and
+   little or no forecasted demand simply produces a `recommended_qty` of
+   0 and no alert, which is correct but silent. Classification is what
+   actually looks at that case: the Coverage factor's `current_stock > 0
+   and avg_daily_demand == 0` branch scores it 1.00, maximally stagnant
+   (`frontend/classification.py:482-483`), and the ramp between
+   `target_days_of_cover` and `extreme_coverage_days`
+   (`frontend/classification.py:484-490`) is built for exactly this
+   overstock case.
+
+3. **The two failure modes they guard against are opposites.**
+   Forecasting exists to prevent stockouts — every path through
+   `run_full_forecast()` (`frontend/forecasting.py:384-483`) is oriented
+   around "will I run out." Classification exists to prevent capital
+   sitting idle in overstock — every path through `classify_product()`
+   (`frontend/classification.py:350` onward) is oriented around "is this
+   tying up money without moving." A product can be flagged by neither,
+   either, or (in principle) both at once — they are not two views of
+   the same underlying number.
+
+4. **Different paradigms, different metrics, different inputs.**
+   Forecasting is supervised regression: one `HistGradientBoostingRegressor`
+   trained on lag/rolling/seasonal features
+   (`FEATURE_COLUMNS`, `frontend/forecasting.py:53-57`) via
+   `train_model()` (`frontend/forecasting.py:199-246`), scored by MAE
+   against a chronological holdout. Classification is a three-layer
+   expert system — hard overrides
+   (`_evaluate_hard_overrides()`, `frontend/classification.py:313-345`),
+   then the `insufficient_data` gate, then a weighted composite
+   `stagnation_index` (Design Notes above) — with no model to train and
+   no held-out accuracy to score, only admin-tunable weights validated
+   to sum to 1.00. Grepping `frontend/forecasting.py` for `current_stock`
+   confirms it appears in exactly one place, the clamp/notification step
+   in point 2 above — stock level is never a training feature, never
+   part of `FEATURE_COLUMNS`, and never read anywhere inside
+   `build_features()`, `train_model()`, or `predict_demand()`.
+   Classification is the reverse: `current_stock` and the `days_of_cover`
+   derived from it (`frontend/classification.py:437`, `446-448`) are
+   read once per product per run and feed directly into both the hard
+   overrides and the Coverage factor — for classification, stock level
+   isn't an afterthought, it's most of the point.
+
+---
+
 ## Classifier
 
 ```python

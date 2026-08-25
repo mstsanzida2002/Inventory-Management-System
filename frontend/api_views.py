@@ -11,11 +11,12 @@ verification. No other AI/Report/etc. endpoint from API_CONTRACTS.md's
 remaining ~50 routes is built here — both slices are additive and scoped
 to exactly what their phase's data supports.
 """
-from django.db.models import Avg, Count
+from django.db.models import Count
 from rest_framework.generics import ListAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from frontend.forecasting import latest_forecast_batch
 from frontend.models import DemandForecast, InventoryClassification
 from frontend.permissions import IsSupervisorOrAbove
 from frontend.serializers import DemandForecastSerializer, InventoryClassificationSerializer
@@ -56,15 +57,35 @@ class ForecastSummaryAPIView(APIView):
     """Not separately specified in the doc (only ForecastListAPIView/
     ProductForecastAPIView/RunForecastAPIView are) — shaped the same way
     as ClassificationSummaryAPIView above for a consistent, small
-    dashboard-widget-style read."""
+    dashboard-widget-style read.
+
+    BUG-64 (docs/bugsfound.md), fixed: this used to aggregate
+    unconditionally across every DemandForecast row ever created
+    (`DemandForecast.objects.all()`, no dedup by run) while the HTML
+    dashboard/forecasting page both showed only the latest batch — after
+    two runs this endpoint would report roughly double what the two real
+    UI surfaces agreed on. Now consumes
+    frontend.forecasting.latest_forecast_batch(), the same dedup-by-
+    latest-created-per-(product, period, period_start) definition
+    DemandForecastingView and the Dashboard's forecast widget already
+    share — one definition of "current forecast," three surfaces, not a
+    second divergent one here. DemandForecast.objects.create() and the
+    intentional cross-run row accumulation (REQ 9.9 needs forecast
+    history to compare against actual_demand once backfilled) are both
+    untouched — this only changes what gets *read* for a summary, never
+    what gets written."""
     permission_classes = [IsSupervisorOrAbove]
 
     def get(self, request):
-        qs = DemandForecast.objects.all()
-        latest = qs.order_by('-created_at').values_list('model_version', flat=True).first()
+        forecasts, last_run = latest_forecast_batch()
+        products_forecasted = len({f.product_id for f in forecasts})
+        avg_confidence = (
+            sum(float(f.confidence_score) for f in forecasts) / len(forecasts)
+            if forecasts else None
+        )
         return Response({
-            'total_forecasts': qs.count(),
-            'products_forecasted': qs.values('product_id').distinct().count(),
-            'avg_confidence': qs.aggregate(avg=Avg('confidence_score'))['avg'],
-            'latest_model_version': latest,
+            'total_forecasts': len(forecasts),
+            'products_forecasted': products_forecasted,
+            'avg_confidence': avg_confidence,
+            'latest_model_version': last_run.model_version if last_run else None,
         })

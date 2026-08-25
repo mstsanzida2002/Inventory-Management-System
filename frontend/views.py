@@ -599,6 +599,12 @@ class DashboardView(AnyStaffMixin, View):
 
             forecast_insights = {
                 "last_run": forecast_last_run,
+                # Same computation ForecastSummaryAPIView and
+                # DemandForecastingView both use against the same
+                # latest_forecast_batch() rows — BUG-64 was exactly this
+                # figure disagreeing across surfaces, so it's exposed
+                # here too rather than only implied by the widget's list.
+                "products_forecasted": len({f.product_id for f in forecasts}),
                 "replenishment_count": len(replenishment_needed),
                 "replenishment_products": replenishment_needed[:DASHBOARD_PREVIEW_ROWS],
             }

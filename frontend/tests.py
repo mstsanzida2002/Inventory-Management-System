@@ -6138,6 +6138,66 @@ class RunFullForecastTests(ServiceTestCase):
         self.assertEqual(monthly_rows, 1, "4 weeks must convert to periods_ahead=1 for the monthly run, not 4")
 
 
+class ForecastSummaryConsistencyTests(ServiceTestCase):
+    """BUG-64 regression (docs/bugsfound.md): ForecastSummaryAPIView used
+    to aggregate DemandForecast.objects.all() unconditionally while the
+    dashboard widget and the forecasting page both already deduped to the
+    latest batch — after two runs the API reported roughly double what
+    the two real UI surfaces agreed on. All three now read
+    frontend.forecasting.latest_forecast_batch(); this proves the three
+    surfaces actually agree after a real second run, not merely that
+    each looks plausible in isolation."""
+
+    def setUp(self):
+        super().setUp()
+        _clear_forecast_model_files()
+
+    def tearDown(self):
+        _clear_forecast_model_files()
+
+    def _weekly_sales(self, product, weeks, start_weeks_ago, qty=5):
+        for i in range(weeks):
+            days_ago = (start_weeks_ago - i) * 7
+            sale = SaleTransaction.objects.create(
+                created_by=self.user, status=SaleStatus.COMPLETED,
+                transaction_date=timezone.localdate() - timedelta(days=days_ago),
+            )
+            SaleItem.objects.create(
+                transaction=sale, product=product, quantity=qty,
+                unit_price=Decimal('20.00'), line_total=Decimal('20.00') * qty,
+            )
+
+    def test_summary_matches_dashboard_and_forecasting_page_after_two_runs(self):
+        # 15 weeks: train_model()'s own >=10-pooled-feature-row guard.
+        self._weekly_sales(self.product, weeks=15, start_weeks_ago=15, qty=4)
+        self.give_stock(200)
+
+        run_full_forecast()
+        run_full_forecast()  # second run: more rows accumulate (REQ 9.9), the *read* must not double
+
+        total_rows_ever_created = DemandForecast.objects.filter(product=self.product).count()
+        self.assertGreater(total_rows_ever_created, 0)
+
+        self.client.login(username=self.supervisor.username, password='x')
+
+        api_payload = self.client.get(reverse('api:ai_forecasts_summary')).json()
+        dashboard_response = self.client.get(reverse('frontend:dashboard'))
+        forecasting_response = self.client.get(reverse('frontend:forecasting'))
+
+        dashboard_count = dashboard_response.context['forecast_insights']['products_forecasted']
+        forecasting_count = forecasting_response.context['products_forecasted']
+
+        self.assertEqual(api_payload['products_forecasted'], 1)
+        self.assertEqual(api_payload['products_forecasted'], dashboard_count)
+        self.assertEqual(dashboard_count, forecasting_count, "all three surfaces must agree, not just API and dashboard")
+
+        self.assertLess(
+            api_payload['total_forecasts'], total_rows_ever_created,
+            "two runs accumulate more rows than a single deduped batch should report — proves the API is "
+            "reading the latest batch, not DemandForecast.objects.all()",
+        )
+
+
 class NeedsReplenishmentTests(TestCase):
     """Guards against the exact drift risk flagged in the git-push safety
     audit: run_full_forecast()'s replenish_alerts and the Dashboard's

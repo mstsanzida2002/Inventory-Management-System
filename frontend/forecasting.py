@@ -510,10 +510,11 @@ def latest_forecast_batch():
     the Dashboard's AI Insights widget (REQ 11.9) can show "the current
     forecast" without a second, potentially-divergent definition of what
     that means — this dedup-by-latest-created-per-key is exactly the
-    shape ForecastSummaryAPIView's own BUG-64 defect got wrong, by
+    shape ForecastSummaryAPIView's own BUG-64 defect used to get wrong, by
     aggregating every row ever created instead of deduping like this.
-    Both real UI surfaces now share one definition; ForecastSummaryAPIView
-    itself is unfixed (BUG-64 is still open) and neither surface calls it.
+    ForecastSummaryAPIView (frontend/api_views.py) now calls this function
+    too, so all three surfaces — API, dashboard widget, forecasting page —
+    share one definition of "current forecast."
 
     Returns (list_of_forecasts, most_recent_forecast_or_None).
     """

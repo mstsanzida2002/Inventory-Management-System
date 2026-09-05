@@ -44,6 +44,7 @@ from frontend.forecasting import (
     MODELS_DIR,
     backfill_actual_demand,
     build_features,
+    current_forecast_window,
     get_sales_dataframe,
     get_stockout_flags,
     needs_replenishment,
@@ -6470,6 +6471,148 @@ class DemandForecastingViewTests(TestCase):
         response = self.client.get(reverse('frontend:forecasting'))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Never run')
+
+
+class ForecastCurrentWindowTests(TestCase):
+    """BUG-89 (docs/bugsfound.md) — latest_forecast_batch()'s own pool
+    spans every period ever forecast across every run (correct, by
+    design, for REQ 9.9); frontend.forecasting.current_forecast_window()
+    is the shared fix layered on top, restricting to period_start >=
+    today. Deliberately seeds OLD rows alongside current/future ones in
+    every test here — that mix is the exact regression being fixed, not
+    an edge case to work around."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='fcwsuper', email='fcwsuper@example.com', password='x',
+            employee_id='EMP-9401', full_name='FCW Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='FCW Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='FCW Supply', company_name='FCW Supply Co', contact_person='Jo',
+            email='fcwsupply@example.com', phone='555-0930', address='1 FCW Way',
+        )
+
+    def make_product(self, sku):
+        product = Product.objects.create(
+            sku=sku, name=sku, category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('10.00'), selling_price=Decimal('20.00'),
+        )
+        InventoryService.initialize_for_product(product)
+        return product
+
+    def make_forecast(self, product, period_start, forecast_period=ForecastPeriod.WEEKLY, days_span=7):
+        return DemandForecast.objects.create(
+            product=product, forecast_period=forecast_period,
+            period_start=period_start, period_end=period_start + timedelta(days=days_span - 1),
+            forecasted_demand=Decimal('10.00'), recommended_reorder_qty=5,
+            confidence_score=Decimal('0.80'), model_version='test',
+        )
+
+    def test_current_forecast_window_excludes_past_periods(self):
+        product = self.make_product('FCW-SKU-001')
+        today = timezone.localdate()
+        self.make_forecast(product, today - timedelta(days=90))  # old, out of window
+        current = self.make_forecast(product, today + timedelta(days=7))
+
+        window = current_forecast_window(ForecastPeriod.WEEKLY, horizon=4)
+        self.assertEqual([f.pk for f in window], [current.pk])
+
+    def test_current_forecast_window_returns_empty_when_nothing_upcoming(self):
+        product = self.make_product('FCW-SKU-002')
+        today = timezone.localdate()
+        self.make_forecast(product, today - timedelta(days=90))
+        self.make_forecast(product, today - timedelta(days=30))
+
+        window = current_forecast_window(ForecastPeriod.WEEKLY, horizon=4)
+        self.assertEqual(window, [])
+
+    def test_chart_plots_soonest_four_periods_not_oldest_four(self):
+        """Six distinct weekly periods across two products, three of them
+        in the past. Before the fix, sorted(keys)[:4] would return the
+        three past weeks plus the soonest future one."""
+        p1 = self.make_product('FCW-SKU-003')
+        p2 = self.make_product('FCW-SKU-004')
+        today = timezone.localdate()
+        offsets_days = [-90, -83, -76, 7, 14, 21]
+        for offset in offsets_days:
+            self.make_forecast(p1, today + timedelta(days=offset))
+            self.make_forecast(p2, today + timedelta(days=offset))
+
+        self.client.login(username='fcwsuper', password='x')
+        response = self.client.get(reverse('frontend:forecasting'))
+        self.assertEqual(response.status_code, 200)
+        weekly = response.context['chart_data']['weekly']
+        expected_starts = [today + timedelta(days=o) for o in offsets_days if o >= 0]
+        self.assertEqual(weekly['labels'], [d.strftime('%d %b') for d in expected_starts])
+        # two products contributing 10.00 each per period
+        self.assertTrue(all(v == 20.0 for v in weekly['demand']))
+
+    def test_monthly_chart_correct_with_five_distinct_months_not_by_coincidence(self):
+        """Regression guard named for the exact failure mode: with only
+        3 distinct months on record, sorted(keys)[:4] happened to include
+        all of them and looked correct by accident. Five distinct months
+        (two in the past) would have exposed the bug immediately."""
+        product = self.make_product('FCW-SKU-005')
+        today = timezone.localdate()
+        month_offsets_days = [-60, -30, 5, 35, 65]
+        for offset in month_offsets_days:
+            self.make_forecast(product, today + timedelta(days=offset), forecast_period=ForecastPeriod.MONTHLY, days_span=30)
+
+        self.client.login(username='fcwsuper', password='x')
+        response = self.client.get(reverse('frontend:forecasting'))
+        monthly = response.context['chart_data']['monthly']
+        expected_starts = [today + timedelta(days=o) for o in month_offsets_days if o >= 0]
+        self.assertEqual(len(monthly['labels']), 3)
+        self.assertEqual(monthly['labels'], [d.strftime('%d %b') for d in expected_starts])
+
+    def test_table_row_selects_soonest_upcoming_not_earliest_ever(self):
+        """Mirrors the real product found during diagnosis: one weekly
+        forecast several weeks in the past, one current — the table row
+        for this product must show the current one, not the past one."""
+        product = self.make_product('FCW-SKU-006')
+        today = timezone.localdate()
+        stale = self.make_forecast(product, today - timedelta(days=35))
+        current = self.make_forecast(product, today + timedelta(days=4))
+
+        self.client.login(username='fcwsuper', password='x')
+        response = self.client.get(reverse('frontend:forecasting'))
+        rows = [f for f in response.context['page'] if f.product_id == product.pk]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pk, current.pk)
+        self.assertNotEqual(rows[0].pk, stale.pk)
+
+    def test_product_with_only_past_forecasts_gets_no_table_row(self):
+        """Honest-empty over stale-data: a product whose only forecasts
+        are in the past must not appear on the table at all, rather than
+        showing one of those stale rows."""
+        product = self.make_product('FCW-SKU-007')
+        today = timezone.localdate()
+        self.make_forecast(product, today - timedelta(days=60))
+        self.make_forecast(product, today - timedelta(days=53))
+
+        self.client.login(username='fcwsuper', password='x')
+        response = self.client.get(reverse('frontend:forecasting'))
+        self.assertEqual(response.status_code, 200)
+        rows = [f for f in response.context['page'] if f.product_id == product.pk]
+        self.assertEqual(rows, [])
+
+    def test_all_forecasts_in_the_past_renders_cleanly_not_stale(self):
+        """Whole-page empty case: every forecast on record is in the
+        past — chart and table must render empty/clean, never fall back
+        to showing that stale data as if it were current."""
+        product = self.make_product('FCW-SKU-008')
+        today = timezone.localdate()
+        self.make_forecast(product, today - timedelta(days=60))
+        self.make_forecast(product, today - timedelta(days=30), forecast_period=ForecastPeriod.MONTHLY, days_span=30)
+
+        self.client.login(username='fcwsuper', password='x')
+        response = self.client.get(reverse('frontend:forecasting'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['chart_data']['weekly']['labels'], [])
+        self.assertEqual(response.context['chart_data']['monthly']['labels'], [])
+        self.assertEqual(response.context['page'].paginator.count, 0)
+        self.assertNotContains(response, (today - timedelta(days=60)).strftime('%d %b'))
 
 
 class ForecastAPITests(TestCase):

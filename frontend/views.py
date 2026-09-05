@@ -38,7 +38,7 @@ from django.contrib.auth.views import PasswordResetConfirmView
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Avg, Count, F, Q, Sum
+from django.db.models import Avg, Count, F, Max, Q, Sum
 from django.db.models.functions import TruncMonth, TruncWeek
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -63,8 +63,8 @@ from frontend.forms import (
 )
 from frontend.mixins import AdminRequiredMixin, AnyStaffMixin, SupervisorRequiredMixin
 from frontend.approvals import can_approve, resolve_for_transaction
-from frontend.classification import run_full_classification
-from frontend.forecasting import backfill_actual_demand, latest_forecast_batch, needs_replenishment, run_full_forecast
+from frontend.classification import capital_at_risk, run_full_classification
+from frontend.forecasting import backfill_actual_demand, current_forecast_window, latest_forecast_batch, needs_replenishment, run_full_forecast
 from frontend.models import (
     AdjustmentReason,
     AdjustmentStatus,
@@ -721,13 +721,16 @@ class ProductListCreateView(AnyStaffMixin, View):
             # pre-filled with zero extra network round-trips, reusing the
             # existing embed-JSON-on-the-row mechanism rather than adding
             # a new fetch helper.
+            # description/image dropped (form simplification pass,
+            # docs/bugsfound.md) — ProductForm no longer accepts either,
+            # so pre-filling them here would just feed fields the edit
+            # form can no longer submit back.
             product.edit_json = json.dumps({
                 "name": product.name, "sku": product.sku, "barcode": product.barcode or "",
                 "category": product.category_id, "supplier": product.supplier_id,
                 "brand": product.brand, "unit": product.unit,
                 "purchase_price": str(product.purchase_price), "selling_price": str(product.selling_price),
                 "tax_rate": str(product.tax_rate), "reorder_level": product.reorder_level,
-                "description": product.description, "image_url": product.image.url if product.image else "",
             })
 
         context = {
@@ -1940,25 +1943,39 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
     unlike InventoryClassification, DemandForecast has no OneToOneField
     forcing one-row-per-product). Repeated "Run forecast now" clicks are
     therefore expected to accumulate rows over time — this view's own GET
-    query keeps the *display* sane by showing only the most recent batch
-    (deduped by (product, period, period_start), keyed off created_at),
-    not by changing what gets written. That dedup now lives in
-    frontend.forecasting.latest_forecast_batch() (extracted so the
+    query keeps the *display* sane, in two layers. First,
+    frontend.forecasting.latest_forecast_batch() dedupes by (product,
+    period, period_start), keyed off created_at — one row per period
+    ever forecast, not changing what gets written (extracted so the
     Dashboard's AI Insights widget, REQ 11.9, shares the exact same
     definition of "current forecast" rather than risking a second,
-    divergent one)."""
+    divergent one). Second, BUG-89 (docs/bugsfound.md) —
+    latest_forecast_batch()'s own pool still spans every period ever
+    forecast across every run, which is correct for REQ 9.9 but not the
+    same question as "what should a user see right now"; the trend
+    chart and the table's per-product row both go through
+    frontend.forecasting.current_forecast_window() on top of that,
+    which further restricts to period_start >= today — the shared
+    answer to "what's current," so a stale accumulated period can't
+    silently win just for being chronologically first."""
 
     _PERIOD_LABEL = {ForecastPeriod.WEEKLY: 'weekly', ForecastPeriod.MONTHLY: 'monthly'}
 
-    def _build_chart_data(self, forecasts, period_choice):
+    def _build_chart_data(self, period_choice):
+        # BUG-89 (docs/bugsfound.md) — used to bucket every period
+        # latest_forecast_batch() had ever returned (every run, ever) and
+        # take sorted(keys)[:4], which is the 4 OLDEST periods on record,
+        # not the 4 soonest upcoming ones. current_forecast_window()
+        # already restricts to period_start >= today and caps at 4
+        # distinct periods, so this just buckets whatever it returns —
+        # no further sorting/slicing needed here.
+        window = current_forecast_window(period_choice, horizon=4)
         buckets = {}
-        for f in forecasts:
-            if f.forecast_period != period_choice:
-                continue
+        for f in window:
             buckets.setdefault(f.period_start, {'demand': 0.0, 'reorder': 0})
             buckets[f.period_start]['demand'] += float(f.forecasted_demand)
             buckets[f.period_start]['reorder'] += f.recommended_reorder_qty
-        keys = sorted(buckets.keys())[:4]
+        keys = sorted(buckets.keys())
         return {
             'labels': [k.strftime('%d %b') for k in keys],
             'demand': [round(buckets[k]['demand'], 1) for k in keys],
@@ -1966,14 +1983,28 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
         }
 
     def get(self, request):
-        forecasts, last_run = latest_forecast_batch()
+        _, last_run = latest_forecast_batch()
         stock_by_product = dict(InventoryRecord.objects.values_list('product_id', 'current_stock'))
 
-        # One table row per (product, period-type): the nearest upcoming
+        # One table row per (product, period-type): the soonest upcoming
         # forecast only — matches the page's own shape (a row is "this
-        # product's next weekly/monthly forecast", not every future step).
+        # product's next weekly/monthly forecast", not every future
+        # step). BUG-89 — used to take the chronological MINIMUM
+        # period_start across latest_forecast_batch()'s full accumulated
+        # history, which is always whatever was forecast furthest in the
+        # past, not the closest upcoming period. current_forecast_window()
+        # (horizon=None: the table needs every future period available,
+        # not just the chart's fixed 4 bars) pre-filters to period_start
+        # >= today, so the same "keep the smaller one" comparison below
+        # now finds the soonest *upcoming* period instead — a product
+        # with no current-or-future forecast simply gets no row, rather
+        # than a stale one.
+        upcoming = (
+            current_forecast_window(ForecastPeriod.WEEKLY, horizon=None)
+            + current_forecast_window(ForecastPeriod.MONTHLY, horizon=None)
+        )
         nearest = {}
-        for f in forecasts:
+        for f in upcoming:
             key = (f.product_id, f.forecast_period)
             if key not in nearest or f.period_start < nearest[key].period_start:
                 nearest[key] = f
@@ -2011,8 +2042,8 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
             "last_run": last_run,
             "reorder_priorities": reorder_priorities,
             "chart_data": {
-                "weekly": self._build_chart_data(forecasts, ForecastPeriod.WEEKLY),
-                "monthly": self._build_chart_data(forecasts, ForecastPeriod.MONTHLY),
+                "weekly": self._build_chart_data(ForecastPeriod.WEEKLY),
+                "monthly": self._build_chart_data(ForecastPeriod.MONTHLY),
             },
         }
         return render(request, "intelligence/forecasting.html", context)
@@ -2116,6 +2147,7 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
         # lists — not a problem state to flag.
         dead_and_slow = list(
             InventoryClassification.objects.filter(classification__in=[StockClassification.DEAD, StockClassification.SLOW])
+            .select_related("product")
         )
         dead_watch = sorted(
             (c for c in dead_and_slow if c.classification == StockClassification.DEAD),
@@ -2127,6 +2159,21 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
         )[:1]
         for c in slow_watch:
             c.days_to_dead = max(settings_obj.dead_stock_threshold_days - (c.days_since_last_sale or 0), 0)
+
+        # BUG-90 (docs/bugsfound.md) — the AI Insight block used to show
+        # static methodology text (how the classifier works) instead of
+        # what it found. Real insight data instead, reusing what's
+        # already fetched above (dead_and_slow) plus two cheap additions:
+        # capital_at_risk() (frontend/classification.py, shared with the
+        # classification report's own PDF/CSV export, not a second
+        # definition) summed over DEAD rows only, and a single
+        # Max(classified_at) so a user knows how current the run is.
+        stock_by_product = dict(InventoryRecord.objects.values_list("product_id", "current_stock"))
+        dead_value_at_risk = sum(
+            (capital_at_risk(c, stock_by_product) or 0)
+            for c in dead_and_slow if c.classification == StockClassification.DEAD
+        )
+        last_classified_at = InventoryClassification.objects.aggregate(Max("classified_at"))["classified_at__max"]
 
         qs = filters.filter_classifications(
             request,
@@ -2151,14 +2198,14 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             "page": page,
             "counts": counts,
             "total_flagged": counts[StockClassification.SLOW] + counts[StockClassification.DEAD],
+            "total_classified": sum(counts.values()),
+            "dead_value_at_risk": dead_value_at_risk,
+            "last_classified_at": last_classified_at,
             "categories": Category.objects.filter(is_active=True).order_by("name"),
             "dead_watch": dead_watch,
             "slow_watch": slow_watch,
             "slow_threshold": settings_obj.slow_moving_threshold_days,
             "dead_threshold": settings_obj.dead_stock_threshold_days,
-            "slow_index_threshold": settings_obj.slow_index_threshold,
-            "dead_index_threshold": settings_obj.dead_index_threshold,
-            "min_observation_days": settings_obj.min_observation_days,
             "min_sale_events": settings_obj.min_sale_events,
             "chart_data": {
                 "fast": counts[StockClassification.FAST],

@@ -528,3 +528,44 @@ def latest_forecast_batch():
         if key not in latest:
             latest[key] = f
     return list(latest.values()), (all_forecasts[0] if all_forecasts else None)
+
+
+def current_forecast_window(forecast_period, horizon=4):
+    """BUG-89 (docs/bugsfound.md) — latest_forecast_batch() above is left
+    exactly as it is: it deliberately returns every period ever forecast,
+    deduped only per (product, forecast_period, period_start), because
+    REQ 9.9 needs that full history retained to compare against
+    actual_demand once backfilled. But "every period ever forecast" is a
+    different question from "what should a user see right now" — as
+    forecasts accumulate across repeated runs, most of that pool
+    describes periods that have already come and gone.
+
+    Two consumers (the forecasting page's trend chart and its table's
+    per-product row) used to answer "what's current" by sorting
+    latest_forecast_batch()'s full pool chronologically and taking
+    either the earliest N periods or the single earliest period per
+    product — which, once enough runs accumulate, always picks the
+    OLDEST period ever forecast, not the soonest upcoming one. Monthly
+    only ever looked correct by coincidence: with just 3 distinct months
+    on record, `[:4]` happened to include all of them.
+
+    This is the one shared, correct answer to "what's current" for a
+    given period type: every forecast whose period_start is today or
+    later, restricted to the earliest `horizon` distinct period_start
+    values (pass horizon=None for no cap — the per-product table
+    selection needs every future period available, not just the
+    chart's fixed 4 bars). Returns a flat list, empty if nothing has
+    been forecast for today or later — a genuinely empty chart/table
+    cell is honest; falling back to old data is not.
+    """
+    today = timezone.localdate()
+    all_forecasts, _ = latest_forecast_batch()
+    candidates = [
+        f for f in all_forecasts
+        if f.forecast_period == forecast_period and f.period_start >= today
+    ]
+    upcoming_starts = sorted({f.period_start for f in candidates})
+    if horizon is not None:
+        upcoming_starts = upcoming_starts[:horizon]
+    allowed = set(upcoming_starts)
+    return [f for f in candidates if f.period_start in allowed]

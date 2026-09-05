@@ -7370,3 +7370,89 @@ class RemovedExplainerPanelTests(TestCase):
     def test_slow_moving_page_no_longer_has_classification_rules_panel(self):
         response = self.client.get(reverse('frontend:slow_moving'))
         self.assertNotContains(response, 'Classification rules')
+
+    def test_slow_moving_page_methodology_string_appears_nowhere(self):
+        """BUG-90 (docs/bugsfound.md) — the AI Insight block itself used
+        to render this same methodology text even after the panel below
+        it was removed; a distinctive fragment must appear in neither
+        place now."""
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertNotContains(response, 'Override rules (extreme recency')
+        self.assertNotContains(response, 'built from four weighted factors')
+
+
+class SlowMovingAIInsightTests(TestCase):
+    """BUG-90 (docs/bugsfound.md) — the "AI Insight" block used to render
+    static methodology text (how the classifier works), a content gap
+    since the page was first built, not a regression from the panel
+    removal (confirmed via git history). Replaced with real per-run
+    findings, reusing exactly what SlowMovingDeadStockView.get() already
+    computes: counts/total_flagged (existing), dead_value_at_risk and
+    last_classified_at (new, both cheap aggregates, no classifier logic
+    recomputed in the template)."""
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='aisuper', email='aisuper@example.com', password='x',
+            employee_id='EMP-9501', full_name='AI Insight Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category = Category.objects.create(name='AI Insight Widgets')
+        self.supplier = Supplier.objects.create(
+            supplier_name='AI Insight Supply', company_name='AI Insight Supply Co', contact_person='Jo',
+            email='aiinsightsupply@example.com', phone='555-0940', address='1 AI Insight Way',
+        )
+        self.client.login(username='aisuper', password='x')
+
+    def make_classified_product(self, sku, classification, purchase_price, current_stock, **extra):
+        product = Product.objects.create(
+            sku=sku, name=sku, category=self.category, supplier=self.supplier,
+            purchase_price=Decimal(purchase_price), selling_price=Decimal(purchase_price) * 2,
+        )
+        InventoryService.initialize_for_product(product)
+        if current_stock:
+            InventoryService.increase_stock(
+                product=product, quantity=current_stock, movement_type=MovementType.PURCHASE,
+                reference_type='TestSetup', reference_id=0, performed_by=self.supervisor,
+            )
+        return InventoryClassification.objects.create(
+            product=product, classification=classification, recommendation='x', **extra,
+        )
+
+    def test_dominant_finding_stated_in_plain_language(self):
+        self.make_classified_product('AI-DEAD-001', StockClassification.DEAD, '10.00', 0)
+        self.make_classified_product('AI-DEAD-002', StockClassification.DEAD, '10.00', 0)
+        self.make_classified_product('AI-SLOW-001', StockClassification.SLOW, '10.00', 5)
+        self.make_classified_product('AI-FAST-001', StockClassification.FAST, '10.00', 50)
+
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertContains(response, '2 of 4 products are dead stock and 1 are slow-moving')
+
+    def test_most_urgent_product_shows_flagged_by_rule_text(self):
+        self.make_classified_product(
+            'AI-DEAD-URGENT', StockClassification.DEAD, '10.00', 0,
+            days_since_last_sale=240, flagged_by_rule='No sales in 240 days',
+        )
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertContains(response, 'AI-DEAD-URGENT')
+        self.assertContains(response, 'No sales in 240 days')
+
+    def test_value_at_risk_computed_for_dead_products_only(self):
+        # 20 units * Tk 15.00 = Tk 300 at risk (dead); the slow product's
+        # value must NOT be included.
+        self.make_classified_product('AI-DEAD-VALUE', StockClassification.DEAD, '15.00', 20)
+        self.make_classified_product('AI-SLOW-VALUE', StockClassification.SLOW, '500.00', 20)
+
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertContains(response, '৳300 of stock value sits in dead-classified products')
+
+    def test_last_classified_timestamp_shown(self):
+        self.make_classified_product('AI-TIMESTAMP-001', StockClassification.DEAD, '10.00', 0)
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertContains(response, 'Classification last ran')
+
+    def test_renders_cleanly_with_zero_classifications(self):
+        response = self.client.get(reverse('frontend:slow_moving'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'No products are currently flagged as slow-moving or dead stock')
+        self.assertNotContains(response, 'Classification last ran')
+        self.assertNotContains(response, 'stock value sits in dead-classified products')

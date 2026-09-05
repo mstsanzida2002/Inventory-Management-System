@@ -36,6 +36,7 @@ from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from frontend import pdf as pdf_lib
+from frontend.classification import capital_at_risk
 from frontend.models import (
     AdjustmentStatus,
     DemandForecast,
@@ -49,7 +50,6 @@ from frontend.models import (
     PurchaseOrder,
     SaleStatus,
     SaleTransaction,
-    StockClassification,
 )
 from frontend.pricing import calculate_totals_breakdown
 
@@ -400,22 +400,6 @@ def build_ai_forecast_report(request):
 
 # ------------------------------------------------- 9. AI Slow-Moving/Dead Stock
 
-def _capital_at_risk(classification, stock_by_product):
-    """current_stock * purchase_price, for DEAD/SLOW products only — the
-    exact definition already recorded against Step 4 in
-    frontend/views.py's DashboardView.get() ("Slot left for capital-at-
-    risk ranking") and docs/09_DASHBOARD.md §4d, built here first since
-    this report is where it was actually requested. Money genuinely tied
-    up in a fast-mover or an unproven insufficient_data row isn't "at
-    risk" in the sense this metric means — those rows get None, not 0,
-    so they sort after every real ranked row rather than tying with a
-    dead product that happens to hold zero stock."""
-    if classification.classification not in (StockClassification.DEAD, StockClassification.SLOW):
-        return None
-    current_stock = stock_by_product.get(classification.product_id, 0)
-    return Decimal(current_stock) * classification.product.purchase_price
-
-
 def build_ai_classification_report(request):
     qs = InventoryClassification.objects.select_related("product", "product__category").order_by("-classified_at")
     category_id = _category_id(request)
@@ -423,7 +407,10 @@ def build_ai_classification_report(request):
         qs = qs.filter(product__category_id=category_id)
 
     stock_by_product = dict(InventoryRecord.objects.values_list("product_id", "current_stock"))
-    ranked = [(c, _capital_at_risk(c, stock_by_product)) for c in qs]
+    # capital_at_risk() now lives in frontend/classification.py (BUG-90) —
+    # shared with the Slow-Moving page's own "value at risk" insight
+    # instead of a second copy of this same definition.
+    ranked = [(c, capital_at_risk(c, stock_by_product)) for c in qs]
     # Step 4 — capital-at-risk ranking: the point of this report is
     # deciding what to act on first, and a 95-index dead product holding
     # Tk 200 of stock matters less than an 80-index slow product holding

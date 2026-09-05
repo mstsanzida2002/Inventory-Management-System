@@ -617,3 +617,20 @@ def run_full_classification():
         results[cls] += 1
 
     return results
+
+
+def capital_at_risk(classification, stock_by_product):
+    """current_stock * purchase_price, for DEAD/SLOW products only.
+    Extracted from frontend/reports.py's own `_capital_at_risk()` (Step
+    4/BUG-84, docs/bugsfound.md) to `classification.py` — the same
+    definition, one home, shared by the classification report's PDF/CSV
+    export and the Slow-Moving page's own "value at risk" insight (BUG-90)
+    instead of a third copy. Money genuinely tied up in a fast-mover or an
+    unproven insufficient_data row isn't "at risk" in the sense this
+    metric means — those rows get None, not 0, so they sort after every
+    real ranked row rather than tying with a dead product that happens to
+    hold zero stock."""
+    if classification.classification not in (StockClassification.DEAD, StockClassification.SLOW):
+        return None
+    current_stock = stock_by_product.get(classification.product_id, 0)
+    return Decimal(current_stock) * classification.product.purchase_price

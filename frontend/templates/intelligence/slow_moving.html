@@ -73,12 +73,32 @@
   </div>
 
   {# ---------------------------------------------------------- AI insight #}
+  {% comment %}
+    BUG-90 (docs/bugsfound.md) — this block used to render static
+    methodology text (how the classifier works); that content's single
+    home is now docs/DEAD_STOCK_DETECTION.md. Real per-run findings
+    instead, reusing counts/total_flagged/dead_watch/dead_value_at_risk/
+    last_classified_at the view already computes — no classifier logic
+    recomputed here.
+  {% endcomment %}
   <div class="ai-section-head">
     <span class="ai-badge">
       <svg class="icon"><use href="#icon-cpu"></use></svg>
       AI Insight
     </span>
-    <p class="text-slate text-sm" style="margin:0;">Override rules (extreme recency, coverage, or dormancy) are checked first, then a 0&ndash;100 stagnation index (slow at {{ slow_index_threshold }}+, dead at {{ dead_index_threshold }}+) built from four weighted factors &mdash; weights and thresholds configurable in System Settings. Products in stock fewer than {{ min_observation_days }} days are marked Insufficient Data instead of being scored, unless an override already applies. See docs/DEAD_STOCK_DETECTION.md for the full precedence.</p>
+    <div>
+      <p class="text-slate text-sm" style="margin:0;">
+        {% if total_flagged %}
+          {{ counts.dead }} of {{ total_classified }} products are dead stock and {{ counts.slow }} are slow-moving{% if dead_value_at_risk %} &mdash; ৳{{ dead_value_at_risk|floatformat:0 }} of stock value sits in dead-classified products{% endif %}.
+          {% if dead_watch %} Most urgent: {{ dead_watch.0.product.name }} ({% if dead_watch.0.flagged_by_rule %}{{ dead_watch.0.flagged_by_rule }}{% else %}stagnation index {{ dead_watch.0.stagnation_index }}{% endif %}).{% endif %}
+        {% else %}
+          No products are currently flagged as slow-moving or dead stock.
+        {% endif %}
+      </p>
+      {% if last_classified_at %}
+        <p class="text-slate text-xs" style="margin:0.3rem 0 0;">Classification last ran {{ last_classified_at|date:"d M, H:i" }}.</p>
+      {% endif %}
+    </div>
   </div>
 
   <div class="dash-grid">

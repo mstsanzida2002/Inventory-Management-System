@@ -26,6 +26,18 @@
 | Inactive supplier | Cannot create PO for inactive supplier |
 | Inactive product | Cannot add inactive product to PO |
 | History | Purchase history preserved permanently for AI analysis |
+| Unit price | Defaults from `Product.purchase_price` when a product is selected, but is a real, editable field — the value actually submitted is what's stored, permanently, on that line item |
+
+**Auto-fill vs. historical accuracy (disclosed, docs/project_memory.md).**
+`PurchaseOrderItem.unit_price` has always been copied at creation time,
+never read live from `Product` — auto-fill only changes what the form
+shows *before* submission, as a default the user can override. Once
+submitted, the stored `unit_price`/`line_total` never change again, even
+if `Product.purchase_price` changes later — a PO from March keeps
+March's price after an August price change. Tax remains the one
+exception to "trust the client": `PurchaseOrderItem.tax` is still always
+re-derived server-side from `Product.tax_rate`, never the submitted
+value, unchanged by this pass.
 
 ## PO Workflow (State Machine)
 

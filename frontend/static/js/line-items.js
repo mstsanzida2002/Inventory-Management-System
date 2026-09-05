@@ -14,13 +14,25 @@
    calculate_line_total, fed by Product.tax_rate — never this file) is
    the authoritative source once the form is submitted.
 
+   Price auto-fill (docs/bugsfound.md) — same pattern as tax above, one
+   more data attribute read on the same product-select `change` handler:
+   `priceAttr` names which attribute holds the default (`data-purchase-
+   price` on the Purchase form, `data-selling-price` on Sale), rendered
+   server-side from Product. Populates the price input as an editable
+   DEFAULT only — nothing here changes what gets submitted or how the
+   server trusts it; whatever value is in the input when the form is
+   submitted is what's stored, exactly as before this existed. A product
+   with no price (attribute absent/blank) leaves the field empty rather
+   than inserting 0 — never invent a number the product doesn't have.
+
    Usage:
      var items = LineItems.create({
        containerId: "purchase-line-items",
        addButtonId: "purchase-add-item",
        errorId: "purchase-items-error",
        grandTotalId: "purchase-grand-total",
-       productOptionsHtml: MockCatalog.productOptionsHtml
+       productOptionsHtml: MockCatalog.productOptionsHtml,
+       priceAttr: "data-purchase-price"
      });
      items.validate({ minQuantity: 1 });   // true/false, paints inline errors
      items.getItems();                     // [{ productLabel, quantity, unitPrice, discount }]
@@ -52,6 +64,19 @@
     function selectedTaxRate(select) {
       var option = select.options[select.selectedIndex];
       return (option && Number(option.getAttribute("data-tax-rate"))) || 0;
+    }
+
+    // Price auto-fill's own defensive read: absent/blank attribute (no
+    // price on the product) or a non-numeric value both mean "leave the
+    // field empty," never "insert 0" — a missing price and a genuine
+    // zero price are not the same fact.
+    function selectedDefaultPrice(select) {
+      if (!config.priceAttr) return null;
+      var option = select.options[select.selectedIndex];
+      var raw = option && option.getAttribute(config.priceAttr);
+      if (raw === null || raw === undefined || raw === "") return null;
+      var value = Number(raw);
+      return Number.isNaN(value) ? null : value;
     }
 
     function recalculate() {
@@ -129,7 +154,12 @@
       [qty, price, discount].forEach(function (input) {
         input.addEventListener("input", recalculate);
       });
-      select.addEventListener("change", function () { clearRowErrors(row); recalculate(); });
+      select.addEventListener("change", function () {
+        clearRowErrors(row);
+        var defaultPrice = selectedDefaultPrice(select);
+        price.value = defaultPrice === null ? "" : defaultPrice.toFixed(2);
+        recalculate();
+      });
       removeBtn.addEventListener("click", function () {
         if (container.querySelectorAll(".line-item-row").length <= 1) return; // always keep one row
         row.remove();

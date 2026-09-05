@@ -24,6 +24,16 @@
 | Multi-product | Single transaction supports multiple line items |
 | History | Never deleted — preserved for AI forecasting |
 | Inactive product | Cannot be added to a sale |
+| Unit price | Defaults from `Product.selling_price` when a product is selected, but is a real, editable field — the value actually submitted is what's stored, permanently, on that line item |
+
+**Auto-fill vs. historical accuracy (disclosed, docs/project_memory.md).**
+Same treatment as `docs/05_PURCHASES.md`'s own note: `SaleItem.unit_price`
+has always been copied at creation, never read live from `Product` —
+auto-fill only changes the form's default, never what gets stored or
+re-derived afterward. A sale's stored price and line total never change
+even if `Product.selling_price` changes later. `SaleItem.tax` remains
+always server-derived from `Product.tax_rate`, never the client's
+submitted value.
 
 ---
 

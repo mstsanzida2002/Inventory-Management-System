@@ -162,7 +162,7 @@
     A template tag so it's inert markup, read by purchase-form.js at init.
   {% endcomment %}
   <template id="realProductOptions">
-    {% for product in products %}<option value="{{ product.pk }}" data-tax-rate="{{ product.tax_rate }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
+    {% for product in products %}<option value="{{ product.pk }}" data-tax-rate="{{ product.tax_rate }}" data-purchase-price="{{ product.purchase_price|default_if_none:'' }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
   </template>
 
   {% comment %}

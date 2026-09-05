@@ -16,6 +16,7 @@ import tempfile
 import zlib
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -1613,6 +1614,7 @@ class ProductCreateViewTests(TestCase):
             'supplier': self.supplier.pk,
             'purchase_price': '10.00',
             'selling_price': '20.00',
+            'tax_rate': '0',
         }
         payload.update(overrides)
         return payload
@@ -1733,6 +1735,7 @@ class ProductUpdateDeactivateViewTests(TestCase):
             'supplier': self.supplier.pk,
             'purchase_price': '11.00',
             'selling_price': '22.00',
+            'tax_rate': '0',
         }
         payload.update(overrides)
         return payload
@@ -2222,8 +2225,11 @@ class SupplierUpdateDeactivateViewTests(TestCase):
 class ProductTaxRateTests(TestCase):
     """Phase 8.98c: tax_rate lives on Product, not on any transaction
     form. ProductForm.clean_tax_rate() mirrors clean_purchase_price()/
-    clean_selling_price()'s non-negative check, with a 0-default fallback
-    like clean_reorder_level()."""
+    clean_selling_price()'s non-negative check. Form simplification pass
+    (docs/bugsfound.md) made the field itself required, replacing the
+    former blank-submission-defaults-to-0 fallback — a user must state 0
+    deliberately now, same treatment purchase_price/selling_price
+    already had."""
 
     def setUp(self):
         self.user = User.objects.create_user(
@@ -2251,9 +2257,21 @@ class ProductTaxRateTests(TestCase):
         product = Product.objects.get(name='Taxed Gadget')
         self.assertEqual(product.tax_rate, Decimal('7.50'))
 
-    def test_tax_rate_defaults_to_zero_when_omitted(self):
+    def test_blank_tax_rate_now_rejected_not_defaulted(self):
+        """Form simplification pass — a blank tax_rate used to silently
+        become 0; now it's a real validation error, same as leaving
+        purchase_price/selling_price blank always has been."""
         self.client.login(username='taxstaff', password='x')
         response = self.client.post(reverse('frontend:products'), self.valid_payload())
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('tax_rate', response.json().get('errors', {}))
+        self.assertEqual(Product.objects.filter(name='Taxed Gadget').count(), 0)
+
+    def test_explicit_zero_tax_rate_still_accepted(self):
+        """A deliberate 0% is a real, valid business state (11 of 45 real
+        seeded products carry it) — required must not mean non-zero."""
+        self.client.login(username='taxstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(tax_rate='0'))
         self.assertEqual(response.status_code, 200, response.content)
         product = Product.objects.get(name='Taxed Gadget')
         self.assertEqual(product.tax_rate, 0)
@@ -2377,6 +2395,182 @@ class TaxAutoCalculationTests(TestCase):
         self.assertFalse(hasattr(InventoryAdjustment, 'tax'))
         field_names = [f.name for f in InventoryAdjustment._meta.get_fields()]
         self.assertNotIn('tax', field_names)
+
+
+class PriceAutoFillTests(TestCase):
+    """Auto-fill pass (docs/bugsfound.md) — Purchase/Sale line items now
+    auto-populate unit cost from Product.purchase_price/selling_price,
+    mirroring the existing data-tax-rate pattern (frontend/static/js/
+    line-items.js's `priceAttr` config, read in the same product-select
+    change handler tax already uses). The storage contract is
+    deliberately untouched: unit_price is still whatever the client
+    submits, stored once and never re-derived from Product — auto-fill
+    only changes what the form shows before submission, not what's
+    trusted once it arrives. These tests can't drive the JS itself
+    (Django's test client doesn't execute it — see the live dev-server
+    verification instead); what's testable and tested here is the two
+    things that actually matter under that contract: the server-rendered
+    data source auto-fill reads from, and that overriding it is still
+    exactly what gets stored, including after the product's own price
+    later changes."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='pafstaff', email='pafstaff@example.com', password='x',
+            employee_id='EMP-6201', full_name='Price AutoFill Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='AutoFill Widgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='AutoFill Supply', company_name='AutoFill Supply Co', contact_person='Jo',
+            email='autofillsupply@example.com', phone='555-0197', address='1 AutoFill Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='PAF-SKU-001', name='AutoFill Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('12.00'), selling_price=Decimal('25.00'), tax_rate=Decimal('0'),
+        )
+        InventoryService.initialize_for_product(self.product)
+        InventoryService.increase_stock(
+            product=self.product, quantity=50, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.staff,
+        )
+
+    def test_purchase_form_option_carries_purchase_price_for_autofill(self):
+        self.client.login(username='pafstaff', password='x')
+        response = self.client.get(reverse('frontend:purchases'))
+        self.assertContains(response, f'data-purchase-price="{self.product.purchase_price}"')
+
+    def test_sale_form_option_carries_selling_price_for_autofill(self):
+        self.client.login(username='pafstaff', password='x')
+        response = self.client.get(reverse('frontend:sales'))
+        self.assertContains(response, f'data-selling-price="{self.product.selling_price}"')
+
+    def test_purchase_override_price_is_what_gets_stored_not_products_price(self):
+        """The user overrode the auto-filled 12.00 with 15.50 — that
+        override, not Product.purchase_price, must be what's stored."""
+        self.client.login(username='pafstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 3, 'unitPrice': 15.50, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        item = po.items.get()
+        self.assertEqual(item.unit_price, Decimal('15.50'))
+        self.assertNotEqual(item.unit_price, self.product.purchase_price)
+
+    def test_sale_override_price_is_what_gets_stored_not_products_price(self):
+        self.client.login(username='pafstaff', password='x')
+        payload = {
+            'customer_name': 'Override Customer',
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 2, 'unitPrice': 30.00, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:sales'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        sale = SaleTransaction.objects.filter(created_by=self.staff).order_by('-pk').first()
+        item = sale.items.get()
+        self.assertEqual(item.unit_price, Decimal('30.00'))
+        self.assertNotEqual(item.unit_price, self.product.selling_price)
+
+    def test_purchase_unit_price_and_line_total_unaffected_by_later_product_price_change(self):
+        """HISTORICAL INTEGRITY — the exact scenario the task called out:
+        create, then change the product's price, then confirm the stored
+        line is untouched. Auto-fill makes this easier to accidentally
+        break later than it was when price was always hand-typed, so
+        this locks the behaviour in explicitly, not just via the
+        pre-existing tax-snapshot test."""
+        self.client.login(username='pafstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 4, 'unitPrice': 12.00, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        item = po.items.get()
+        self.assertEqual(item.unit_price, Decimal('12.00'))
+        self.assertEqual(item.line_total, Decimal('48.00'))
+
+        self.product.purchase_price = Decimal('99.00')
+        self.product.save()
+
+        item.refresh_from_db()
+        po.refresh_from_db()
+        self.assertEqual(item.unit_price, Decimal('12.00'), "stored unit_price must not track the product's new price")
+        self.assertEqual(item.line_total, Decimal('48.00'), "stored line_total must not be recomputed from the new price")
+        self.assertEqual(po.total_cost, Decimal('48.00'))
+
+    def test_sale_unit_price_and_line_total_unaffected_by_later_product_price_change(self):
+        self.client.login(username='pafstaff', password='x')
+        payload = {
+            'customer_name': 'History Customer',
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 2, 'unitPrice': 25.00, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:sales'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        sale = SaleTransaction.objects.filter(created_by=self.staff).order_by('-pk').first()
+        item = sale.items.get()
+        self.assertEqual(item.unit_price, Decimal('25.00'))
+        self.assertEqual(item.line_total, Decimal('50.00'))
+
+        self.product.selling_price = Decimal('199.00')
+        self.product.save()
+
+        item.refresh_from_db()
+        sale.refresh_from_db()
+        self.assertEqual(item.unit_price, Decimal('25.00'), "stored unit_price must not track the product's new price")
+        self.assertEqual(item.line_total, Decimal('50.00'), "stored line_total must not be recomputed from the new price")
+        self.assertEqual(sale.total_amount, Decimal('50.00'))
+
+    def test_product_form_no_longer_accepts_description_or_image(self):
+        """description/image dropped from ProductForm (model columns
+        untouched) — posting them must be silently ignored, not error,
+        same as any other unrecognized POST key Django's ModelForm
+        already tolerates."""
+        self.client.login(username='pafstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), {
+            'name': 'Simplified Gadget', 'category': self.category.pk, 'supplier': self.supplier.pk,
+            'purchase_price': '5.00', 'selling_price': '9.00', 'tax_rate': '0',
+            'description': 'a description the form can no longer accept',
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        product = Product.objects.get(name='Simplified Gadget')
+        self.assertEqual(product.description, '', "description must stay unset, not silently populated")
+
+
+class ProductPriceAutoFillTemplateTests(TestCase):
+    """The defensive "no price -> leave the attribute empty, never insert
+    0" case (frontend/templates/purchases/purchases.html,
+    frontend/templates/sales/sales.html) can't be exercised end-to-end —
+    Product.purchase_price/selling_price have no null=True, so a real
+    null-priced product can't be persisted today (confirmed: 0 of 45 real
+    products). Tests the exact template expression in isolation instead,
+    against an in-memory object standing in for that gap the model
+    doesn't structurally forbid."""
+
+    def render_option(self, price):
+        from django.template import Context, Template
+        template = Template(
+            '<option data-purchase-price="{{ product.purchase_price|default_if_none:\'\' }}"></option>'
+        )
+        return template.render(Context({'product': SimpleNamespace(purchase_price=price)}))
+
+    def test_none_price_renders_empty_attribute_not_zero(self):
+        rendered = self.render_option(None)
+        self.assertIn('data-purchase-price=""', rendered)
+        self.assertNotIn('data-purchase-price="0"', rendered)
+
+    def test_real_price_renders_its_value(self):
+        rendered = self.render_option(Decimal('12.00'))
+        self.assertIn('data-purchase-price="12.00"', rendered)
 
 
 # ------------------------------------------------------------- Purchases

@@ -148,7 +148,8 @@
       addButtonId: "sale-add-item",
       errorId: "sale-items-error",
       grandTotalId: "sale-grand-total",
-      productOptionsHtml: realProductOptionsHtml()
+      productOptionsHtml: realProductOptionsHtml(),
+      priceAttr: "data-selling-price"
     });
 
     ModalForm.init({

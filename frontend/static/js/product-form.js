@@ -67,11 +67,11 @@
 
   var ADD_REQUIRED_FIELD_IDS = [
     "product-name", "product-category", "product-supplier",
-    "product-purchase-price", "product-selling-price"
+    "product-purchase-price", "product-selling-price", "product-tax-rate"
   ];
   var EDIT_REQUIRED_FIELD_IDS = [
     "edit-product-name", "edit-product-category", "edit-product-supplier",
-    "edit-product-purchase-price", "edit-product-selling-price"
+    "edit-product-purchase-price", "edit-product-selling-price", "edit-product-tax-rate"
   ];
 
   var ADD_NON_NEGATIVE_FIELD_IDS = [
@@ -89,51 +89,18 @@
     category: "product-category", supplier: "product-supplier", brand: "product-brand",
     unit: "product-unit", purchase_price: "product-purchase-price",
     selling_price: "product-selling-price", tax_rate: "product-tax-rate",
-    reorder_level: "product-reorder-level", description: "product-description", image: "product-image"
+    reorder_level: "product-reorder-level"
   };
   var EDIT_SERVER_FIELD_MAP = {
     name: "edit-product-name", sku: "edit-product-sku", barcode: "edit-product-barcode",
     category: "edit-product-category", supplier: "edit-product-supplier", brand: "edit-product-brand",
     unit: "edit-product-unit", purchase_price: "edit-product-purchase-price",
     selling_price: "edit-product-selling-price", tax_rate: "edit-product-tax-rate",
-    reorder_level: "edit-product-reorder-level", description: "edit-product-description", image: "edit-product-image"
+    reorder_level: "edit-product-reorder-level"
   };
 
   function getField(id) {
     return document.getElementById(id);
-  }
-
-  function initImagePreview(inputId, previewId, filenameId) {
-    var input = getField(inputId);
-    var preview = getField(previewId);
-    var filenameLabel = getField(filenameId);
-    if (!input || !preview || !filenameLabel) return;
-
-    input.addEventListener("change", function () {
-      var file = input.files && input.files[0];
-
-      if (!file) {
-        filenameLabel.textContent = "PNG, JPG, or WEBP, up to 5MB";
-        preview.hidden = true;
-        preview.src = "";
-        return;
-      }
-
-      filenameLabel.textContent = file.name;
-      var reader = new FileReader();
-      reader.onload = function (event) {
-        preview.src = event.target.result;
-        preview.hidden = false;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function resetImagePreview(previewId, filenameId) {
-    var preview = getField(previewId);
-    var filenameLabel = getField(filenameId);
-    if (preview) { preview.hidden = true; preview.src = ""; }
-    if (filenameLabel) filenameLabel.textContent = "PNG, JPG, or WEBP, up to 5MB";
   }
 
   function clearFormError(errorBoxId) {
@@ -216,20 +183,6 @@
     setValue("edit-product-selling-price", product.selling_price);
     setValue("edit-product-tax-rate", product.tax_rate);
     setValue("edit-product-reorder-level", product.reorder_level);
-    setValue("edit-product-description", product.description);
-
-    var preview = getField("edit-product-image-preview");
-    var filenameLabel = getField("edit-product-image-filename");
-    if (preview) {
-      if (product.image_url) {
-        preview.src = product.image_url;
-        preview.hidden = false;
-        if (filenameLabel) filenameLabel.textContent = "Current image — choose a file to replace it";
-      } else {
-        preview.hidden = true;
-        preview.src = "";
-      }
-    }
   }
 
   /* ---------------------------------------------------- row actions --- */
@@ -281,10 +234,9 @@
         nonNegativeFieldIds: ADD_NON_NEGATIVE_FIELD_IDS,
         resettableFieldIds: Object.keys(ADD_FIELD_LABELS).concat([
           "product-sku", "product-barcode", "product-brand", "product-supplier",
-          "product-unit", "product-expiry-date", "product-description", "product-image"
+          "product-unit", "product-expiry-date"
         ]),
-        onInit: function () { initImagePreview("product-image", "product-image-preview", "product-image-filename"); },
-        onReset: function () { resetImagePreview("product-image-preview", "product-image-filename"); clearFormError("addProductFormError"); },
+        onReset: function () { clearFormError("addProductFormError"); },
         onSubmit: makeOnSubmit(ADD_SERVER_FIELD_MAP, "addProductFormError")
       });
     }
@@ -298,10 +250,9 @@
         nonNegativeFieldIds: EDIT_NON_NEGATIVE_FIELD_IDS,
         resettableFieldIds: Object.keys(EDIT_FIELD_LABELS).concat([
           "edit-product-sku", "edit-product-barcode", "edit-product-brand", "edit-product-supplier",
-          "edit-product-unit", "edit-product-description", "edit-product-image"
+          "edit-product-unit"
         ]),
-        onInit: function () { initImagePreview("edit-product-image", "edit-product-image-preview", "edit-product-image-filename"); },
-        onReset: function () { resetImagePreview("edit-product-image-preview", "edit-product-image-filename"); clearFormError("editProductFormError"); },
+        onReset: function () { clearFormError("editProductFormError"); },
         onSubmit: makeOnSubmit(EDIT_SERVER_FIELD_MAP, "editProductFormError")
       });
     }

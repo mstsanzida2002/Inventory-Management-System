@@ -23,7 +23,43 @@
 | Supplier | Required, must be active |
 | Reorder level | When `current_stock <= reorder_level`, status = LOW_STOCK |
 | History | All purchase/sale records remain even after product deactivation |
-| Image | Optional upload, validated for type and size |
+| Image | Model field only as of the form-simplification pass below — no longer collected through the Add/Edit Product UI |
+
+---
+
+## Implementation Notes — Deviations From This Spec (disclosed)
+
+**Form simplification pass (docs/project_memory.md).** `description` and
+`image` are unused anywhere in this app's UI — no product detail page
+exists to display either, no report/PDF reads them, no serializer
+exposes Product at all — confirmed by a full-codebase search before
+removing anything. Both dropped from `ProductForm`/the Add and Edit
+templates; **both model columns stay** (a form change is reversible, a
+column drop isn't, and this buys nothing removing the column wouldn't
+also buy). If a product detail page is ever built, these are already
+there waiting, not lost.
+
+**`tax_rate` is now a required form field**, not "optional, defaults to
+0" — a blank submission is rejected, the same treatment
+`purchase_price`/`selling_price` already had. A deliberate 0% is still
+valid and accepted; what changed is that it must be typed, not
+inferred from an empty box.
+
+**`reorder_level` stays fully user-editable, per-product** — considered
+and explicitly rejected for removal during the same pass: it drives
+`InventoryRecord.update_status()`'s LOW_STOCK threshold directly (this
+doc's own Business Rules row above), the Products page's own status
+filter/KPI counts, and the Inventory/Low-Stock reports, and real seed
+data already uses 8 distinct values across 45 products — collapsing
+every product to one system-wide default would have been a real
+capability regression dressed up as a simplification.
+
+**`purchase_price`/`selling_price` auto-fill** on the Purchase/Sale
+line-item forms now reads these two fields as a default — see
+`docs/05_PURCHASES.md`/`docs/06_SALES.md` for that behavior. Nothing
+here changes: the fields are still required, still just plain
+`DecimalField`s, and a Purchase/Sale line item still stores whatever
+price the user submits rather than reading Product live.
 
 ---
 

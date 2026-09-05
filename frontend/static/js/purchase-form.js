@@ -269,7 +269,8 @@
       addButtonId: "purchase-add-item",
       errorId: "purchase-items-error",
       grandTotalId: "purchase-grand-total",
-      productOptionsHtml: realProductOptionsHtml()
+      productOptionsHtml: realProductOptionsHtml(),
+      priceAttr: "data-purchase-price"
     });
 
     ModalForm.init({

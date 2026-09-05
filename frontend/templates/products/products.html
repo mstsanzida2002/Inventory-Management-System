@@ -248,7 +248,7 @@
           </div>
 
           <div class="field">
-            <label class="form-label" for="product-tax-rate">Tax rate % <span class="optional-tag">(optional)</span></label>
+            <label class="form-label" for="product-tax-rate">Tax rate %<span class="required-mark">*</span></label>
             <input class="input input-plain" type="number" id="product-tax-rate" name="tax_rate" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
             <div class="field-error" id="product-tax-rate-error" role="alert"></div>
           </div>
@@ -263,26 +263,6 @@
             <label class="form-label" for="product-expiry-date">Expiry date <span class="optional-tag">(optional)</span></label>
             <input class="input input-plain" type="date" id="product-expiry-date" name="expiry_date">
             <div class="field-error" id="product-expiry-date-error" role="alert"></div>
-          </div>
-
-          <div class="field field-full">
-            <label class="form-label" for="product-description">Product description <span class="optional-tag">(optional)</span></label>
-            <textarea class="textarea" id="product-description" name="description" rows="3" placeholder="Short description shown on the product detail page..."></textarea>
-            <div class="field-error" id="product-description-error" role="alert"></div>
-          </div>
-
-          <div class="field field-full">
-            <label class="form-label" for="product-image">Product image <span class="optional-tag">(optional)</span></label>
-            <label class="file-drop" for="product-image">
-              <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
-              <span class="file-drop-text">
-                <span class="file-drop-title">Click to upload an image</span>
-                <div class="file-drop-filename" id="product-image-filename">PNG, JPG, or WEBP, up to 5MB</div>
-              </span>
-              <img class="file-drop-preview" id="product-image-preview" alt="" hidden>
-            </label>
-            <input type="file" class="sr-only" id="product-image" name="image" accept="image/png,image/jpeg,image/webp">
-            <div class="field-error" id="product-image-error" role="alert"></div>
           </div>
 
         </div>
@@ -411,7 +391,7 @@
           </div>
 
           <div class="field">
-            <label class="form-label" for="edit-product-tax-rate">Tax rate % <span class="optional-tag">(optional)</span></label>
+            <label class="form-label" for="edit-product-tax-rate">Tax rate %<span class="required-mark">*</span></label>
             <input class="input input-plain" type="number" id="edit-product-tax-rate" name="tax_rate" placeholder="0.00" step="0.01" min="0" inputmode="decimal">
             <div class="field-error" id="edit-product-tax-rate-error" role="alert"></div>
           </div>
@@ -420,26 +400,6 @@
             <label class="form-label" for="edit-product-reorder-level">Reorder level <span class="optional-tag">(optional)</span></label>
             <input class="input input-plain" type="number" id="edit-product-reorder-level" name="reorder_level" placeholder="0" step="1" min="0" inputmode="numeric">
             <div class="field-error" id="edit-product-reorder-level-error" role="alert"></div>
-          </div>
-
-          <div class="field field-full">
-            <label class="form-label" for="edit-product-description">Product description <span class="optional-tag">(optional)</span></label>
-            <textarea class="textarea" id="edit-product-description" name="description" rows="3"></textarea>
-            <div class="field-error" id="edit-product-description-error" role="alert"></div>
-          </div>
-
-          <div class="field field-full">
-            <label class="form-label" for="edit-product-image">Product image <span class="optional-tag">(optional — leave blank to keep the current image)</span></label>
-            <label class="file-drop" for="edit-product-image">
-              <span class="file-drop-icon"><svg class="icon"><use href="#icon-upload"></use></svg></span>
-              <span class="file-drop-text">
-                <span class="file-drop-title">Click to replace the image</span>
-                <div class="file-drop-filename" id="edit-product-image-filename">PNG, JPG, or WEBP, up to 5MB</div>
-              </span>
-              <img class="file-drop-preview" id="edit-product-image-preview" alt="" hidden>
-            </label>
-            <input type="file" class="sr-only" id="edit-product-image" name="image" accept="image/png,image/jpeg,image/webp">
-            <div class="field-error" id="edit-product-image-error" role="alert"></div>
           </div>
 
         </div>

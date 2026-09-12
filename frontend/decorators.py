@@ -1,17 +1,9 @@
-"""
-docs/02_RBAC.md's `apps/rbac/decorators.py`, translated into the single
-`frontend` app — no `apps/rbac/` app created (see docs/project_memory.md
-§13). `apps.users.models.UserRole` -> `frontend.models.UserRole`;
-`dashboard:home` -> `frontend:dashboard` (only one dashboard route exists,
-see docs/project_memory.md §17 gap list — no per-role dashboard routes);
-`auth:login` -> `frontend:login` (this project's login route lives in the
-`frontend` namespace, not a separate `auth`/`accounts` one — see
-docs/project_memory.md §12 bug #1).
+"""docs/02_RBAC.md's `apps/rbac/decorators.py`, translated into this
+single `frontend` app -- no separate `apps/rbac/` app exists.
 
-Not yet applied to any real view — Phase 5/6/7 wire this into
-Products/Purchases/Sales/etc. as each module's views are built. Proven
-working here only against a throwaway view in frontend/tests.py.
-"""
+Not applied to any real view -- `frontend/mixins.py`'s class-based
+RoleRequiredMixin family is what views.py actually uses; only
+frontend/tests.py imports these function-based decorators."""
 from functools import wraps
 
 from django.contrib import messages
@@ -39,7 +31,6 @@ def require_role(*roles):
     return decorator
 
 
-# Convenience decorators
 def admin_required(view_func):
     return require_role(UserRole.ADMIN)(view_func)
 

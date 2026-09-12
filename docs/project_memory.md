@@ -7823,3 +7823,56 @@ both re-downloaded and opened successfully via the new plain-anchor
 links.
 
 Not committed — reported back for review per instruction.
+
+## Phase — Comment Hygiene Pass, Session 1/5: Policy, Guard, Pilot Slice (2026-09-13)
+
+New `docs/COMMENT_POLICY.md`: six-prefix vocabulary (`# Rule:`/
+`# Assumption:`/`# Edge:`/`# Workaround:`/`# Perf:`/`# Security:`),
+delete narrative/history/phase-numbers/ASCII banners, but a `BUG-xx`
+tag inside a kept `# Workaround:`/`# Edge:` line always survives —
+`bugsfound.md` is append-only and the cross-reference is the point.
+Celery-absence note consolidated to one canonical `# Assumption:`
+statement, written only where synchronous execution is actually
+load-bearing (request-cycle duration/no retry/no `.delay()`); the other
+6 of 7 files that restated the same fact untouched this session (pilot
+slice didn't include any of them — full sweep is a later session).
+
+New `scripts/comment_guard.py` (deletable dev tool): AST-diff check for
+`*.py` (strips leading docstrings, `ast.dump(include_attributes=False)`
+before/after) and a line-pattern check for `*.html`/`*.js`/`*.css` diffs.
+Caught a real bug in itself before first use: `subprocess.run(...,
+text=True)` decodes `git show`'s stdout with the Windows locale
+codepage, silently corrupting non-ASCII source (em-dashes) and
+producing a false AST-diff on a byte-identical file (`models.py`
+falsely FAILed) — fixed by decoding raw bytes as UTF-8 explicitly.
+Self-tested per instruction: introduced a real one-line rename in
+`mixins.py`, confirmed the guard FAILs and names the file, reverted via
+`git checkout`, confirmed clean again. Confirmed the docstring-only-
+function edge case (body would go empty after stripping) inserts
+`ast.Pass()` and doesn't crash, and that rewriting such a docstring
+correctly reports as a no-op.
+
+Applied to the pilot slice only: `frontend/models.py`, `mixins.py`,
+`permissions.py`, `decorators.py`. All per-model ASCII banners in
+`models.py` removed (14 of them) — class/def statements are the
+structure. ~250 lines of phase-numbered/changelog comment prose
+condensed to the 6-prefix vocabulary, BUG-13/21/47/72/87 references
+preserved on the guards that exist because of them (BUG-47 added to two
+spots that only said "Phase 8.99" before — the real cross-reference was
+missing, not just unnumbered).
+
+**BUG-93** (docs/bugsfound.md): `mixins.py`'s own docstring claimed its
+RBAC mixins were "not yet applied to any real class-based view" while
+83 call sites in `views.py` actually depend on them — found during
+Phase A discovery, confirmed by grep before editing. Rewritten for
+accuracy. Checked `decorators.py`'s near-identical claim separately
+rather than assuming the same bug — confirmed still true (only
+`tests.py` imports those function-based decorators; `mixins.py` is what
+`views.py` actually uses) — left as-is, just de-phased.
+
+Verification: `comment_guard.py` clean on all 4 files; full suite 483/483
+unchanged (no test count drift, since no code changed). Remaining 4
+sessions: sweep the rest of `frontend/*.py`, then templates/JS/CSS, per
+`docs/COMMENT_POLICY.md`.
+
+Not committed — reported back for review per instruction.

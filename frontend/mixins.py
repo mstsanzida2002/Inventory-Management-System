@@ -1,12 +1,11 @@
-"""
-docs/02_RBAC.md's `apps/rbac/mixins.py`, translated into the single
-`frontend` app — no `apps/rbac/` app created (see docs/project_memory.md
-§13). Same app-path/route translations as frontend/decorators.py.
+"""docs/02_RBAC.md's `apps/rbac/mixins.py`, translated into this single
+`frontend` app -- no separate `apps/rbac/` app exists; same route
+translations as frontend/decorators.py.
 
-Not yet applied to any real class-based view — Phase 5/6/7 wire this into
-Products/Purchases/Sales/etc. as each module's views are built. Proven
-working here only against a throwaway CBV in frontend/tests.py.
-"""
+Security: the actual RBAC gate on every role-restricted view in this
+project -- AdminRequiredMixin/SupervisorRequiredMixin/AnyStaffMixin are
+applied across frontend/views.py (BUG-93, docs/bugsfound.md -- this
+docstring previously claimed the opposite)."""
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import redirect
@@ -15,7 +14,7 @@ from frontend.models import UserRole
 
 
 class RoleRequiredMixin(LoginRequiredMixin):
-    required_roles = []   # Override in subclass
+    required_roles = []
 
     def dispatch(self, request, *args, **kwargs):
         if not request.user.is_authenticated:

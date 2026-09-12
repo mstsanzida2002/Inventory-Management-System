@@ -1,10 +1,6 @@
-"""
-Models per docs/SCHEMA.md. SCHEMA.md documents these across separate apps
-(apps/users, apps/products, apps/suppliers, ...); consolidated here into the
-single `frontend` app per current project structure. Cross-model references
-that SCHEMA.md writes as app-label strings (e.g. 'suppliers.Supplier') are
-written as direct class references instead, since there is only one app.
-"""
+"""Models per docs/SCHEMA.md, consolidated from SCHEMA.md's multiple apps
+into this single `frontend` app; cross-model FKs use direct class
+references, not SCHEMA.md's app-label strings."""
 from decimal import Decimal
 
 from django.conf import settings
@@ -24,8 +20,6 @@ class TimeStampedModel(models.Model):
     class Meta:
         abstract = True
 
-
-# --------------------------------------------------------------------- 1. User
 
 class UserRole(models.TextChoices):
     ADMIN = 'admin', 'System Administrator'
@@ -61,12 +55,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     failed_login_attempts = models.PositiveSmallIntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
 
-    # Not in SCHEMA.md's User code block — PermissionsMixin hardcodes
-    # related_name="user_set" for both fields, which clashes with
-    # django.contrib.auth's own User model (still present/active in
-    # INSTALLED_APPS until AUTH_USER_MODEL is switched in a later phase).
-    # Overriding related_name only renames the reverse accessor; it does not
-    # change the documented schema shape.
+    # Workaround: PermissionsMixin hardcodes related_name="user_set", which
+    # clashes with django.contrib.auth's own User model -- renamed here.
     groups = models.ManyToManyField('auth.Group', related_name='frontend_user_set', blank=True)
     user_permissions = models.ManyToManyField('auth.Permission', related_name='frontend_user_permissions_set', blank=True)
 
@@ -78,8 +68,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class Meta:
         db_table = 'users'
         indexes = [
-            # email's index removed (BUG-13): unique=True above already
-            # creates a DB-level unique index on this column.
+            # Assumption: no explicit index for email -- unique=True above
+            # already creates one (BUG-13).
             models.Index(fields=['employee_id']),
             models.Index(fields=['role']),
         ]
@@ -96,13 +86,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def is_staff_member(self):
         return self.role == UserRole.STAFF
 
-    # Not in SCHEMA.md's User code block. AbstractBaseUser (unlike
-    # AbstractUser) provides neither get_full_name() nor get_short_name()
-    # — Phase 3.6's dashboard topbar template already calls both
-    # (`request.user.get_full_name`, `request.user.get_initials`) against
-    # mock/anonymous data, silently falling through to its `|default`
-    # values. Added now (Phase 4) so those calls resolve to the real,
-    # logged-in user instead of always showing the placeholder name.
+    # Workaround: AbstractBaseUser provides neither get_full_name() nor
+    # get_short_name() (unlike AbstractUser) -- the topbar template needs both.
     def get_full_name(self):
         return self.full_name
 
@@ -118,8 +103,6 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         return self.username[:2].upper()
 
 
-# ----------------------------------------------------------------- 2. Category
-
 class Category(TimeStampedModel):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
@@ -129,8 +112,6 @@ class Category(TimeStampedModel):
         db_table = 'categories'
         verbose_name_plural = 'categories'
 
-
-# ----------------------------------------------------------------- 3. Supplier
 
 class Supplier(TimeStampedModel):
     supplier_name = models.CharField(max_length=150)
@@ -148,8 +129,6 @@ class Supplier(TimeStampedModel):
     def __str__(self):
         return f"{self.company_name} ({self.supplier_name})"
 
-
-# ------------------------------------------------------------------ 4. Product
 
 class UnitOfMeasurement(models.TextChoices):
     PIECE = 'pcs', 'Pieces'
@@ -171,13 +150,8 @@ class Product(TimeStampedModel):
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='products')
     purchase_price = models.DecimalField(max_digits=12, decimal_places=2)
     selling_price = models.DecimalField(max_digits=12, decimal_places=2)
-    # Phase 8.98c — undocumented in SCHEMA.md (which instead documents `tax`
-    # as a per-line field on PurchaseOrderItem/SaleItem, still true — see
-    # those models below). Disclosed architecture decision, matching this
-    # project's SKU-format precedent (project_memory.md §13): tax is a
-    # property of the product, not something entered per-transaction.
-    # Default 0% — no jurisdiction/tax-regime assumption is baked in; every
-    # existing product needs this set explicitly to charge real tax.
+    # Rule: tax is a property of the Product, not entered per-transaction --
+    # PurchaseOrderItem/SaleItem still carry their own per-line `tax` too.
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     reorder_level = models.PositiveIntegerField(default=10)
     current_stock = models.PositiveIntegerField(default=0)  # updated by inventory service
@@ -188,25 +162,16 @@ class Product(TimeStampedModel):
     class Meta:
         db_table = 'products'
         indexes = [
-            # sku's and barcode's indexes removed (BUG-13): both are
-            # unique=True above, which already creates a DB-level unique
-            # index on each column.
+            # Assumption: no explicit index for sku/barcode -- unique=True
+            # above already creates one for each (BUG-13).
             models.Index(fields=['category']),
             models.Index(fields=['supplier']),
             models.Index(fields=['is_active']),
         ]
 
     def save(self, *args, **kwargs):
-        # BUG-87 — same collision math as PurchaseOrder.po_number/
-        # SaleTransaction.invoice_number (see _save_with_generated_unique_
-        # number()'s own docstring), but sku can also be a real, unrelated
-        # collision-free value the user typed by hand — retrying THAT case
-        # under a different, auto-picked sku would silently save a product
-        # under a SKU the user never chose, not fix a bug. Only retry when
-        # ProductForm.clean_sku() actually left it to be auto-generated
-        # (the same "unique=True with no retry loop" gap _generate_sku()'s
-        # own pre-fix comment already flagged); a manually-entered
-        # duplicate still surfaces as a real IntegrityError, same as today.
+        # Workaround: retry only an auto-generated SKU collision (BUG-87) --
+        # a manually-typed duplicate must still raise a real IntegrityError.
         if getattr(self, "_sku_autogenerated", False):
             _save_with_generated_unique_number(
                 lambda: super(Product, self).save(*args, **kwargs),
@@ -224,8 +189,6 @@ class Product(TimeStampedModel):
         return f"[{self.sku}] {self.name}"
 
 
-# ---------------------------------------------------------- 5. Purchase Orders
-
 class POStatus(models.TextChoices):
     DRAFT = 'draft', 'Draft'
     PENDING = 'pending', 'Pending Approval'
@@ -240,25 +203,9 @@ _NUMBER_GENERATION_MAX_ATTEMPTS = 5
 
 
 def _save_with_generated_unique_number(save_call, regenerate):
-    """BUG-87 (docs/bugsfound.md) — PurchaseOrder.po_number/SaleTransaction.
-    invoice_number are a 4-digit random suffix per calendar day (9000
-    values); birthday-paradox math puts a same-day namespace at >50%
-    collision odds around ~112 transactions, real volume for this kind of
-    system. The unique=True constraint on both fields already means a
-    collision can never silently produce two rows sharing a number — the
-    database's own unique index is what guarantees that, not this
-    function. What used to happen on a real collision was an uncaught
-    IntegrityError crashing the request. This retries the save under a
-    freshly generated number instead, up to _NUMBER_GENERATION_MAX_ATTEMPTS
-    times. `save_call` runs inside its own `transaction.atomic()` — Django
-    nests atomic() as a real SAVEPOINT when a caller already has an outer
-    transaction open (PurchaseService/SaleService both wrap their own
-    create() in one) and as a real transaction when there isn't one — so a
-    failed attempt is fully rolled back either way, never leaving a
-    partial row and never able to observe (or collide with) whatever
-    number a concurrent request's own attempt is mid-way through
-    committing. `regenerate` is called between attempts to pick the next
-    candidate."""
+    """Retries save_call() under transaction.atomic() on IntegrityError,
+    calling regenerate() between attempts, up to N tries (BUG-87 collision
+    guard)."""
     for attempt in range(_NUMBER_GENERATION_MAX_ATTEMPTS):
         try:
             with transaction.atomic():
@@ -276,27 +223,16 @@ class PurchaseOrder(TimeStampedModel):
     status = models.CharField(max_length=20, choices=POStatus.choices, default=POStatus.DRAFT)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='purchase_orders_created')
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='purchase_orders_approved', null=True, blank=True)
-    # Phase 8.99 — was `auto_now_add=True`. Django's DateField (unlike
-    # DateTimeField) ignores TIME_ZONE/USE_TZ entirely for auto_now/
-    # auto_now_add: DateField.pre_save() calls plain `datetime.date.
-    # today()`, the OS clock's local calendar date, not
-    # `timezone.localdate()`. Invisible on this dev machine (OS clock is
-    # already set to Bangladesh time) but wrong on any UTC production
-    # server: an order raised at, say, 2 AM Dhaka is 20:00 UTC the
-    # previous day, so `date.today()` there returns yesterday. Set
-    # explicitly in save() below via `timezone.localdate()` instead, the
-    # same Asia/Dhaka-aware helper used everywhere else since Phase 8.6.
+    # Assumption: Asia/Dhaka calendar date, set explicitly in save() below --
+    # DateField.auto_now_add ignores TIME_ZONE entirely (BUG-47).
     order_date = models.DateField()
     expected_delivery = models.DateField(null=True, blank=True)
     total_cost = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     rejected_reason = models.TextField(blank=True)
-    # Phase 8.99c — SCHEMA.md §5 has no cancellation-equivalent field (only
-    # rejected_reason); a new field rather than overloading rejected_reason,
-    # matching that field's own shape (TextField, blank=True, no null=True).
-    # cancelled_by/cancelled_at mirror approved_by/approved_at — a reason
-    # with no attributable author/time isn't an audit record.
+    # Rule: cancellation mirrors rejection's shape (reason + attributable
+    # author/time) -- SCHEMA.md has no cancellation-equivalent field.
     cancelled_reason = models.TextField(blank=True)
     cancelled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -323,19 +259,14 @@ class PurchaseOrder(TimeStampedModel):
     @staticmethod
     def _generate_po_number():
         import random
-        # Phase 8.99: was `timezone.now().strftime(...)` — timezone.now()
-        # is UTC-aware, and .strftime() on an aware datetime formats it in
-        # whatever tzinfo it already carries (UTC), not TIME_ZONE. The
-        # embedded date in this identifier was silently UTC-dated, not
-        # Dhaka-dated. timezone.localdate() already returns the correct
-        # local calendar date, so no further conversion is needed here.
+        # Workaround: timezone.localdate() -- timezone.now().strftime() would
+        # silently format the UTC date, not the Dhaka one (BUG-47).
         return f"PO-{timezone.localdate().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
 
     @property
     def display_reason(self):
-        """Phase 8.99c — one place both the list tables, per-record PDF,
-        and Purchase Report read from, so a rejected or cancelled PO's
-        reason is visible wherever the record is reported (Objective #3)."""
+        """The one place list tables, the per-record PDF, and Purchase
+        Report all read a rejected/cancelled PO's reason from."""
         if self.status == POStatus.CANCELLED:
             return self.cancelled_reason
         if self.status == POStatus.REJECTED:
@@ -350,12 +281,8 @@ class PurchaseOrderItem(TimeStampedModel):
     received_qty = models.PositiveIntegerField(default=0)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     discount = models.DecimalField(max_digits=5, decimal_places=2, default=0)
-    # Phase 8.98c: no longer a form input — set once, at creation, from
-    # frontend.forms.parse_line_items() reading the product's own
-    # tax_rate (never trusted from the client). Kept as a real column
-    # (not derived at read-time) so this line's tax is a historical
-    # snapshot: if the product's tax_rate changes later, this row still
-    # reflects what was actually charged when the PO was created.
+    # Rule: set once at creation from Product.tax_rate (never trusted from
+    # the client) -- a historical snapshot, not recomputed if tax_rate changes.
     tax = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
@@ -363,29 +290,14 @@ class PurchaseOrderItem(TimeStampedModel):
         db_table = 'purchase_order_items'
 
     def save(self, *args, **kwargs):
-        # frontend.pricing.calculate_line_total() — the one shared formula
-        # SaleService.create_sale() also uses (Phase 8.98c), instead of
-        # each duplicating it.
+        # Rule: shared formula -- SaleService.create_sale() uses the same one.
         self.line_total = calculate_line_total(self.unit_price, self.ordered_qty, self.discount, self.tax)
         super().save(*args, **kwargs)
 
 
-# ---------------------------------------------------------------- 6. Sales
-
 class SaleStatus(models.TextChoices):
-    # Phase 8.99b — extends SCHEMA.md §6's original two-status
-    # (`completed`/`cancelled`) shape to mirror PurchaseOrder's approval
-    # workflow; disclosed as its own architecture decision (§13), same
-    # treatment as `Product.tax_rate`. Deliberately no separate
-    # `APPROVED` status: for a Purchase, approval and receipt are
-    # genuinely different moments (approval commits to the order; stock
-    # only moves later, on receive — and can move partially, over
-    # multiple receipts). For a Sale, approval *is* the moment stock
-    # moves — there is no second, later event a distinct `APPROVED`
-    # status would ever describe. Inventing one would create a status
-    # with no real-world meaning of its own; `COMPLETED` (the pre-existing
-    # value, reused rather than renamed) already means exactly "approved
-    # and stock has moved," so it does double duty as both.
+    # Rule: no separate APPROVED status -- for a Sale, approval IS the moment
+    # stock moves, so COMPLETED already means "approved and stock moved."
     DRAFT = 'draft', 'Draft'
     PENDING = 'pending', 'Pending Approval'
     COMPLETED = 'completed', 'Completed'
@@ -397,31 +309,24 @@ class SaleTransaction(TimeStampedModel):
     invoice_number = models.CharField(max_length=30, unique=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     customer_name = models.CharField(max_length=150, blank=True)
-    # Phase 8.99 — same fix as PurchaseOrder.order_date above (was
-    # `auto_now_add=True`, silently OS-clock-dated rather than
-    # Asia/Dhaka-dated on a UTC production server). Set explicitly in
-    # save() via `timezone.localdate()`.
+    # Assumption: Asia/Dhaka calendar date, set explicitly in save() (BUG-47,
+    # same fix as PurchaseOrder.order_date).
     transaction_date = models.DateField()
-    # Phase 8.99b — was `default=SaleStatus.COMPLETED` (a sale used to
-    # complete immediately on creation). Now defaults to DRAFT, mirroring
-    # PurchaseOrder.status's own default — a sale is created, then
-    # explicitly submitted for approval, same shape as a PO.
+    # Rule: defaults to DRAFT, mirroring PurchaseOrder.status -- a sale is
+    # created, then explicitly submitted for approval.
     status = models.CharField(max_length=20, choices=SaleStatus.choices, default=SaleStatus.DRAFT)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
-    # Phase 8.99b — mirrors PurchaseOrder.approved_by/approved_at exactly
-    # (same FK shape, same null=True/blank=True — not every sale reaches
-    # this state).
+    # Rule: mirrors PurchaseOrder.approved_by/approved_at -- not every sale
+    # reaches this state.
     approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name='sales_approved', null=True, blank=True,
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    # Phase 8.99b — mirrors PurchaseOrder.rejected_reason; SaleTransaction
-    # never had a rejection concept before this phase.
+    # Rule: mirrors PurchaseOrder.rejected_reason.
     rejected_reason = models.TextField(blank=True)
-    # Phase 8.99c — mirrors PurchaseOrder.cancelled_reason/cancelled_by/
-    # cancelled_at exactly; see that field's own comment for the reasoning.
+    # Rule: mirrors PurchaseOrder.cancelled_reason/cancelled_by/cancelled_at.
     cancelled_reason = models.TextField(blank=True)
     cancelled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -438,10 +343,7 @@ class SaleTransaction(TimeStampedModel):
             self.transaction_date = timezone.localdate()
         if not self.invoice_number:
             self.invoice_number = self._generate_invoice_number()
-            # BUG-87 — mirrors PurchaseOrder.save() above exactly, same
-            # collision math, same field shape (unique=True 4-digit daily
-            # suffix); see _save_with_generated_unique_number()'s own
-            # docstring for the concurrency guarantee.
+            # Workaround: same collision retry as PurchaseOrder.save() (BUG-87).
             _save_with_generated_unique_number(
                 lambda: super(SaleTransaction, self).save(*args, **kwargs),
                 lambda: setattr(self, "invoice_number", self._generate_invoice_number()),
@@ -451,7 +353,7 @@ class SaleTransaction(TimeStampedModel):
 
     @property
     def display_reason(self):
-        """Phase 8.99c — mirrors PurchaseOrder.display_reason exactly."""
+        """Mirrors PurchaseOrder.display_reason."""
         if self.status == SaleStatus.CANCELLED:
             return self.cancelled_reason
         if self.status == SaleStatus.REJECTED:
@@ -461,9 +363,8 @@ class SaleTransaction(TimeStampedModel):
     @staticmethod
     def _generate_invoice_number():
         import random
-        # Phase 8.99 — same fix as PurchaseOrder._generate_po_number()
-        # above: timezone.localdate() instead of timezone.now().strftime(),
-        # which silently formatted the UTC date, not the Dhaka date.
+        # Workaround: timezone.localdate(), not timezone.now().strftime()
+        # (BUG-47, same fix as PurchaseOrder._generate_po_number()).
         return f"INV-{timezone.localdate().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
 
 
@@ -473,18 +374,14 @@ class SaleItem(TimeStampedModel):
     quantity = models.PositiveIntegerField()
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     discount = models.DecimalField(max_digits=5, decimal_places=2, default=0)
-    # Phase 8.98c: same treatment as PurchaseOrderItem.tax above — sourced
-    # from the product's tax_rate at creation (frontend.forms.
-    # parse_line_items()), never a form field; a historical snapshot, not
-    # recomputed if the product's tax_rate changes later.
+    # Rule: same as PurchaseOrderItem.tax -- set once from Product.tax_rate,
+    # a historical snapshot.
     tax = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
     class Meta:
         db_table = 'sale_items'
 
-
-# ------------------------------------------------------------- 7. Inventory
 
 class InventoryStatus(models.TextChoices):
     AVAILABLE = 'available', 'Available'
@@ -523,7 +420,7 @@ class InventoryMovement(TimeStampedModel):
     """Immutable ledger — never update or delete."""
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='movements')
     movement_type = models.CharField(max_length=20, choices=MovementType.choices)
-    quantity_change = models.IntegerField()  # positive = stock in, negative = stock out
+    quantity_change = models.IntegerField()  # positive = in, negative = out
     stock_before = models.PositiveIntegerField()
     stock_after = models.PositiveIntegerField()
     reference_type = models.CharField(max_length=50)  # 'PurchaseOrder', 'SaleTransaction', etc.
@@ -547,8 +444,6 @@ class InventoryMovement(TimeStampedModel):
         raise PermissionError("InventoryMovement records cannot be deleted.")
 
 
-# --------------------------------------------------------- 8. Inventory Adjustment
-
 class AdjustmentType(models.TextChoices):
     INCREASE = 'increase', 'Stock Increase'
     DECREASE = 'decrease', 'Stock Decrease'
@@ -561,10 +456,8 @@ class AdjustmentStatus(models.TextChoices):
 
 
 class AdjustmentReason(models.TextChoices):
-    """Phase 12 — a structured code alongside the existing free-text
-    `reason`, since ApprovalPolicy needs something machine-matchable to
-    route on (§4). The free-text field stays required too: this is a
-    classification of the narrative, not a replacement for it."""
+    """Structured code alongside the free-text `reason` field, for
+    ApprovalPolicy routing -- not a replacement for the narrative."""
     DAMAGE = 'damage', 'Damaged / Broken'
     EXPIRY = 'expiry', 'Expired / Obsolete'
     COUNT_CORRECTION = 'count_correction', 'Physical Count Correction'
@@ -577,12 +470,8 @@ class InventoryAdjustment(TimeStampedModel):
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     adjustment_type = models.CharField(max_length=10, choices=AdjustmentType.choices)
     quantity = models.PositiveIntegerField()
-    # Phase 12 — required choice field (form-level: no blank option in
-    # AdjustmentForm). default=OTHER exists only so the migration adding
-    # this column to existing rows has somewhere to land — every row
-    # created through the real form always supplies an explicit value;
-    # existing rows were backfilled to OTHER rather than guessed at from
-    # free text (§4's own instruction).
+    # Assumption: default=OTHER only backfills pre-existing rows -- the real
+    # form always requires an explicit value (no blank option).
     reason_code = models.CharField(max_length=20, choices=AdjustmentReason.choices, default=AdjustmentReason.OTHER)
     reason = models.TextField()
     status = models.CharField(max_length=10, choices=AdjustmentStatus.choices, default=AdjustmentStatus.PENDING)
@@ -590,13 +479,8 @@ class InventoryAdjustment(TimeStampedModel):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='adjustments_approved', null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     rejected_reason = models.TextField(blank=True)
-    # Phase 12.1 §4/§6 — which policy actually resolved this adjustment,
-    # and whether that resolution was AUTO. Previously only existed
-    # inside AuditLog.details (a JSON blob you'd have to parse back out
-    # to compare against) — found as a real gap by this phase's own
-    # discovery question. SET_NULL, not CASCADE/PROTECT: deactivating or
-    # deleting a policy later must never retroactively corrupt or block
-    # deletion of adjustment history that already happened under it.
+    # Rule: SET_NULL, not CASCADE/PROTECT -- deactivating/deleting a policy
+    # must never corrupt or block deletion of adjustment history under it.
     resolved_policy = models.ForeignKey(
         'ApprovalPolicy', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='resolved_adjustments',
@@ -606,8 +490,6 @@ class InventoryAdjustment(TimeStampedModel):
     class Meta:
         db_table = 'inventory_adjustments'
 
-
-# ----------------------------------------------------- 9. AI Demand Forecast
 
 class ForecastPeriod(models.TextChoices):
     WEEKLY = 'weekly', 'Weekly'
@@ -630,16 +512,12 @@ class DemandForecast(TimeStampedModel):
         indexes = [models.Index(fields=['product', 'period_start'])]
 
 
-# --------------------------------------------- 10. AI Inventory Classification
-
 class StockClassification(models.TextChoices):
     FAST = 'fast', 'Fast-Moving'
     SLOW = 'slow', 'Slow-Moving'
     DEAD = 'dead', 'Dead Stock'
-    # Prompt 2 (2026-08-24) — a product too young or too thinly-observed to
-    # trust any of the other three: see frontend/classification.py's own
-    # module docstring for the full gating rule. Deliberately not a
-    # "problem" state — never counted in total_flagged, never notified.
+    # Rule: too young/thinly-observed to trust the other three -- never
+    # counted in total_flagged, never notified (see classification.py).
     INSUFFICIENT_DATA = 'insufficient_data', 'Insufficient Data'
 
 
@@ -648,46 +526,26 @@ class InventoryClassification(TimeStampedModel):
     classification = models.CharField(max_length=20, choices=StockClassification.choices)
     turnover_rate = models.DecimalField(max_digits=8, decimal_places=4, default=0)
     last_sold_date = models.DateField(null=True, blank=True)
-    # Prompt 2 (2026-08-24) — BUG (see docs/bugsfound.md): nullable now,
-    # was PositiveIntegerField(default=0). A never-sold product used to
-    # store 0 here (from the old `days_since if days_since < 9999 else 0`
-    # sentinel-clamp) while last_sold_date stayed None — "0 days since
-    # last sale" read as "sold today" right next to a field saying no sale
-    # has ever happened. Fixed at the point of write: classify_product()
-    # now stores None whenever last_sold_date is None, never a numeric
-    # stand-in. Every reader (views.py/reports.py/serializers.py) either
-    # already branched on last_sold_date first or is fine surfacing a
-    # genuine null.
+    # Workaround: nullable, never a numeric stand-in for "never sold" (BUG-72)
+    # -- classify_product() stores None when last_sold_date is None.
     days_since_last_sale = models.PositiveIntegerField(null=True, blank=True)
     recommendation = models.TextField(blank=True)
     classified_at = models.DateTimeField(auto_now=True)
-    # Prompt 2 (2026-08-24) — the multi-criteria weighted expert system's
-    # composite score (0-100, higher = more stagnant) and its four
-    # 0.00-1.00 factor inputs, persisted individually so a supervisor can
-    # see *why* a product landed where it did, not just where it landed.
-    # Nullable: rows created before this migration (or a row whose product
-    # has never been through classify_product() since) carry no score
-    # until the next classification run recomputes them — see
-    # frontend/classification.py and docs/project_memory.md for the null-
-    # window disclosure.
+    # Assumption: nullable -- a row never run through classify_product()
+    # carries no score until the next run recomputes it.
     stagnation_index = models.PositiveSmallIntegerField(null=True, blank=True)
     confidence = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)  # 0.00 - 1.00
     recency_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
     turnover_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
     coverage_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
     frequency_score = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
-    # PROMPT_1B (2026-08-24) — set only when an override rule (not the
-    # weighted index) decided this row's classification, e.g. "No sales
-    # in 210 days". Blank for both the ordinary index path and
-    # insufficient_data — "worth more to a supervisor than an opaque
-    # 71.3" (see classify_product()'s own docstring for full precedence).
+    # Rule: set only when an override rule (not the weighted index) decided
+    # the classification -- blank for the ordinary index path.
     flagged_by_rule = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         db_table = 'inventory_classifications'
 
-
-# ----------------------------------------------------------- 11. Notification
 
 class NotificationType(models.TextChoices):
     LOW_STOCK = 'low_stock', 'Low Stock Alert'
@@ -702,14 +560,8 @@ class NotificationType(models.TextChoices):
     AI_DEAD_STOCK = 'ai_dead', 'AI Dead Stock Alert'
     PASSWORD_CHANGED = 'password_changed', 'Password Changed'
     SALE_COMPLETED = 'sale_completed', 'Sale Completed'
-    # Phase 8.99b — the 13th type, added deliberately against this
-    # project's own Phase 8.98e precedent of skipping a notification
-    # rather than inventing an undocumented type. That precedent covered
-    # a merely-informational case (an admin being told a password
-    # changed); this one is load-bearing — without a real notification,
-    # a Supervisor/Admin has no way to learn a sale is even awaiting
-    # them, and the entire approval gate this phase builds has no
-    # trigger. See §13 for the full reasoning.
+    # Rule: load-bearing, not informational -- without it, a Supervisor/Admin
+    # has no way to learn a sale is awaiting their approval.
     SALE_PENDING = 'sale_pending', 'Sale Pending Approval'
 
 
@@ -726,8 +578,6 @@ class Notification(TimeStampedModel):
         db_table = 'notifications'
         indexes = [models.Index(fields=['recipient', 'is_read']), models.Index(fields=['created_at'])]
 
-
-# ------------------------------------------------------------- 12. Audit Log
 
 class AuditLog(models.Model):
     """IMMUTABLE — never allow update or delete on this model."""
@@ -757,40 +607,24 @@ class AuditLog(models.Model):
         raise PermissionError("AuditLog records cannot be deleted.")
 
 
-# --------------------------------------------------- 13. System Settings
-
 class SystemSettings(TimeStampedModel):
     """Singleton — only one row should ever exist."""
     company_name = models.CharField(max_length=200, default='My Company')
-    # Phase 13 — FileField, not ImageField: a FileField skips Django's
-    # Pillow-based "is this really an image" check, which is required to
-    # accept SVG logos (Pillow cannot open SVG at all). validate_company_logo
-    # (frontend/validators.py) does the type/size checking an ImageField
-    # would otherwise have done for free, PNG/JPG included.
+    # Workaround: FileField, not ImageField -- Pillow (ImageField's check)
+    # cannot open SVG; validate_company_logo() does the type/size check instead.
     company_logo = models.FileField(upload_to='company/', blank=True, null=True, validators=[validate_company_logo])
     company_address = models.TextField(blank=True)
     company_email = models.EmailField(blank=True)
     company_phone = models.CharField(max_length=20, blank=True)
-    # Phase 13 — a document header needs these too; both optional, no
-    # migration data to backfill (every existing row's value is simply
-    # blank, same as company_address/email/phone already were before
-    # anyone filled them in).
     company_tax_number = models.CharField(max_length=50, blank=True, verbose_name='Tax / BIN number')
     company_website = models.URLField(blank=True)
-    # Inventory thresholds
     default_reorder_level = models.PositiveIntegerField(default=10)
-    # AI settings
     forecast_period_weeks = models.PositiveIntegerField(default=4)
     forecast_retrain_days = models.PositiveIntegerField(default=7)
     slow_moving_threshold_days = models.PositiveIntegerField(default=60)
     dead_stock_threshold_days = models.PositiveIntegerField(default=180)
-    # Prompt 2 (2026-08-24) — the dead-stock classifier's knowledge base:
-    # admin-editable weights for the four stagnation-index factors
-    # (frontend/classification.py), the composite-score thresholds that
-    # replace the old single-factor day-count branch, and the
-    # confidence-gating inputs. See classification.py's module docstring
-    # for how each is used; see clean() below for why the four weights are
-    # validated, not silently normalised.
+    # Assumption: admin-editable weights/thresholds for the four stagnation-
+    # index factors (see classification.py); see clean() for validation.
     weight_recency = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.40'))
     weight_turnover = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.30'))
     weight_coverage = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal('0.20'))
@@ -799,21 +633,13 @@ class SystemSettings(TimeStampedModel):
     dead_index_threshold = models.PositiveSmallIntegerField(default=70)
     target_days_of_cover = models.PositiveIntegerField(default=90)
     min_observation_days = models.PositiveIntegerField(default=30)
-    # PROMPT_1B (2026-08-24) — min_sale_events no longer gates
-    # insufficient_data (that was conflating "unproven" with "dormant" —
-    # see classification.py's module docstring and docs/bugsfound.md);
-    # it now feeds confidence only, same as it should have from the
-    # start.
+    # Rule: feeds confidence only, not insufficient_data gating (that
+    # conflated "unproven" with "dormant" -- see classification.py).
     min_sale_events = models.PositiveIntegerField(default=2)
-    # PROMPT_1B (2026-08-24) — the ceiling both the Coverage factor's ramp
-    # and the Force-SLOW override use: at or above this many days of
-    # stock cover, a product is slow-moving regardless of how recently it
-    # last sold (a single bulk sale that won't run out for two years is
-    # not "fast" just because it happened last week).
+    # Rule: ceiling for the Coverage factor and the Force-SLOW override --
+    # at/above this many days of cover, a product is slow regardless of recency.
     extreme_coverage_days = models.PositiveIntegerField(default=730)
-    # Session
     session_timeout_seconds = models.PositiveIntegerField(default=3600)
-    # Notifications
     email_notifications_enabled = models.BooleanField(default=True)
     low_stock_email_enabled = models.BooleanField(default=True)
 
@@ -823,26 +649,14 @@ class SystemSettings(TimeStampedModel):
         verbose_name_plural = 'System Settings'
 
     def save(self, *args, **kwargs):
-        # Force every save onto the same row so a second row can never be
-        # produced regardless of caller (was previously convention-only —
-        # see BUG-21). A plain instantiate+save() converges onto row 1
-        # (Django UPDATEs when pk is set and the row exists); a second
-        # .objects.create() (which forces an INSERT) raises IntegrityError
-        # instead of silently duplicating — either way, never a 2nd row.
+        # Rule: singleton, enforced not just by convention (BUG-21) -- pk=1
+        # forces every save onto row 1; a forced INSERT elsewhere raises.
         self.pk = 1
         super().save(*args, **kwargs)
 
     def clean(self):
-        # Prompt 2 (2026-08-24) — the four stagnation-index weights must
-        # sum to exactly 1.00. Rejected here, not silently normalised: a
-        # classifier that quietly rescaled an admin's 0.40/0.30/0.20/0.05
-        # (summing to 0.95) to fractions the admin never entered would
-        # make the stored numbers and the numbers actually driving
-        # classification permanently diverge — unauditable. This runs via
-        # ModelForm.full_clean() for both SystemSettingsForm (the settings
-        # page) and Django admin's own form, so both surfaces reject a
-        # bad total the same way; nothing bypasses it except a raw
-        # .save() from trusted code, which never writes these fields.
+        # Rule: weights must sum to exactly 1.00, rejected not silently
+        # normalised -- a quiet rescale would desync stored vs. real weights.
         super().clean()
         total = (self.weight_recency or Decimal('0')) + (self.weight_turnover or Decimal('0')) \
             + (self.weight_coverage or Decimal('0')) + (self.weight_frequency or Decimal('0'))
@@ -859,14 +673,8 @@ class SystemSettings(TimeStampedModel):
 
     @classmethod
     def get_company_profile(cls):
-        """Phase 13 — the single accessor every PDF (and anything else
-        that needs the company's own identity) reads through, instead of
-        each caller reaching into SystemSettings' fields directly. Every
-        value is a plain string (never None), so a caller never has to
-        special-case a blank field — an empty string is exactly as easy
-        to skip in a template/PDF as a real one is to print.
-        `logo_path`/`logo_is_svg` are derived here once rather than
-        making every PDF builder re-check the extension itself."""
+        """The one accessor every PDF reads company identity through --
+        every value is a plain string, never None."""
         obj = cls.get_settings()
         logo_path = ''
         logo_is_svg = False
@@ -875,9 +683,8 @@ class SystemSettings(TimeStampedModel):
                 logo_path = obj.company_logo.path
                 logo_is_svg = logo_path.lower().endswith('.svg')
             except (ValueError, NotImplementedError):
-                # No file actually on disk for this storage backend, or a
-                # storage backend with no local path concept — same as
-                # having no logo at all, not an error.
+                # Edge: no local path for this storage backend -- same as no
+                # logo at all, not an error.
                 logo_path = ''
         return {
             'name': obj.company_name or '',
@@ -892,17 +699,6 @@ class SystemSettings(TimeStampedModel):
         }
 
 
-# --------------------------------------------------- 14. Approval Policy
-# Phase 12 — generalises the old, view-level "is this user a supervisor?"
-# static role check into a policy engine: the admin defines which
-# transactions a supervisor may approve, per transaction type/value/
-# reason/ABC class, not just per role. See frontend/approvals.py for the
-# resolver (resolve_required_level()/can_approve()) and
-# docs/project_memory.md §13 for the full disclosure — including the
-# finding that there was no pre-existing purchase-order approval ceiling
-# anywhere in this codebase to migrate from, despite this phase's own
-# brief assuming one.
-
 class ApprovalTxType(models.TextChoices):
     PURCHASE_ORDER = 'purchase_order', 'Purchase Order'
     ADJUSTMENT = 'adjustment', 'Inventory Adjustment'
@@ -916,39 +712,28 @@ class ApprovalOutcome(models.TextChoices):
 
 
 class ApprovalPolicy(TimeStampedModel):
-    """Admin-authored rule. Resolves WHO is competent to approve a given
-    transaction. Lower `priority` wins within a transaction_type; first
-    active match short-circuits (frontend.approvals.resolve_required_level()).
-    No match -> caller fails closed to ADMIN, never to SUPERVISOR/AUTO."""
+    """Rule: generalises a static role check into a policy engine -- an
+    admin defines which transactions a supervisor may approve, by type/
+    value/reason, not just by role. Lower `priority` wins within a
+    transaction_type; first active match short-circuits
+    (frontend.approvals.resolve_required_level()).
+
+    Security: no match -> caller fails closed to ADMIN, never to
+    SUPERVISOR/AUTO."""
     name = models.CharField(max_length=120)
     transaction_type = models.CharField(max_length=30, choices=ApprovalTxType.choices)
 
-    # --- matching conditions. Blank/null means "matches anything." ---
-    # Phase 12.2 — abc_class was here (matched ApprovalPolicy against
-    # InventoryClassification.abc_class) and was removed as an
-    # approval-routing input: too much complexity for the value it added.
-    # ABC classification itself (the field, recompute_abc_classes(),
-    # ABCClass) was later removed outright, Prompt 2 (2026-08-24) — never
-    # part of any documented requirement (docs/project_memory.md §13/§15
-    # has the full disclosure), so nothing here to route on any more.
+    # Rule: blank/null on these fields means "matches anything."
     reason_code = models.CharField(max_length=40, blank=True)
     min_value = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     max_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     max_variance_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
-    # --- outcome ---
     required_level = models.CharField(max_length=20, choices=ApprovalOutcome.choices)
     block_self_approval = models.BooleanField(default=True)
 
-    # Phase 12.1 §4 — closes the salami-slicing hole in the AUTO path:
-    # without this, N consecutive just-under-threshold adjustments on the
-    # same product move an unbounded amount of stock with zero human
-    # approval events, each individually indistinguishable from
-    # measurement noise. Both null (the default) -> no cap, current
-    # behaviour unchanged. Only meaningful for a required_level=AUTO
-    # policy — frontend.approvals only ever consults these for
-    # InventoryAdjustment resolution (see resolve_adjustment_with_
-    # cumulative_cap()); harmless if set on a non-AUTO/non-adjustment row.
+    # Rule: caps cumulative AUTO-approved value over a window (both null =
+    # no cap) -- closes a salami-slicing hole; only used for adjustments.
     cumulative_window_days = models.PositiveSmallIntegerField(null=True, blank=True)
     cumulative_value_cap = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
 

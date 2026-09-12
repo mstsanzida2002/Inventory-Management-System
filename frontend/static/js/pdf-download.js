@@ -9,14 +9,12 @@
    PDF as a blob (this DOES resolve exactly when generation finishes) and
    trigger the save from script, instead of letting the browser navigate.
 
-   Two ways in:
-   - Static export links: any `<a class="js-pdf-link">` is auto-wired on
-     DOMContentLoaded — used by every plain "Download PDF"/"PDF" link
-     across Purchases/Sales/Adjustments/Movement History/Reports.
-   - Dynamic export buttons: reports.js's Sales/Low-Stock panels build the
-     export URL from live filter fields at click time, so they call
-     PdfDownload.fetchAndSave(url, button) directly instead of relying on
-     an href.
+   Any `<a class="js-pdf-link">` is auto-wired on DOMContentLoaded — used
+   by every plain "Download PDF"/"PDF" link across Purchases/Sales/
+   Adjustments/Movement History/Reports. `fetchAndSave(url, element)` is
+   also exposed on `window.PdfDownload` for any other element that needs
+   to trigger a fetch-and-save PDF download without an `<a href>` of its
+   own to auto-wire.
    ========================================================================== */
 
 (function () {

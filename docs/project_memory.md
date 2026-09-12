@@ -7701,3 +7701,125 @@ escaped source. Full suite: 467 -> 471, all passing.
 
 Not committed — reported back for review per instruction.
 
+## Phase — Reports Page Cleanup: Uniform Download Cards, BUG-92 (2026-09-12)
+
+Removed both inline preview panels from the Reports page (Sales'
+status-breakdown table + chart, Low Stock's per-product table) — every
+one of the 9 reports is now a plain PDF/CSV download card, no on-page
+preview anywhere on the page. Sales and Low Stock are the only two
+cards that also carry filter inputs (date range + category for Sales,
+category only for Low Stock) — a compact filter row inside the card,
+above its PDF/CSV buttons, read by `reports.js` at export-click time
+and appended to the download URL. This was the resolution to a real
+contradiction in how the task was framed ("match the other cards" vs.
+"keep the same filter controls" — the other 7 cards have none); flagged
+rather than picked silently, and the compact-row approach was the
+option adopted.
+
+**BUG-92** (docs/bugsfound.md): `ReportsView.get()` used to build both
+panels' aggregate data and log a `REPORT_GENERATED` audit entry for
+each, unconditionally, on every plain page load — false data, since
+nobody "generated" anything by opening the page, not just wasted query
+work. Fixed by removing the panels and the view down to just the card
+grid; `REPORT_GENERATED` (`frontend/audit.py`) is now permanently
+unreachable, kept as a retired constant. Confirmed via grep that this
+was the action's only call site, and separately confirmed
+`INVENTORY_VIEWED`'s similar-looking "fires on every GET" shape is
+*not* the same defect — that page's whole purpose is genuinely showing
+live data every load.
+
+**Known gap, not fixed, noted for later**: `build_inventory_report()`
+and `build_purchase_report()` (`frontend/reports.py`) both accept
+`category`/`supplier` GET params that no card on the Reports page
+exposes — pre-existing, out of scope for this pass, now recorded in
+`docs/10_REPORTS.md` and here so it isn't rediscovered as new.
+
+`docs/10_REPORTS.md` corrected for what this pass touched (Report
+Types table, Common Filter Parameters, Audit Actions) and given an
+explicit stale-doc banner — the rest of that file (WeasyPrint PDF
+generator code, `apps/reports/` paths) predates the real implementation
+(`frontend/reports.py`, `frontend/pdf.py` on reportlab,
+`frontend/views.py`) and was left uncorrected as out of scope.
+
+Tests: `ReportsPageCardUniformityTests` (12 new), 1 old test rewritten
+rather than deleted-and-replaced blind (`test_sales_report_panel_...`
+→ superseded by the new class covering the same ground plus more).
+Full suite: 471 -> 482 (net +11).
+
+Live-verified on the dev server (Playwright, `verify_admin`): all 9
+cards render as one visually consistent set (screenshot reviewed); Sales
+CSV, Sales PDF, and Low Stock PDF downloaded and opened — real data,
+correct headers/columns in each; a Sales date-range filter and a Low
+Stock category filter both genuinely narrowed the downloaded file
+(1423 rows unfiltered -> 1 row for a real 5-day window, 0 for an
+out-of-range one; 3 low-stock products -> 1 for a single category);
+`/audit-log/` (queried directly, not just the page) confirmed zero new
+`REPORT_GENERATED` rows and exactly 5 new `REPORT_EXPORTED_PDF`/
+`REPORT_EXPORTED_CSV` rows, one per real download made during
+verification.
+
+Not committed — reported back for review per instruction.
+
+## Phase — Reports Page: Remove Sales/Low-Stock Card Filter UI (2026-09-12)
+
+Reversal of the previous phase's filter-row decision, same day: once
+rendered, the Sales card was visibly wider/taller than its 8 neighbours
+(the date/category inputs pushed its own row's height up), breaking
+the uniform grid the whole cleanup pass existed to create. Removed the
+date range + category inputs from Sales and the category input from
+Low Stock. All 9 cards are now byte-for-byte structurally identical:
+icon, heading, one-line description, plain PDF/CSV `<a>` links — Sales
+and Low Stock's export buttons went from a JS-driven `<button
+data-panel data-base-url>` pair back to the same plain anchor pattern
+every other card already used.
+
+**Backend filtering is untouched.** `build_sales_report()` and
+`build_low_stock_report()` (`frontend/reports.py`) still fully honour
+`date_from`/`date_to`/`category` for a direct URL request — only the
+per-card UI controls are gone. Combined with the existing (and
+already-noted) gap on Inventory/Purchase, **all 4 of Sales, Low Stock,
+Inventory, and Purchase now have server-side filter params that no
+card on the Reports page exposes.** This is a deliberate UI choice for
+visual consistency, not an oversight — recording it here so it isn't
+mistaken for a regression or rediscovered as a new gap later. See
+`docs/10_REPORTS.md`'s Common Filter Parameters section for the
+per-report breakdown of which params each builder actually accepts.
+
+Cleanup that came with removing the filter UI: `frontend/static/js/
+reports.js` deleted outright (its only job — reading card filter
+fields and building a dynamic export URL — has no callers left; every
+export link is a plain anchor now, auto-wired by the existing
+`js-pdf-link`/`pdf-download.js` mechanism the other 7 cards already
+used). `ReportsView.get()` (`frontend/views.py`) no longer queries
+`Category` for the template — that queryset only ever fed the two now-
+removed `<select>` dropdowns.
+
+Tests: replaced the one test that asserted the old `data-panel`/
+`data-base-url` button wiring with two new ones — no filter input or
+`<select>` renders anywhere on the page, and Sales/Low-Stock's export
+links are plain anchors identical in shape to every other card's. The
+existing backend filter tests (`test_sales_export_respects_date_filter`,
+`test_sales_export_respects_category_filter`,
+`test_low_stock_export_respects_category_filter`) needed no changes —
+they already hit `ReportExportView` directly by URL, which is exactly
+what still needs to keep working. Full suite: 482 -> 483 (net +1: two
+added, one replaced-not-just-deleted).
+
+Live-verified on the dev server (Playwright, `verify_admin`): all 9
+cards share one column width; within each grid row, all cards now
+share the exact same height (the original defect — Sales alone taller
+than its own row — is gone). A small residual height difference
+persists row-to-row (270px / 291px / 269px, ~20px) — traced to h4
+text wrapping to two lines on longer titles ("Inventory Movement
+Report", "Inventory Adjustment Report", "AI Demand Forecast Report",
+"AI Slow-Moving & Dead Stock Report"), which stretches every card in
+that row via the CSS grid's default row-height behavior. This is a
+pre-existing characteristic of cards this task never touched, not a
+regression from the filter removal, and reads as one consistent set in
+the screenshot reviewed during verification — flagged here rather than
+silently glossed over, in case the difference matters later. Sales CSV
+(1423 real rows, correct header) and Sales PDF (valid, non-trivial)
+both re-downloaded and opened successfully via the new plain-anchor
+links.
+
+Not committed — reported back for review per instruction.

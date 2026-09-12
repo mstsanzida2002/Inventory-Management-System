@@ -1,5 +1,4 @@
 {% extends 'dashboard_base.html' %}
-{% load static %}
 
 {% block browser_title %}Reports{% endblock %}
 {% block page_eyebrow %}Insights{% endblock %}
@@ -9,30 +8,33 @@
 
   {% comment %}
     Phase 8 — docs/10_REPORTS.md, real data via frontend/reports.py's 9
-    builders, SupervisorRequiredMixin-gated. The 7 cards that had no
-    preview table in the Phase 3.6 mock (only "Generate", no panel to
-    render into) now link straight to a real PDF/CSV download each —
-    building 7 more preview panels was out of this phase's scope, but
-    every one of the 9 types genuinely exports real PDF/CSV, which is
-    what this phase's own verification bar asks for. Sales/Low Stock keep
-    their full HTML preview, matching the mock's original two-panel
-    design. date_from/date_to/category on both panels feed the *export*
-    links (via reports.js reading the current input values at click time,
-    since PDF/CSV generation reads the same request.GET params
-    10_REPORTS.md documents) — the on-page preview tables themselves stay
-    unfiltered/real-time, same as every other list page in this project.
+    builders, SupervisorRequiredMixin-gated. Every card here is a direct
+    PDF/CSV download, identical in structure (icon, heading, one-line
+    description, PDF + CSV buttons) — no on-page preview anywhere on
+    this page, and no card carries any filter UI.
 
-    Phase 13 Task 4 — the Sales panel's per-transaction table (which had
-    already dropped the mock's single "Category" column — a real sale
-    can span multiple product categories, so one column would fabricate
-    a value that isn't well-defined) is gone entirely, replaced by a
-    revenue-by-day chart and a status breakdown table: that same
-    transaction-level detail is already one click away on Inventory
-    Movement History, so this page now matches the aggregate shape every
-    other report card already presents instead of duplicating it. The
-    Sales Report's own PDF export mirrors this same aggregate shape
-    (frontend/reports.py's generate_sales_summary_pdf); its CSV export is
-    untouched and still the detailed per-transaction dump.
+    BUG-92 (docs/bugsfound.md) — Sales and Low Stock used to link to an
+    inline HTML preview panel (a table, and for Sales a chart) instead
+    of exporting directly, and loading this page fired a
+    REPORT_GENERATED audit entry for both regardless of whether anyone
+    actually generated anything. Both panels are gone.
+
+    Sales and Low Stock briefly (2026-09-12) carried their own filter
+    inputs (date range + category for Sales, category for Low Stock)
+    directly on the card. Removed the same day: visibly wider/taller
+    than every other card, breaking the uniform grid this pass exists
+    to create — visual consistency won out over in-card filtering.
+    date_from/date_to/category are still fully honoured server-side by
+    build_sales_report()/build_low_stock_report() (frontend/reports.py)
+    for anyone who passes them directly in the URL; see
+    docs/10_REPORTS.md and docs/project_memory.md — this is a deliberate
+    UI choice, not a rediscoverable gap.
+
+    Sales' PDF and CSV exports intentionally differ in shape — CSV is
+    still the detailed per-transaction dump (build_sales_report()), PDF
+    is a status-breakdown aggregate (generate_sales_summary_pdf()), a
+    disclosed Phase 13 Task 4 decision, unrelated to this pass and left
+    as-is.
   {% endcomment %}
 
   <div class="page-heading-row">
@@ -67,8 +69,11 @@
     <div class="card-flat">
       <span class="kpi-icon tint-success" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-receipt"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Sales Report</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Completed sales transactions and revenue. Preview below.</p>
-      <a href="#salesReportPanel" class="btn btn-secondary btn-block">View below</a>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Completed sales transactions and revenue.</p>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'sales' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'sales' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
@@ -94,8 +99,11 @@
     <div class="card-flat">
       <span class="kpi-icon tint-amber" style="margin-bottom: var(--sp-4);"><svg class="icon"><use href="#icon-alert-triangle"></use></svg></span>
       <h4 style="margin-bottom:0.3rem;">Low Stock Report</h4>
-      <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Products at or below their reorder level. Preview below.</p>
-      <a href="#lowStockReportPanel" class="btn btn-secondary btn-block">View below</a>
+      <p class="text-slate text-sm" style="margin-bottom: var(--sp-4);">Products at or below their reorder level.</p>
+      <div class="flex gap-2">
+        <a class="btn btn-secondary btn-block js-pdf-link" href="{% url 'frontend:report_export' 'low-stock' %}?format=pdf">PDF</a>
+        <a class="btn btn-secondary btn-block" href="{% url 'frontend:report_export' 'low-stock' %}?format=csv">CSV</a>
+      </div>
     </div>
 
     <div class="card-flat">
@@ -130,169 +138,4 @@
 
   </div>
 
-  {# ------------------------------------------------------- Sales Report #}
-  <div class="panel" id="salesReportPanel" style="margin-bottom: var(--sp-6);">
-    <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3);">
-      <div>
-        <h3>Sales Report</h3>
-        <p class="panel-sub">Completed transactions, docs/06_SALES.md</p>
-      </div>
-      <div class="flex gap-2" style="flex-wrap:wrap;">
-        <button class="btn btn-secondary report-export-btn" type="button" data-panel="sales" data-format="pdf" data-base-url="{% url 'frontend:report_export' 'sales' %}">
-          <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
-          Export PDF
-        </button>
-        <button class="btn btn-secondary report-export-btn" type="button" data-panel="sales" data-format="csv" data-base-url="{% url 'frontend:report_export' 'sales' %}">
-          <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
-          Export CSV
-        </button>
-      </div>
-    </div>
-
-    <div class="panel-body" style="padding-top:0;">
-      <div class="flex gap-3" style="flex-wrap:wrap; margin-bottom: var(--sp-5);">
-        <div class="field" style="margin-bottom:0; max-width:170px;">
-          <label class="form-label" for="salesReportFrom">From</label>
-          <input class="input input-plain" type="date" id="salesReportFrom">
-        </div>
-        <div class="field" style="margin-bottom:0; max-width:170px;">
-          <label class="form-label" for="salesReportTo">To</label>
-          <input class="input input-plain" type="date" id="salesReportTo">
-        </div>
-        <div class="field" style="margin-bottom:0; max-width:200px;">
-          <label class="form-label" for="salesReportCategory">Category <span class="optional-tag">(export only)</span></label>
-          <div class="select-wrap">
-            <select class="input select" id="salesReportCategory">
-              <option value="">All categories</option>
-              {% for category in categories %}
-                <option value="{{ category.pk }}">{{ category.name }}</option>
-              {% endfor %}
-            </select>
-            <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
-          </div>
-        </div>
-      </div>
-
-      <div class="stat-strip" style="margin-bottom: var(--sp-5);">
-        <div class="stat-strip-item">
-          <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
-          <div>
-            <div class="stat-strip-value">${{ sales_summary.total_revenue|floatformat:2 }}</div>
-            <div class="stat-strip-label">Total revenue</div>
-          </div>
-        </div>
-        <div class="stat-strip-item">
-          <svg class="icon icon-lg"><use href="#icon-receipt"></use></svg>
-          <div>
-            <div class="stat-strip-value">{{ sales_summary.total_transactions }}</div>
-            <div class="stat-strip-label">Transactions</div>
-          </div>
-        </div>
-      </div>
-
-      {# Phase 13 Task 4 — the raw per-transaction table (already available from Inventory Movement History) is replaced with an aggregate: revenue-by-day chart plus a status breakdown, matching the "summary figures, aggregates" shape the rest of this page already uses for its export-only cards. #}
-      <div class="chart-wrap" style="height:220px; margin-bottom: var(--sp-5);">
-        <canvas id="salesRevenueChart"></canvas>
-      </div>
-
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Transactions</th>
-              <th>Total value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in sales_breakdown %}
-              <tr>
-                <td>
-                  {% if row.status == "completed" %}<span class="badge badge-success">{{ row.label }}</span>
-                  {% elif row.status == "pending" %}<span class="badge badge-warning">{{ row.label }}</span>
-                  {% elif row.status == "draft" %}<span class="badge badge-indigo">{{ row.label }}</span>
-                  {% else %}<span class="badge badge-danger">{{ row.label }}</span>{% endif %}
-                </td>
-                <td class="mono">{{ row.count }}</td>
-                <td class="mono">${{ row.total|floatformat:2 }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  {{ sales_chart_data|json_script:"salesChartData" }}
-
-  {# --------------------------------------------------- Low Stock Report #}
-  <div class="panel" id="lowStockReportPanel">
-    <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3);">
-      <div>
-        <h3>Low Stock Report</h3>
-        <p class="panel-sub">InventoryRecord where status = low_stock</p>
-      </div>
-      <div class="flex gap-2" style="flex-wrap:wrap;">
-        <button class="btn btn-secondary report-export-btn" type="button" data-panel="low-stock" data-format="pdf" data-base-url="{% url 'frontend:report_export' 'low-stock' %}">
-          <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
-          Export PDF
-        </button>
-        <button class="btn btn-secondary report-export-btn" type="button" data-panel="low-stock" data-format="csv" data-base-url="{% url 'frontend:report_export' 'low-stock' %}">
-          <svg class="icon icon-sm"><use href="#icon-external"></use></svg>
-          Export CSV
-        </button>
-      </div>
-    </div>
-
-    <div class="panel-body" style="padding-top:0;">
-      <div class="field" style="margin-bottom: var(--sp-5); max-width:220px;">
-        <label class="form-label" for="lowStockReportCategory">Category</label>
-        <div class="select-wrap">
-          <select class="input select" id="lowStockReportCategory">
-            <option value="">All categories</option>
-            {% for category in categories %}
-              <option value="{{ category.pk }}">{{ category.name }}</option>
-            {% endfor %}
-          </select>
-          <svg class="select-chevron"><use href="#icon-chevron-down"></use></svg>
-        </div>
-      </div>
-
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Category</th>
-              <th>Current stock</th>
-              <th>Reorder level</th>
-              <th>Supplier</th>
-            </tr>
-          </thead>
-          <tbody id="lowStockReportTableBody">
-            {% for row in low_stock_rows %}
-              <tr data-search="{{ row.0|lower }}" data-category="{{ row.1 }}">
-                <td>{{ row.0 }}</td>
-                <td>{{ row.1 }}</td>
-                <td class="mono">{{ row.2 }} units</td>
-                <td class="mono">{{ row.3 }}</td>
-                <td>{{ row.4 }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <div class="empty-state" id="lowStockReportEmptyState" {% if low_stock_rows %}hidden{% endif %}>
-          <span class="empty-state-icon"><svg class="icon"><use href="#icon-search"></use></svg></span>
-          <div class="empty-state-title">No products match your filters</div>
-          <p class="empty-state-text">Try a different category.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-
-{% endblock %}
-
-{% block extra_js %}
-  <script src="{% static 'js/table-filter.js' %}"></script>
-  <script src="{% static 'js/reports.js' %}"></script>
 {% endblock %}

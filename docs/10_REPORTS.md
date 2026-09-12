@@ -2,8 +2,22 @@
 # AI-Powered Smart Inventory Management System
 
 > **Claude Code:** Read this when building any of the 9 report types,
-> PDF export with WeasyPrint, or CSV export. All report access is Supervisor+ only
+> PDF export, or CSV export. All report access is Supervisor+ only
 > and must be audit-logged.
+
+> **⚠️ STALE DOC WARNING (2026-09-12, BUG-92 cleanup pass):** this file
+> predates the real implementation and describes an app layout
+> (`apps/reports/`) and PDF library (WeasyPrint) that were never built —
+> the real code lives in `frontend/reports.py` (the 9 `REPORT_BUILDERS`),
+> `frontend/pdf.py` (`render_tabular_report()`, built on **reportlab**,
+> not WeasyPrint), and `frontend/views.py`'s `ReportsView`/
+> `ReportExportView`. Only the **Report Types table**, **Common Filter
+> Parameters**, and **Audit Actions** sections below have been corrected
+> to match reality as part of this pass. The **Base Report View
+> Pattern**, **PDF Generator (WeasyPrint)**, **CSV Generator**, and **URL
+> Configuration** code blocks below are all fabricated/aspirational and
+> were out of scope for this pass — do not copy them; read the real
+> files instead.
 
 ---
 
@@ -26,15 +40,48 @@
 | 8 | AI Demand Forecast Report | `DemandForecast` |
 | 9 | AI Slow-Moving & Dead Stock Report | `InventoryClassification` |
 
+**Sales Report note:** PDF and CSV intentionally differ in shape — CSV
+is the detailed per-transaction dump (`build_sales_report()`), PDF is a
+status-breakdown aggregate (`generate_sales_summary_pdf()`), a disclosed
+decision (see `docs/bugsfound.md`), not a bug.
+
+**Reports page note (BUG-92, 2026-09-12):** the Reports page
+(`frontend/templates/reports/reports.html`) renders all 9 reports as
+plain PDF/CSV download cards, all nine structurally identical (icon,
+heading, one-line description, PDF + CSV anchor links) — there is no
+per-report HTML preview on this page, for any report, and (as of
+2026-09-12) no per-card filter UI either. Sales and Low Stock briefly
+carried their own filter inputs (date range + category for Sales,
+category for Low Stock) directly on the card; removed the same day for
+visual consistency with the other 7 cards — see the gap noted under
+**Common Filter Parameters** below.
+
 ---
 
 ## Common Filter Parameters
 
-All reports accept:
-- `date_from` / `date_to` — date range
-- `category` — category ID
+Not all reports accept all of these — this list is the union across
+all 9 builders, not a guarantee for any one of them:
+- `date_from` / `date_to` — date range (accepted by Sales; Low Stock
+  and Out of Stock are point-in-time snapshots and don't take a date
+  range)
+- `category` — category ID (accepted by Sales, Low Stock)
 - `supplier` — supplier ID
-- `format` — `pdf` or `csv` (default: HTML preview)
+- `format` — `pdf` or `csv` (required; there is no HTML-preview mode —
+  every report is a direct file download)
+
+**Known gap, deliberate, not a bug:** none of the 9 cards on the
+Reports page expose any filter UI — `build_inventory_report()` and
+`build_purchase_report()` accept `category`/`supplier`, and
+`build_sales_report()`/`build_low_stock_report()` accept
+`date_from`/`date_to`/`category` (per above), all in `frontend/reports.py`,
+but no card lets a user set any of them. Sales and Low Stock briefly
+(2026-09-12) exposed their own filter inputs directly on the card;
+removed the same day because a filtered card was visibly wider/taller
+than its neighbours, breaking the uniform grid — visual consistency
+won over in-card filtering. Every param above still works for a direct
+URL request (`?date_from=...&category=...`); this is a deliberate UI
+choice, not a rediscoverable gap. See `docs/project_memory.md`.
 
 ---
 
@@ -153,6 +200,6 @@ urlpatterns = [
 
 | Action | Triggered When |
 |---|---|
-| `REPORT_GENERATED` | Any report viewed in browser |
-| `REPORT_EXPORTED_PDF` | PDF export downloaded |
-| `REPORT_EXPORTED_CSV` | CSV export downloaded |
+| `REPORT_GENERATED` | **Removed, permanently unreachable (BUG-92, 2026-09-12).** Used to fire unconditionally on every GET of the Reports page for the Sales/Low Stock preview panels, regardless of whether anyone exported anything — false data, not just noise. Those panels are gone; nothing calls this action anymore. See `docs/bugsfound.md`. |
+| `REPORT_EXPORTED_PDF` | A PDF is actually downloaded via `ReportExportView` |
+| `REPORT_EXPORTED_CSV` | A CSV is actually downloaded via `ReportExportView` |

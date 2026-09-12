@@ -2269,41 +2269,31 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
 # frontend/notifications.py already are.
 
 class ReportsView(SupervisorRequiredMixin, View):
-    """GET renders the reports page itself: 9 report cards (each linking
-    straight to ReportExportView for PDF/CSV — this page has no per-card
-    HTML preview), plus the two live preview panels the Phase 3.6 mock
-    already had (Sales, Low Stock) with real data. Viewing either preview
-    counts as 10_REPORTS.md's "REPORT_GENERATED | Any report viewed in
-    browser" — logged once per panel on this GET, not once per report
-    type (the other 7 only ever get logged if actually exported, since
-    they're never rendered to the browser)."""
+    """GET renders the reports page itself: 9 report cards, each a
+    direct PDF/CSV link to ReportExportView, identical in structure —
+    no per-card HTML preview, no per-card filter UI.
+
+    BUG-92 (docs/bugsfound.md) — this view used to also build the Sales
+    and Low Stock preview panels' data unconditionally on every GET
+    (aggregates the panels no longer exist to show) and log a
+    REPORT_GENERATED audit entry for each, unconditionally, on every
+    page load. That was false data, not just wasted work: nobody
+    "generated" a report by merely opening this page, and the query
+    work was pure waste once nothing on the page reads it. Removed
+    along with the panels themselves — REPORT_GENERATED is now
+    permanently unreachable (only ever fired from here); see
+    docs/10_REPORTS.md and docs/bugsfound.md for the disclosure.
+
+    Sales and Low Stock briefly (2026-09-12) also carried their own
+    date/category filter inputs, which needed this view to pass
+    `categories` into the template. Removed the same day — visually
+    wider/taller than the other 7 cards — so `categories` is gone too;
+    date_from/date_to/category still work, honoured server-side by
+    build_sales_report()/build_low_stock_report() (frontend/reports.py)
+    for a direct URL request, just not exposed as UI here anymore."""
 
     def get(self, request):
-        # Phase 13 Task 4 — build_sales_report()'s per-transaction rows
-        # are no longer used on this page at all (the panel dropped its
-        # detailed table for an aggregate/chart shape, matching the other
-        # report panels); build_sales_report() itself is untouched and
-        # still backs the Sales Report's CSV export.
-        sales_qs = SaleTransaction.objects.filter(status=SaleStatus.COMPLETED)
-        sales_summary = report_lib.sales_report_summary(sales_qs)
-        sales_breakdown = report_lib.sales_status_breakdown(request)
-        sales_chart_data = report_lib.sales_daily_revenue(request)
-        low_stock_title, low_stock_headers, low_stock_rows = report_lib.build_low_stock_report(request)
-
-        audit.log_action(request.user, audit.REPORT_GENERATED, "reports", status="success",
-                          details={"report": "sales"}, request=request)
-        audit.log_action(request.user, audit.REPORT_GENERATED, "reports", status="success",
-                          details={"report": "low_stock"}, request=request)
-
-        context = {
-            "active_nav": "reports",
-            "categories": Category.objects.filter(is_active=True).order_by("name"),
-            "sales_summary": sales_summary,
-            "sales_breakdown": sales_breakdown,
-            "sales_chart_data": sales_chart_data,
-            "low_stock_headers": low_stock_headers,
-            "low_stock_rows": low_stock_rows,
-        }
+        context = {"active_nav": "reports"}
         return render(request, "reports/reports.html", context)
 
 

@@ -4622,19 +4622,10 @@ class ReportsViewTests(TestCase):
         response = self.client.get(reverse('frontend:report_export', args=['inventory']) + '?format=csv')
         self.assertIn(b'REP-SKU-001', response.content)
 
-    def test_sales_report_panel_no_longer_renders_the_detailed_transaction_table(self):
-        """Phase 13 Task 4 — the raw per-transaction table is gone from
-        the page (already available from Movement History); the panel
-        now shows the aggregate breakdown + chart instead."""
-        self.client.login(username='repsuper', password='x')
-        response = self.client.get(reverse('frontend:reports'))
-        self.assertNotContains(response, 'salesReportTableBody')
-        self.assertContains(response, 'salesRevenueChart')
-        self.assertContains(response, 'Total revenue')
-
     def test_sales_pdf_export_uses_summary_shape_not_the_old_transaction_dump(self):
         """The Sales Report's own PDF export must reflect the same
-        aggregate structure the on-page panel now shows."""
+        aggregate structure the on-page panel used to show, before BUG-92
+        removed the panel entirely."""
         self.client.login(username='repsuper', password='x')
         response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=pdf')
         self.assertEqual(response.status_code, 200)
@@ -4650,6 +4641,221 @@ class ReportsViewTests(TestCase):
         response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=csv')
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'Invoice', response.content)
+
+
+class ReportsPageCardUniformityTests(TestCase):
+    """BUG-92 (docs/bugsfound.md) — Sales and Low Stock used to be the
+    only two report types with an inline HTML preview panel instead of a
+    plain download card, and loading this page fired a REPORT_GENERATED
+    audit entry for both regardless of whether anyone actually generated
+    anything. Both panels removed.
+
+    Sales and Low Stock briefly (2026-09-12) also carried their own
+    filter inputs (date range + category for Sales, category for Low
+    Stock) directly on the card, read by reports.js at export-click
+    time. Removed the same day — visibly wider/taller than the other 7
+    cards, breaking the uniform grid. All 9 cards are now structurally
+    identical: icon, heading, one-line description, plain PDF/CSV
+    anchor links, nothing else. date_from/date_to/category are still
+    fully honoured server-side (see the filter tests below) — only the
+    UI controls are gone."""
+
+    def setUp(self):
+        self.supervisor = User.objects.create_user(
+            username='cardsuper', email='cardsuper@example.com', password='x',
+            employee_id='EMP-8050', full_name='Card Supervisor', role=UserRole.SUPERVISOR,
+        )
+        self.category_a = Category.objects.create(name='Card Category A')
+        self.category_b = Category.objects.create(name='Card Category B')
+        self.supplier = Supplier.objects.create(
+            supplier_name='Card Supply', company_name='Card Supply Co', contact_person='Jo',
+            email='cardsupply@example.com', phone='555-0510', address='1 Card Way', is_active=True,
+        )
+        self.product_a = Product.objects.create(
+            sku='CARD-SKU-A', name='Card Widget A', category=self.category_a, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+        self.product_b = Product.objects.create(
+            sku='CARD-SKU-B', name='Card Widget B', category=self.category_b, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=5,
+        )
+        self.client.login(username='cardsuper', password='x')
+
+    def make_sale(self, product, transaction_date, quantity=1):
+        sale = SaleTransaction.objects.create(
+            created_by=self.supervisor, status=SaleStatus.COMPLETED,
+            transaction_date=transaction_date, total_amount=Decimal('10.00'),
+        )
+        SaleItem.objects.create(
+            transaction=sale, product=product, quantity=quantity,
+            unit_price=Decimal('10.00'), line_total=Decimal('10.00'),
+        )
+        return sale
+
+    def make_low_stock_product(self, category, sku):
+        product = Product.objects.create(
+            sku=sku, name=sku, category=category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('10.00'), reorder_level=10,
+        )
+        InventoryService.initialize_for_product(product)
+        InventoryService.increase_stock(
+            product=product, quantity=3, movement_type=MovementType.PURCHASE,
+            reference_type='TestSetup', reference_id=0, performed_by=self.supervisor,
+        )
+        return product
+
+    # ---------------------------------------------------------- structure
+
+    def test_neither_inline_panel_renders(self):
+        response = self.client.get(reverse('frontend:reports'))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="salesReportPanel"')
+        self.assertNotContains(response, 'id="lowStockReportPanel"')
+        self.assertNotContains(response, 'salesReportTableBody')
+        self.assertNotContains(response, 'salesRevenueChart')
+        self.assertNotContains(response, 'lowStockReportTableBody')
+
+    def test_sales_and_low_stock_cards_match_the_standard_card_structure(self):
+        response = self.client.get(reverse('frontend:reports'))
+        content = response.content.decode()
+        # Every card (including Sales/Low Stock now) is a card-flat with
+        # an icon, an <h4> heading, and a PDF/CSV button pair in the same
+        # flex row shape the other seven already use.
+        self.assertEqual(content.count('class="card-flat"'), 9)
+        self.assertIn('Sales Report</h4>', content)
+        self.assertIn('Low Stock Report</h4>', content)
+
+    def test_no_filter_inputs_render_in_any_card(self):
+        """Sales/Low-Stock's card-embedded date/category filter UI was
+        removed 2026-09-12 for visual consistency -- no card may render
+        a date input, a category select, or the old dynamic export-
+        button wiring (data-panel/data-base-url/report-export-btn)."""
+        response = self.client.get(reverse('frontend:reports'))
+        content = response.content.decode()
+        self.assertNotIn('type="date"', content)
+        self.assertNotIn('salesReportFrom', content)
+        self.assertNotIn('salesReportTo', content)
+        self.assertNotIn('salesReportCategory', content)
+        self.assertNotIn('lowStockReportCategory', content)
+        self.assertNotIn('report-export-btn', content)
+        self.assertNotIn('data-panel=', content)
+        self.assertNotIn('data-base-url=', content)
+        self.assertNotIn('<select', content)
+
+    def test_sales_and_low_stock_export_links_are_plain_anchors_like_every_other_card(self):
+        response = self.client.get(reverse('frontend:reports'))
+        content = response.content.decode()
+        for slug in ('sales', 'low-stock'):
+            base = reverse('frontend:report_export', args=[slug])
+            self.assertIn(f'href="{base}?format=pdf"', content)
+            self.assertIn(f'href="{base}?format=csv"', content)
+
+    def test_page_renders_cleanly_with_zero_sales_and_zero_low_stock(self):
+        """No sales exist, and setUp()'s own products were never given
+        stock (current_stock=0 -> OUT_OF_STOCK, not LOW_STOCK) -- neither
+        report has any real data behind it, and the page must still
+        render fine, since neither card reads report data on page load
+        anymore at all."""
+        response = self.client.get(reverse('frontend:reports'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Sales Report')
+        self.assertContains(response, 'Low Stock Report')
+
+    # ------------------------------------------------------- audit pollution
+
+    def test_loading_the_reports_page_logs_no_report_generated_entry(self):
+        AuditLog.objects.all().delete()
+        response = self.client.get(reverse('frontend:reports'))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(AuditLog.objects.filter(action='REPORT_GENERATED').exists())
+
+    def test_exports_still_log_the_correct_export_action(self):
+        for slug in ('sales', 'low-stock'):
+            AuditLog.objects.all().delete()
+            base = reverse('frontend:report_export', args=[slug])
+            self.client.get(base + '?format=pdf')
+            self.assertTrue(
+                AuditLog.objects.filter(action='REPORT_EXPORTED_PDF').exists(), f"{slug} PDF export"
+            )
+            AuditLog.objects.all().delete()
+            self.client.get(base + '?format=csv')
+            self.assertTrue(
+                AuditLog.objects.filter(action='REPORT_EXPORTED_CSV').exists(), f"{slug} CSV export"
+            )
+
+    # ----------------------------------------------------------- exports
+
+    def test_sales_csv_has_expected_columns(self):
+        self.make_sale(self.product_a, timezone.localdate())
+        response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=csv')
+        self.assertEqual(response.status_code, 200)
+        header_row = response.content.decode().splitlines()[0]
+        for column in ('Invoice', 'Date', 'Customer', 'Items', 'Total', 'Status'):
+            self.assertIn(column, header_row)
+
+    def test_sales_pdf_is_valid_and_non_trivial(self):
+        self.make_sale(self.product_a, timezone.localdate())
+        response = self.client.get(reverse('frontend:report_export', args=['sales']) + '?format=pdf')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b'%PDF-'))
+        self.assertGreater(len(response.content), 1500)
+
+    def test_low_stock_pdf_is_valid_and_non_trivial(self):
+        self.make_low_stock_product(self.category_a, 'CARD-LOW-001')
+        response = self.client.get(reverse('frontend:report_export', args=['low-stock']) + '?format=pdf')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b'%PDF-'))
+        self.assertGreater(len(response.content), 1500)
+
+    def test_sales_export_respects_date_filter(self):
+        # Django's test client's `data=` dict REPLACES a query string
+        # already baked into the URL rather than merging with it -- every
+        # param (format included) goes in the same dict on every call.
+        self.make_sale(self.product_a, timezone.localdate() - timedelta(days=200))
+        self.make_sale(self.product_b, timezone.localdate())
+        base = reverse('frontend:report_export', args=['sales'])
+
+        unfiltered = self.client.get(base, {'format': 'csv'})
+        filtered = self.client.get(base, {
+            'format': 'csv',
+            'date_from': timezone.localdate().isoformat(), 'date_to': timezone.localdate().isoformat(),
+        })
+        unfiltered_rows = len(unfiltered.content.decode().splitlines()) - 1
+        filtered_rows = len(filtered.content.decode().splitlines()) - 1
+        self.assertEqual(unfiltered_rows, 2)
+        self.assertEqual(filtered_rows, 1)
+        self.assertNotEqual(unfiltered_rows, filtered_rows)
+
+    def test_sales_export_respects_category_filter(self):
+        self.make_sale(self.product_a, timezone.localdate())
+        self.make_sale(self.product_b, timezone.localdate())
+        base = reverse('frontend:report_export', args=['sales'])
+
+        unfiltered = self.client.get(base, {'format': 'csv'})
+        filtered = self.client.get(base, {'format': 'csv', 'category': self.category_a.pk})
+        unfiltered_rows = len(unfiltered.content.decode().splitlines()) - 1
+        filtered_rows = len(filtered.content.decode().splitlines()) - 1
+        self.assertEqual(unfiltered_rows, 2)
+        self.assertEqual(filtered_rows, 1)
+        self.assertNotEqual(unfiltered_rows, filtered_rows)
+
+    def test_low_stock_export_respects_category_filter(self):
+        """Low Stock has no date range param (a point-in-time stock
+        snapshot, not a historical record) -- category is its one real
+        filter. No card exposes this in the UI anymore (2026-09-12), but
+        it must still work for a direct URL request (BUG-92 follow-up,
+        docs/project_memory.md)."""
+        self.make_low_stock_product(self.category_a, 'CARD-LOW-A')
+        self.make_low_stock_product(self.category_b, 'CARD-LOW-B')
+        base = reverse('frontend:report_export', args=['low-stock'])
+
+        unfiltered = self.client.get(base, {'format': 'csv'})
+        filtered = self.client.get(base, {'format': 'csv', 'category': self.category_a.pk})
+        unfiltered_rows = len(unfiltered.content.decode().splitlines()) - 1
+        filtered_rows = len(filtered.content.decode().splitlines()) - 1
+        self.assertEqual(unfiltered_rows, 2)
+        self.assertEqual(filtered_rows, 1)
+        self.assertNotEqual(unfiltered_rows, filtered_rows)
 
 
 class TimeZoneConfigTests(TestCase):
@@ -7711,3 +7917,51 @@ class SlowMovingAIInsightTests(TestCase):
         self.assertContains(response, 'No products are currently flagged as slow-moving or dead stock')
         self.assertNotContains(response, 'Classification last ran')
         self.assertNotContains(response, 'stock value sits in dead-classified products')
+
+
+class AppFooterTests(TestCase):
+    """Persistent footer pass (docs/project_memory.md) — added once to
+    dashboard_base.html, included on every one of the 17 authenticated
+    pages that extend it; deliberately absent from login/landing/
+    password-reset, which extend the separate base.html shell instead.
+    current_year comes from frontend.context_processors.current_year
+    (registered globally in config/settings.py), not a per-view value —
+    these tests assert against the real current year, not a hardcoded
+    one, so they can't quietly start lying in a later January."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='footeruser', email='footeruser@example.com', password='x',
+            employee_id='EMP-9601', full_name='Footer User', role=UserRole.STAFF,
+        )
+
+    def test_footer_text_appears_on_an_authenticated_page(self):
+        self.client.login(username='footeruser', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertContains(response, 'Stockwell Inventory Management System')
+        self.assertContains(response, 'Goiinovior Limited')
+
+    def test_footer_absent_from_login_page(self):
+        response = self.client.get(reverse('frontend:login'))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Goiinovior Limited')
+
+    def test_current_year_renders_as_the_real_current_year_not_a_literal(self):
+        self.client.login(username='footeruser', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertNotContains(response, '{{ current_year }}', html=False)
+        self.assertContains(response, str(timezone.localdate().year))
+
+    def test_entities_render_as_middot_and_copyright_characters(self):
+        """&middot; and &copy; must reach the browser as real HTML
+        entities, not double-escaped into their literal source text --
+        the response body itself already contains the entity markup
+        (a browser resolves it to the character; this asserts Django's
+        autoescaping didn't turn the & into &amp; along the way)."""
+        self.client.login(username='footeruser', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        content = response.content.decode()
+        self.assertIn('&middot;', content)
+        self.assertIn('&copy;', content)
+        self.assertNotIn('&amp;middot;', content)
+        self.assertNotIn('&amp;copy;', content)

@@ -171,8 +171,15 @@
 .sidebar-scrim { display: none; }
 
 /* ---------------------------------------------------- Main */
-.app-main { min-width: 0;
-   }
+/* display:flex + column (footer pass) — .app-main had no layout of its
+   own before this; the grid on .app already stretches it to a
+   min-height:100vh box via default align-items:stretch, this just puts
+   that height to use so .app-footer's margin-top:auto below can push
+   the footer to the bottom of a short page instead of sitting right
+   under a half-empty <main>. Nothing else in here needed flex-grow —
+   margin-top:auto on the last flex child already consumes all
+   remaining free space on its own. */
+.app-main { min-width: 0; display: flex; flex-direction: column; }
 /* --------------------------------------------------------- Topbar */
 .topbar {
   height: var(--topbar-h);
@@ -309,6 +316,17 @@
 
 /* ------------------------------------------------------------ Page body */
 .page-body { padding: var(--sp-6); max-width: 1440px; }
+
+/* ---------------------------------------------------------- App footer */
+.app-footer {
+  margin-top: auto;
+  background-color:#EEF0FB;
+  padding: var(--sp-4) var(--sp-6);
+  border-top: 1px solid var(--c-slate);
+  color: var(--c-indigo-deep);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
 
 .page-heading-row {
   display: flex;
@@ -642,6 +660,7 @@
   .topbar-menu-btn { display: flex; }
   .kpi-grid, .stat-strip { grid-template-columns: 1fr 1fr; }
   .page-body { padding: var(--sp-4); }
+  .app-footer { padding: var(--sp-4); }
 }
 
 @media (max-width: 480px) {

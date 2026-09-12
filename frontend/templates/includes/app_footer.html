@@ -1,0 +1,9 @@
+{% comment %}
+  Persistent footer for every authenticated page — included once from
+  dashboard_base.html, not repeated per template. current_year comes
+  from frontend.context_processors.current_year (registered in
+  config/settings.py), never hardcoded.
+{% endcomment %}
+<footer class="app-footer">
+  Stockwell Inventory Management System &middot; &copy; {{ current_year }} Goiinovior Limited
+</footer>

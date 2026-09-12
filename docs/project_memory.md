@@ -7636,3 +7636,68 @@ CSV export, and a generated inventory PDF. Test data cleaned up after
 harmless dev data, same as any real manual UI test would leave).
 
 Not committed — reported back for review per instruction.
+
+---
+
+## Phase — Persistent Authenticated-Page Footer, current_year Context Processor (2026-09-05)
+
+**New context processor**: `frontend.context_processors.current_year`,
+registered in `config/settings.py`'s `TEMPLATES[0]['OPTIONS']
+['context_processors']` alongside Django's built-in `request`/`auth`/
+`messages`. Returns `{"current_year": timezone.localdate().year}` —
+Asia/Dhaka, never hardcoded. **Applies to every template render across
+the whole site, not just the dashboard shell** — any future work
+needing the current year (copyright lines, "as of {year}" labels, etc.)
+should read `{{ current_year }}` directly rather than passing it per
+view.
+
+**Correction to my own initial discovery report, caught by checking git
+history instead of trusting the working tree's current state**:
+`frontend/templates/includes/footer.html` (the landing page's own
+marketing footer, included by `landing/index.html`) was NOT a
+long-standing bug. `git log`/`git show HEAD` confirm the last *committed*
+version (Phase 14, `a87e634`) used `{% now "Y" %}` — Django's own
+built-in tag, self-sufficient, no context processor ever needed, never
+broken. The working-tree copy already carried the new target text
+(`{{ current_year }}` and all) when this task started — an uncommitted
+edit made ahead of this task, not something this pass found broken in
+production. I initially reported it as if it were a pre-existing gap;
+it wasn't, and I'm correcting that here rather than letting a
+fabricated causal story stand in the permanent record. What's true and
+worth keeping: that file now depends on `current_year`, and this pass's
+context processor is what makes it resolve correctly going forward.
+
+**Footer added once**, to `dashboard_base.html` (confirmed via `grep
+"{% extends"` across every template: all 17 authenticated pages extend
+it, no outliers) — a new `includes/app_footer.html` partial, deliberately
+a separate file from `includes/footer.html` above (that one is the
+landing page's own multi-column marketing footer; this one is a single
+muted line for the authenticated app shell — same copyright text,
+different page, not the same component).
+
+**Layout**: `.app-main` had no layout rules of its own before this
+(`min-width: 0` only) — added `display: flex; flex-direction: column`
+so `.app-footer`'s `margin-top: auto` can push it to the bottom of the
+grid-stretched box on short pages, while simply following long content
+on paginated ones. This is the one real code change beyond "add a
+template include" — everything else about the shell (grid, sticky
+sidebar/topbar, modal overlay) is untouched. Live-verified with a real
+headless-browser session (Playwright): short page (Suppliers) — footer
+sits near the bottom of the viewport, not floating mid-content; long
+page (Audit Log, 6,121 rows) — footer scrolls naturally below the
+table, confirmed `position` is neither `fixed` nor `sticky`; modal open
+(Users) — overlay dims the footer along with everything else, no
+collision; login page — footer absent (confirmed 0 count); mobile
+viewport (375px) — footer visible, readable, wraps cleanly, matches
+the same `--sp-4` padding reduction `.page-body` already uses at that
+breakpoint; entity rendering — `&middot;`/`&copy;` confirmed resolving
+to real `·`/`©` characters in the rendered text, not leaking as literal
+entity source.
+
+Tests: `AppFooterTests` (4) — footer text on an authenticated page,
+absent on login, `current_year` renders as the real current year (not
+a literal or a hardcoded value), entities render as characters not
+escaped source. Full suite: 467 -> 471, all passing.
+
+Not committed — reported back for review per instruction.
+

@@ -13,11 +13,21 @@ Two independent checks:
    `ast.dump(tree, include_attributes=False)` between the two versions.
    Any difference is a real code change -> FAIL.
 
-2. Line check (for *.html/*.js/*.css, where there is no Python-grade
-   parser on hand): runs `git diff -U0` for the file and requires every
-   added/removed line to match a comment-only pattern (a Django/Jinja
-   `{# #}` or `{% comment %}` line, a `//` or `/* ... */`/`*`/`*/` line)
-   or be blank. Anything else is printed for manual justification.
+2. Strict-diff check (for *.html/*.js/*.css, where there is no
+   Python-grade parser on hand): strips ALL comment syntax from both the
+   HEAD version and the working-tree version -- `/* ... */`, `//` line
+   comments for .js/.css; `{# ... #}` and `{% comment %}...{% endcomment %}`
+   for .html -- collapses remaining whitespace, and compares the two
+   normalized strings. Any difference is a real code change -> FAIL.
+
+   This replaced an earlier per-line regex check (matching each added/
+   removed diff line against a comment-token pattern) that produced 59
+   false positives in a single session: it can't see a multi-line `/* */`
+   banner whose body lines don't individually start with `*`, a same-line
+   trailing-comment edit (the whole line differs even though only the
+   comment text changed), or a `{% comment %}...{% endcomment %}` block
+   (its body lines carry no per-line marker at all). Stripping and
+   comparing whole-file content sidesteps all three shapes at once.
 
 Usage:
     python scripts/comment_guard.py            # checks every file that
@@ -39,10 +49,6 @@ EXCLUDE_FILENAMES = {"chart.js"}
 EXCLUDE_SUFFIXES = (".min.js", ".min.css")
 
 DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-
-COMMENT_ONLY_RE = re.compile(
-    r'^\s*(#|//|/\*|\*/|\*(?!/)|\{#|\{%\s*(end)?comment\s*%\}).*$'
-)
 
 
 def is_excluded(rel_path: str) -> bool:
@@ -138,27 +144,45 @@ def check_python(rel_path: str):
     return "PASS", None
 
 
+def strip_js_css(src: str) -> str:
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.DOTALL)
+    src = re.sub(r'//[^\n]*', '', src)
+    return re.sub(r'\s+', ' ', src).strip()
+
+
+def strip_html(src: str) -> str:
+    src = re.sub(r'\{#.*?#\}', '', src, flags=re.DOTALL)
+    src = re.sub(r'\{%\s*comment\s*%\}.*?\{%\s*endcomment\s*%\}', '', src, flags=re.DOTALL)
+    return re.sub(r'\s+', ' ', src).strip()
+
+
+def normalize_generic(rel_path: str, src: str) -> str:
+    if rel_path.endswith((".js", ".css")):
+        return strip_js_css(src)
+    return strip_html(src)
+
+
 def check_generic(rel_path: str):
-    rc, diff, _ = run_git(["diff", "-U0", "--", rel_path])
-    if rc != 0:
-        return "ERROR", ["git diff failed"]
+    working_path = REPO_ROOT / rel_path
+    working_src = working_path.read_text(encoding="utf-8")
+    head_src = get_head_version(rel_path)
 
-    bad_lines = []
-    for line in diff.splitlines():
-        if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
-            continue
-        if not (line.startswith("+") or line.startswith("-")):
-            continue
-        content = line[1:]
-        if content.strip() == "":
-            continue
-        if COMMENT_ONLY_RE.match(content):
-            continue
-        bad_lines.append(line)
+    if head_src is None:
+        return "NEW", "no HEAD version to compare (new file) -- not structurally checked"
 
-    if bad_lines:
-        return "FAIL", bad_lines
-    return "PASS", None
+    head_norm = normalize_generic(rel_path, head_src)
+    working_norm = normalize_generic(rel_path, working_src)
+
+    if head_norm == working_norm:
+        return "PASS", None
+
+    for i, (a, b) in enumerate(zip(head_norm, working_norm)):
+        if a != b:
+            return "FAIL", [
+                f"divergence near HEAD ...{head_norm[max(0, i - 40):i + 40]!r}...",
+                f"vs working        ...{working_norm[max(0, i - 40):i + 40]!r}...",
+            ]
+    return "FAIL", [f"length differs after stripping comments: HEAD={len(head_norm)} working={len(working_norm)}"]
 
 
 def main(argv):

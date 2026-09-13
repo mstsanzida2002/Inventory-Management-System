@@ -1,86 +1,3 @@
-"""
-Phase 8.98c — dev-environment convenience command: wipes the whole dev
-database and reseeds it with a small, realistic dataset built on the new
-Product.tax_rate model (varied tax rates, including 0% — the field's own
-default — so both the "no tax" and "has tax" cases are exercised).
-
-Phase 9.5 — extended into a much larger, deliberately-backdated dataset so
-Phases 10/11 (AI demand forecasting, slow-moving/dead-stock classification)
-have something real to be right or wrong about. Three mechanisms otherwise
-block that:
-
-1. SaleTransaction.save()/PurchaseOrder.save() only assign transaction_date/
-   order_date when the field is still unset (`if self.transaction_date is
-   None: ...` / `if self.order_date is None: ...`) — this was ALREADY the
-   case going into Phase 9.5 (BUG-47, Phase 8.99), not something this phase
-   changed. It means a caller that constructs the model with the field
-   already populated (SaleTransaction.objects.create(transaction_date=...))
-   gets that exact date, not "today" — the normal flow (SaleService.
-   create_sale(), every real view) never supplies one, so the real-world
-   BUG-47 guarantee ("every genuine sale lands on the Dhaka calendar day it
-   was actually made on") is completely undisturbed. See
-   ExplicitDateAssignmentTests (frontend/tests.py) for the proof, and
-   docs/project_memory.md §13 for the full disclosure of this Phase 9.5
-   finding (the task's own premise assumed a code change was needed here;
-   verified against the actual code before writing one, and none was).
-2. `approved_at` (SaleTransaction/PurchaseOrder/InventoryAdjustment) is set
-   unconditionally to timezone.now() *inside* PurchaseService.approve()/
-   SaleService.approve_sale()/AdjustmentService.approve() — not via save()/
-   auto_now, and deliberately NOT changed to accept a backdating parameter
-   (that would be a service-layer API change for a seeding-only concern).
-   This command calls the real service methods for their real business
-   logic (status transition, stock movement, notification, audit log) and
-   then does a plain, ordinary `.save(update_fields=['approved_at'])`
-   afterward to correct the timestamp — approved_at isn't guarded the way
-   InventoryMovement's fields are, so this is a normal mutation, not a
-   bypass of anything.
-3. InventoryMovement.created_at is `auto_now_add=True` (via
-   TimeStampedModel) and InventoryMovement.save() raises PermissionError
-   whenever self.pk is already set (BUG-20) — there is no create-then-
-   update path through the model. The only way to backdate it is a
-   queryset-level `.update(created_at=...)`, which goes straight to SQL and
-   never calls save() at all. Done here, in this command only — see
-   docs/project_memory.md §13 for the disclosure (DEBUG-guarded dev-seed
-   concern, not a production code path; BUG-20's guard is untouched; any
-   future `.update()` on InventoryMovement outside a seed command is a bug,
-   not precedent set by this file).
-
-All stock/ledger data is still produced by going through the real service
-layer (PurchaseService/SaleService/AdjustmentService/InventoryService,
-frontend/services.py) exactly as the views do — never by setting
-current_stock or writing InventoryMovement rows directly. Only the
-*timestamp* on rows that already went through that real path is corrected
-afterward, in a second pass, via mechanisms (2) and (3) above.
-
-Phase 11.5 — extends this same, already-disclosed escape hatch to a much
-larger dataset (20 -> 43 products), not a new one: the 8 original 9.5
-cohorts are unchanged in shape, and 5 more products were added to the
-existing "trending" (up) cohort, plus 4 new demand-pattern cohorts
-(trending_down, seasonal, steady, spiky) built the same way — real
-service calls, backdated via the same two mechanisms above. The
-forecastable cohorts (fast_long, trending, trending_down, seasonal,
-steady) now run a full ~55-week (12+ month) window instead of ~30 weeks,
-so the pooled model has materially more post-burn-in training rows per
-product. Every new cohort's weekly demand is generated from an explicit
-shape (base + linear trend and/or sinusoidal seasonal component + bounded
-noise, see _weekly_series()) rather than a random walk, so the forecast's
-recovery of each shape can be checked directly rather than assumed.
-
-Notifications: email is deliberately switched off for the whole run
-(SystemSettings.email_notifications_enabled = False before any purchase/
-sale is created) — this dataset creates roughly 250+ approval-type events,
-each of which would otherwise trigger a real synchronous send_mail() call
-(frontend/notifications.py's `_maybe_send_email()`) to verify_super's/
-verify_admin's addresses. Left off after seeding too; an admin can
-re-enable it from the Settings page. In-app Notification rows themselves
-are unaffected — only the email side effect is suppressed.
-
-Refuses to run when DEBUG is False, same guard as seed_test_users.py: a
-full-database flush must never be reachable against a real deployment —
-more load-bearing now than before Phase 9.5, since this command is also
-the only place in the codebase permitted to bypass InventoryMovement's
-immutability guard.
-"""
 import math
 import random
 from datetime import datetime, time, timedelta
@@ -113,9 +30,7 @@ from frontend.models import (
 )
 from frontend.services import AdjustmentService, InventoryService, PurchaseService, SaleService
 
-# Fixed seed: makes the dataset byte-for-byte identical across runs (matters
-# for Verification's "idempotent — run twice" requirement to mean something
-# stronger than "same cohort counts" — it means the exact same rows).
+# Rule: fixed seed -- the dataset is byte-for-byte identical across runs.
 RNG_SEED = 42
 
 CATEGORIES = [
@@ -143,53 +58,51 @@ SUPPLIERS = [
     },
 ]
 
-# (name, category, supplier index, unit, purchase_price, selling_price, tax_rate, reorder_level, cohort)
-# Cohort key matches the per-cohort generator function below that decides
-# this product's purchase/sale timeline.
+# Rule: (name, category, supplier idx, unit, cost, price, tax, reorder, cohort)
 PRODUCTS = [
-    # -- fast, long history (>= 6 months of weekly sales) --------------------
+    # Rule: fast, long history -- clears the dropna() burn-in comfortably.
     ("Wireless Mouse", "Electronics", 0, UnitOfMeasurement.PIECE, "8.50", "15.00", "10.00", 15, "fast_long"),
     ("Basmati Rice 5kg", "Groceries", 1, UnitOfMeasurement.PACK, "6.50", "9.50", "0.00", 20, "fast_long"),
     ("A4 Copy Paper Ream", "Stationery", 2, UnitOfMeasurement.PACK, "3.10", "4.75", "7.50", 20, "fast_long"),
-    # -- fast, shorter recent history -----------------------------------------
+    # Rule: fast, shorter recent history.
     ("USB-C Charging Cable 1m", "Electronics", 0, UnitOfMeasurement.PIECE, "2.20", "5.00", "10.00", 25, "fast_short"),
     ("Cooking Oil 1L", "Groceries", 1, UnitOfMeasurement.LITER, "1.80", "2.75", "5.00", 30, "fast_short"),
     ("Non-Stick Frying Pan", "Home & Kitchen", 2, UnitOfMeasurement.PIECE, "9.00", "16.00", "12.50", 8, "fast_short"),
-    # -- slow (last sold 60-179 days ago, real earlier history) --------------
+    # Rule: slow -- last sold 60-179 days ago, real earlier history.
     ("Bluetooth Speaker", "Electronics", 1, UnitOfMeasurement.PIECE, "18.00", "32.00", "15.00", 10, "slow"),
     ("Ballpoint Pen (Box of 12)", "Stationery", 2, UnitOfMeasurement.BOX, "1.40", "2.50", "7.50", 15, "slow"),
     ("Ceramic Mug Set (4pc)", "Home & Kitchen", 1, UnitOfMeasurement.BOX, "5.50", "9.00", "0.00", 12, "slow"),
     ("Stainless Steel Water Bottle", "Home & Kitchen", 0, UnitOfMeasurement.PIECE, "4.00", "7.50", "10.00", 20, "slow"),
-    # -- dead (last sold 180+ days ago) ---------------------------------------
+    # Rule: dead -- last sold 180+ days ago.
     ("Desk Organizer Tray", "Stationery", 2, UnitOfMeasurement.PIECE, "3.50", "6.50", "7.50", 10, "dead"),
     ("Electric Kettle", "Home & Kitchen", 1, UnitOfMeasurement.PIECE, "12.00", "21.00", "12.50", 8, "dead"),
     ("Powdered Milk 1kg", "Groceries", 2, UnitOfMeasurement.PACK, "5.00", "7.50", "0.00", 15, "dead"),
-    # -- never sold (the 9999-day sentinel) -----------------------------------
+    # Rule: never sold -- exercises the 9999-day sentinel.
     ("Laptop Stand", "Electronics", 0, UnitOfMeasurement.PIECE, "10.00", "18.00", "10.00", 10, "never"),
     ("Notebook (200 pages)", "Stationery", 2, UnitOfMeasurement.PIECE, "1.10", "2.00", "0.00", 25, "never"),
-    # -- short history (< 4 weeks) — proves Phase 11's dropna skip path ------
+    # Rule: short history (< 4 weeks) -- proves the dropna() skip path.
     ("Scented Candle Set", "Home & Kitchen", 1, UnitOfMeasurement.BOX, "6.00", "11.00", "12.50", 10, "short"),
-    # -- stockout (a real stock_after == 0 window >= 1 week) -----------------
+    # Rule: stockout -- a real stock_after == 0 window of at least 1 week.
     ("Wireless Earbuds", "Electronics", 1, UnitOfMeasurement.PIECE, "15.00", "28.00", "15.00", 10, "stockout"),
     ("Whole Wheat Flour 2kg", "Groceries", 0, UnitOfMeasurement.PACK, "3.20", "4.80", "0.00", 20, "stockout"),
-    # -- trending up (rising weekly demand, >= 4 required — 9.5 had 2) -------
+    # Rule: trending up -- >=4 products, tests upward-trend recovery.
     ("Portable Power Bank", "Electronics", 2, UnitOfMeasurement.PIECE, "14.00", "25.00", "10.00", 12, "trending"),
     ("Steel Lunch Box", "Home & Kitchen", 0, UnitOfMeasurement.PIECE, "5.50", "10.00", "5.00", 15, "trending"),
     ("External Hard Drive 1TB", "Electronics", 1, UnitOfMeasurement.PIECE, "35.00", "58.00", "10.00", 8, "trending"),
     ("Yoga Mat", "Home & Kitchen", 2, UnitOfMeasurement.PIECE, "6.00", "12.00", "5.00", 12, "trending"),
     ("Sticky Notes Pack", "Stationery", 0, UnitOfMeasurement.PACK, "0.80", "1.75", "7.50", 30, "trending"),
-    # -- trending down (falling weekly demand — new pattern, Phase 11.5) -----
+    # Rule: trending down -- tests decline recovery, not just growth.
     ("Analog Wall Clock", "Home & Kitchen", 1, UnitOfMeasurement.PIECE, "7.00", "13.00", "10.00", 10, "trending_down"),
     ("Wired Earphones", "Electronics", 2, UnitOfMeasurement.PIECE, "3.50", "7.50", "10.00", 20, "trending_down"),
     ("Correction Fluid Bottle", "Stationery", 0, UnitOfMeasurement.PIECE, "0.60", "1.40", "7.50", 25, "trending_down"),
     ("Powdered Juice Mix", "Groceries", 1, UnitOfMeasurement.PACK, "1.20", "2.20", "0.00", 25, "trending_down"),
-    # -- weekly-seasonal (repeating ~4-week rhythm — new pattern, Phase 11.5) -
+    # Rule: seasonal -- a ~4-week rhythm, the pattern lag_1..lag_4 exist to capture.
     ("Birthday Candle Pack", "Home & Kitchen", 0, UnitOfMeasurement.PACK, "1.00", "2.20", "5.00", 20, "seasonal"),
     ("Printer Ink Cartridge", "Stationery", 1, UnitOfMeasurement.PIECE, "9.00", "16.50", "12.50", 12, "seasonal"),
     ("Frozen Vegetable Pack", "Groceries", 2, UnitOfMeasurement.PACK, "2.40", "3.80", "0.00", 25, "seasonal"),
     ("Phone Screen Protector", "Electronics", 0, UnitOfMeasurement.PIECE, "1.50", "3.50", "10.00", 30, "seasonal"),
     ("Paper Napkin Pack", "Groceries", 1, UnitOfMeasurement.PACK, "1.00", "1.90", "0.00", 30, "seasonal"),
-    # -- steady baseline (flat-ish, mild noise — new pattern, Phase 11.5) ----
+    # Rule: steady baseline -- the "normal" majority, tight confidence interval.
     ("AA Batteries (Pack of 4)", "Electronics", 1, UnitOfMeasurement.PACK, "1.60", "3.20", "10.00", 25, "steady"),
     ("Dish Washing Liquid", "Home & Kitchen", 2, UnitOfMeasurement.LITER, "1.90", "3.40", "5.00", 20, "steady"),
     ("Whiteboard Marker Set", "Stationery", 0, UnitOfMeasurement.BOX, "2.50", "4.50", "7.50", 15, "steady"),
@@ -197,7 +110,7 @@ PRODUCTS = [
     ("HDMI Cable 2m", "Electronics", 2, UnitOfMeasurement.PIECE, "2.80", "6.00", "10.00", 20, "steady"),
     ("Hand Sanitizer 200ml", "Home & Kitchen", 0, UnitOfMeasurement.PIECE, "1.20", "2.50", "5.00", 25, "steady"),
     ("Sticky Tape Roll", "Stationery", 2, UnitOfMeasurement.PIECE, "0.50", "1.20", "7.50", 30, "steady"),
-    # -- spiky / intermittent (mostly-zero weeks — new pattern, Phase 11.5) --
+    # Rule: spiky/intermittent -- mostly-zero weeks, stresses residual_std wide.
     ("Gift Wrapping Paper Roll", "Home & Kitchen", 1, UnitOfMeasurement.PIECE, "1.50", "3.00", "5.00", 15, "spiky"),
     ("Extension Cord 5m", "Electronics", 0, UnitOfMeasurement.PIECE, "4.50", "8.50", "10.00", 12, "spiky"),
     ("Office Stapler Heavy Duty", "Stationery", 1, UnitOfMeasurement.PIECE, "3.20", "6.00", "7.50", 10, "spiky"),
@@ -229,10 +142,7 @@ class Command(BaseCommand):
 
         self.rng = random.Random(RNG_SEED)
         self.today = timezone.localdate()
-        # Backdated events are always strictly before today, never "today"
-        # itself — keeps every computed approved_at safely in the past
-        # regardless of what wall-clock time this command happens to run at
-        # (Part A step 5's "approved_at never in the future" requirement).
+        # Rule: strictly before today -- approved_at must never land in the future.
         self.max_event_date = self.today - timedelta(days=1)
 
         self.stdout.write("Flushing database...")
@@ -244,14 +154,7 @@ class Command(BaseCommand):
         self.staff = User.objects.get(username="verify_user")
         self.supervisor = User.objects.get(username="verify_super")
 
-        # Phase 12 — flush truncates every table, including the
-        # ApprovalPolicy rows a one-time data migration seeded (found
-        # empirically: this command's first post-Phase-12 run failed
-        # every PurchaseService.approve()/AdjustmentService.approve()/
-        # SaleService.cancel_sale() call below with "no matching policy"
-        # -> fails closed to Admin -> verify_super, a supervisor, denied).
-        # ensure_default_policies() is idempotent and restores exactly
-        # the same starting ruleset the migration would have.
+        # Rule: flush wipes ApprovalPolicy -- approve()/cancel() below need one.
         self.stdout.write("Restoring default approval policies (flush wiped them)...")
         ensure_default_policies()
 
@@ -320,22 +223,7 @@ class Command(BaseCommand):
 
         self._print_ledger_summary()
 
-        # Phase 10 — SaleService.approve_sale()/cancel_sale() now
-        # reclassify synchronously on every call (frontend/classification.
-        # py). This seed calls approve_sale() ~180+ times per run, each
-        # one firing a real classify_product() against whatever the DB
-        # looks like at that exact moment in *real* execution time — which
-        # is not yet backdated (this method's own backdating follow-up
-        # runs after approve_sale() returns, see _sell()/_receive()).
-        # Every one of those intermediate classifications is wrong and
-        # gets silently overwritten by the next real event for that same
-        # product; only this final pass, run after every date/timestamp in
-        # the entire dataset is already correct, produces the classification
-        # state the cohort table above was actually built to prove. See
-        # docs/project_memory.md §13 for the full disclosure — this is the
-        # "bulk seed run triggers reclassification many times" cost Phase
-        # 10's own task spec asked to be checked and reported, not silently
-        # absorbed.
+        # Rule: mid-seed classify calls run against not-yet-backdated data.
         self.stdout.write("Running final classification pass (corrects ~180+ mid-seed reclassifications)...")
         run_full_classification()
 
@@ -349,21 +237,11 @@ class Command(BaseCommand):
             f"{InventoryMovement.objects.count()} ledger movements."
         ))
 
-    # ------------------------------------------------------------ primitives
-
     def _dt(self, on_date, hour, minute=0):
         return timezone.make_aware(datetime.combine(on_date, time(hour, minute)))
 
     def _new_po(self, product):
-        """PurchaseOrder._generate_po_number()'s 4-digit random suffix has
-        no collision-retry loop (disclosed, docs/project_memory.md §13) —
-        fine for real usage (one or two POs a day), but this seed creates
-        every PO within the same few seconds of real wall-clock time, so
-        every po_number embeds the *same* real calendar day (the number is
-        generated before this method's caller backdates order_date) and
-        draws from the same 9000-value space. At this volume that's a
-        near-certain birthday-paradox collision, not a rare fluke — retried
-        here, in the seed only; the real generator is untouched."""
+        # Workaround: retries on a po_number collision -- many POs share one second.
         for _ in range(20):
             try:
                 return PurchaseOrder.objects.create(supplier=product.supplier, created_by=self.staff)
@@ -372,8 +250,6 @@ class Command(BaseCommand):
         raise CommandError(f"Could not generate a unique po_number for {product.name} after 20 attempts.")
 
     def _new_sale(self, product, qty, discount):
-        """Same collision-retry reasoning as _new_po() above, for
-        SaleTransaction._generate_invoice_number()."""
         for _ in range(20):
             try:
                 return SaleService.create_sale(
@@ -386,9 +262,6 @@ class Command(BaseCommand):
         raise CommandError(f"Could not generate a unique invoice_number for {product.name} after 20 attempts.")
 
     def _receive(self, product, qty, on_date):
-        """Real receive: create -> submit -> approve -> receive a single-
-        item PO, then backdate order_date/approved_at/the resulting
-        InventoryMovement's created_at to `on_date`. Returns the PO."""
         po = self._new_po(product)
         item = PurchaseOrderItem.objects.create(
             purchase_order=po, product=product, ordered_qty=qty,
@@ -403,15 +276,12 @@ class Command(BaseCommand):
         PurchaseService.receive_items(po, [{"item_id": item.pk, "received_qty": qty}], self.supervisor)
 
         po.order_date = on_date
-        po.approved_at = self._dt(on_date, APPROVE_HOUR)  # approved same day, shortly after order
+        po.approved_at = self._dt(on_date, APPROVE_HOUR)
         po.save(update_fields=["order_date", "approved_at"])
         InventoryMovement.objects.filter(pk__gt=movement_floor).update(created_at=self._dt(on_date, RECEIVE_HOUR))
         return po
 
     def _sell(self, product, qty, on_date, discount=Decimal("0")):
-        """Real sell-through: create -> submit -> approve a single-item
-        sale, then backdate transaction_date/approved_at/the resulting
-        InventoryMovement's created_at to `on_date`. Returns the sale."""
         sale = self._new_sale(product, qty, discount)
         SaleService.submit_for_approval(sale, self.staff)
 
@@ -427,13 +297,7 @@ class Command(BaseCommand):
 
     def _weekly_series(self, start_days_ago, end_days_ago, base_qty, trend_per_week=0.0,
                         seasonal_amplitude=0.0, seasonal_period_weeks=4, skip_prob=0.0, noise_scale=1.0):
-        """(days_ago, qty) pairs on a roughly-weekly cadence from
-        start_days_ago down to end_days_ago, built from an explicit shape
-        — linear trend plus an optional sinusoidal seasonal component
-        plus bounded noise — not a random walk (Phase 11.5: the point is
-        signal the forecaster can demonstrably recover, not just more
-        rows). seasonal_amplitude=0.0 (the default) reduces this to
-        Phase 9.5's original trend-plus-noise shape byte-for-byte."""
+        # Rule: an explicit shape, not a random walk -- recovery is checkable.
         events = []
         days_ago = start_days_ago
         period = 0
@@ -451,16 +315,7 @@ class Command(BaseCommand):
         return events
 
     def _stock_and_sell(self, product, sell_events, start_days_ago):
-        """Phase 11.5: stocks a shaped, ~55-week sell_events series (from
-        _weekly_series) with three receives sized off the series' own
-        total demand, spread across the window, then runs everything
-        through _run_timeline() for chronological coherence. A hand-
-        picked two-receive schedule (Phase 9.5's original approach for
-        fast_long/trending) doesn't scale once a product's year-long
-        total demand isn't known until the shaped series is actually
-        generated — each receive here covers 55% of total demand, so
-        even a badly front- or back-loaded shape (trending_down/
-        trending_up) keeps real stock non-negative throughout."""
+        # Rule: each receive covers 55% of total demand -- keeps stock non-negative.
         total_demand = sum(qty for _, qty in sell_events)
         receive_qty = max(15, int(total_demand * 0.55))
         receive_days = [start_days_ago + 5, int(start_days_ago * 0.65), int(start_days_ago * 0.3)]
@@ -468,22 +323,8 @@ class Command(BaseCommand):
         timeline += [(days_ago, "sell", qty) for days_ago, qty in sell_events]
         self._run_timeline(product, timeline)
 
-    # ---------------------------------------------------------- cohort builders
-    # Each returns the intended "days ago" of the product's last completed
-    # sale, so _print_cohort_report() can cross-check it against what the
-    # DB actually measures.
-
     def _run_timeline(self, product, timeline):
-        """timeline: [(days_ago, 'receive'|'sell', qty), ...], any order.
-        Executes oldest-first so real Python call order matches the
-        intended backdated order — required so stock_before/stock_after
-        (computed from *real* stock at the moment of each real call) stay
-        coherent with the backdated created_at each row is stamped with
-        afterward. Calling receives before sells regardless of their
-        relative dates (as an earlier draft of this file did) would let a
-        later-dated receive's units silently apply to an earlier-dated
-        sell, corrupting the ledger's own internal stock_after sequence —
-        caught and fixed before this ever ran for real."""
+        # Rule: executes oldest-first -- keeps stock_before/stock_after coherent.
         for days_ago, action, qty in sorted(timeline, key=lambda e: (-e[0], e[1] != "receive")):
             on_date = self.today - timedelta(days=days_ago)
             if action == "receive":
@@ -492,10 +333,6 @@ class Command(BaseCommand):
                 self._sell(product, qty, on_date)
 
     def _build_fast_long(self, product):
-        """Phase 11.5: extended from ~30 weeks (224 days) to a full
-        55-week (12+ month) window, so build_features()'s dropna()
-        burn-in (the first ~4 weekly buckets) eats a much smaller share
-        of this product's training rows."""
         base_qty = {"Wireless Mouse": 6, "Basmati Rice 5kg": 8, "A4 Copy Paper Ream": 10}[product.name]
         sell_events = self._weekly_series(384, 6, base_qty=base_qty, skip_prob=0.15)
         last_days_ago = min(d for d, _ in sell_events)
@@ -536,7 +373,7 @@ class Command(BaseCommand):
 
     def _build_never(self, product):
         self._receive(product, 50, self.today - timedelta(days=90))
-        return None  # no sale ever — get_last_sold_date() -> None -> 9999 sentinel
+        return None
 
     def _build_short_history(self, product):
         self._receive(product, 30, self.today - timedelta(days=20))
@@ -545,26 +382,11 @@ class Command(BaseCommand):
         return 5
 
     def _build_stockout(self, product):
-        """Phase 11 finding, fixed here rather than in the pipeline: the
-        original version of this cohort (receive day-70, sell down to 0 by
-        day-55, restock day-40) put the stockout inside the first ~4
-        weekly buckets of the product's *entire* sales history —
-        build_features()'s dropna() (lag_4 needs 4 prior periods) drops
-        exactly those buckets, so the stockout week never survived into
-        the training features at all. stockout_flag came back correctly
-        computed by get_stockout_flags() in isolation, then silently
-        vanished at the merge — not a pipeline bug, a seed-data one: this
-        cohort needed more pre-stockout runway. Six sales before the
-        stockout (day-130..day-80, ~7 weekly buckets) now sit ahead of it,
-        so the dropna() burn-in eats only the leading weeks, not the
-        stockout week itself."""
+        # Rule: extra pre-stockout runway -- dropna()'s burn-in must not eat it.
         self._receive(product, 20, self.today - timedelta(days=140))
         for days_ago, qty in [(130, 3), (120, 3), (110, 3), (100, 3), (90, 3), (80, 5)]:
             self._sell(product, qty, self.today - timedelta(days=days_ago))
-        # Real gap: no movement at all between day -80 and day -65 (15
-        # days, comfortably >= 1 week) — this window is what stockout_flag
-        # exists to catch, and it can only be built by not calling
-        # anything here, not by a flag on a fabricated row.
+        # Rule: a real gap, not a flag on a row -- what stockout_flag catches.
         self._receive(product, 40, self.today - timedelta(days=65))
         for days_ago, qty in [(50, 5), (35, 5), (20, 6)]:
             self._sell(product, qty, self.today - timedelta(days=days_ago))
@@ -573,11 +395,6 @@ class Command(BaseCommand):
         return last
 
     def _build_trending(self, product):
-        """Trending-up: >=4 products required (Phase 11.5; 9.5 had only
-        2, over a ~21-week window). Each grows from base_qty toward
-        roughly 4x base_qty across the full 55-week window — an
-        explicit shape, not a random walk, so the forecaster's recovery
-        of the upward trend can be checked directly per product."""
         base_qty, trend = {
             "Portable Power Bank": (3, 0.16), "Steel Lunch Box": (3, 0.15),
             "External Hard Drive 1TB": (2, 0.11), "Yoga Mat": (3, 0.16),
@@ -589,11 +406,6 @@ class Command(BaseCommand):
         return last_days_ago
 
     def _build_trending_down(self, product):
-        """Trending-down: a pattern 9.5 didn't have (>= 3 required).
-        Declines from base_qty toward a low floor over the 55-week
-        window (_weekly_series' own max(1, ...) prevents it hitting
-        zero) — tests whether the forecaster tracks decline, not just
-        growth, relevant to dead-stock onset."""
         base_qty, trend = {
             "Analog Wall Clock": (16, -0.24), "Wired Earphones": (14, -0.20),
             "Correction Fluid Bottle": (12, -0.18), "Powdered Juice Mix": (15, -0.22),
@@ -604,12 +416,6 @@ class Command(BaseCommand):
         return last_days_ago
 
     def _build_seasonal(self, product):
-        """Weekly-seasonal: a repeating ~4-week rhythm (reliable peaks
-        every month) at weekly granularity (>= 4 required) — the exact
-        pattern lag_1..lag_4 exist to capture, untested by any 9.5
-        cohort. 55 weeks gives ~13 full cycles, comfortably clearing
-        dropna()'s ~4-week burn-in with room for the rhythm to repeat
-        many times over."""
         base_qty, amplitude = {
             "Birthday Candle Pack": (6, 4), "Printer Ink Cartridge": (5, 3),
             "Frozen Vegetable Pack": (8, 5), "Phone Screen Protector": (6, 4),
@@ -624,10 +430,6 @@ class Command(BaseCommand):
         return last_days_ago
 
     def _build_steady(self, product):
-        """Steady baseline: flat-ish demand with mild noise, no trend or
-        seasonal component (>= 6 required) — the "normal" majority the
-        model should predict tightly, i.e. a narrower confidence
-        interval than the spiky cohort below."""
         base_qty = {
             "AA Batteries (Pack of 4)": 7, "Dish Washing Liquid": 5,
             "Whiteboard Marker Set": 4, "Tea Bags Box (100pc)": 6,
@@ -655,20 +457,8 @@ class Command(BaseCommand):
         self._stock_and_sell(product, sell_events, start_days_ago=384)
         return last_days_ago
 
-    # ------------------------------------------------------- non-AI-path records
-
     def _build_non_completed_records(self):
-        """Deliberately-incomplete records: must exist so the AI
-        docs'/services' "completed only" filtering has something real to
-        exclude. Uses only cohort products that already have a stable,
-        already-measured last-sold date (never touches the two "never
-        sold" products, so that cohort stays unambiguous regardless of
-        whether a given query correctly filters by status — see this
-        phase's Part D-adjacent finding that docs/DEMAND_FORECASTING.md's
-        own get_sales_dataframe() reference code has no status filter at
-        all, unlike docs/DEAD_STOCK_DETECTION.md's get_last_sold_date()).
-        Real "now" timestamps — out of the AI-relevant date path entirely,
-        so no backdating is needed or attempted here."""
+        # Rule: never touches the "never sold" products -- keeps that cohort clean.
         mouse = self.products["Wireless Mouse"]
         speaker = self.products["Bluetooth Speaker"]
         pen = self.products["Ballpoint Pen (Box of 12)"]
@@ -697,14 +487,7 @@ class Command(BaseCommand):
 
         cancelled = 0
         draft_cancel = self._new_sale(oil, 2, Decimal("0"))
-        # Phase 12 — cancel_sale() now enforces ApprovalTxType.SALE_CANCEL
-        # (can_approve()) inside the service layer itself, not only via
-        # SaleCancelView's SupervisorRequiredMixin. self.staff was never
-        # actually able to reach this action in the real app (the view's
-        # mixin already required supervisor+) — this only ever "worked"
-        # here because the seed calls the service directly, bypassing the
-        # view layer. Using self.supervisor now matches what was already
-        # true everywhere a real user hits this.
+        # Rule: self.supervisor -- staff could never reach this cancel in the real app.
         SaleService.cancel_sale(draft_cancel, self.supervisor, "Customer changed their mind before checkout.")
         cancelled += 1
         pending_cancel = self._new_sale(bottle, 3, Decimal("0"))
@@ -751,11 +534,8 @@ class Command(BaseCommand):
         AdjustmentService.reject(rejected, self.supervisor, "Recount confirmed original figure was correct.")
         return "1 approved, 1 pending, 1 rejected"
 
-    # -------------------------------------------------------------- verification
-
     def _verify_coherence(self):
-        """Part A step 5: approved_at must never be before the record's own
-        business date, and never in the future, across the whole dataset."""
+        """approved_at must never precede its own business date, or be in the future."""
         now = timezone.now()
         violations = []
 

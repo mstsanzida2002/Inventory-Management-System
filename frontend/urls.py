@@ -4,22 +4,6 @@ from . import views
 
 app_name = "frontend"
 
-# Phase 8.99a — the whole password-reset flow lives under this project's
-# own `frontend:` namespace, not django.contrib.auth's `accounts:` one
-# (now removed from config/urls.py). Matches this project's own established
-# precedent: login/logout were already moved off `accounts:` onto
-# `frontend:login`/`frontend:logout` back in an earlier bug fix
-# (docs/bugsfound.md BUG-01) specifically because this project's real auth
-# routes all live under one namespace — `password_reset_confirm` needs a
-# real subclass (StockwellPasswordResetConfirmView, below) to fire the
-# audit/notify calls change_password_view already does, so relying on
-# django.contrib.auth.urls' own unmodifiable routing was never an option
-# for that one view anyway; keeping the other 3 under a second namespace
-# just for those would be inconsistent for no reason. `success_url`/
-# `email_template_name` are all explicitly namespaced (`frontend:...`)
-# since Django's own default `success_url`s reverse a bare,
-# non-namespaced name that would NoReverseMatch once these routes only
-# exist inside a namespaced include.
 urlpatterns = [
     path("", views.landing, name="landing"),
     path("login/", views.login, name="login"),

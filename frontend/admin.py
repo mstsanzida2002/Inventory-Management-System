@@ -27,10 +27,7 @@ class UserAdmin(admin.ModelAdmin):
     search_fields = ('username', 'email', 'employee_id', 'full_name')
     list_filter = ('role', 'is_active', 'is_staff')
     ordering = ('username',)
-    # AbstractBaseUser's `password` field renders as a plain editable CharField
-    # under a bare ModelAdmin (no ReadOnlyPasswordHashField), which would let
-    # someone overwrite it with cleartext, bypassing set_password() hashing.
-    # Read-only here until this model is wired up with a proper auth admin.
+    # Security: password read-only -- a plain field would accept cleartext.
     readonly_fields = ('password', 'last_login', 'created_at', 'updated_at')
 
 
@@ -105,16 +102,13 @@ class InventoryRecordAdmin(admin.ModelAdmin):
 
 @admin.register(InventoryMovement)
 class InventoryMovementAdmin(admin.ModelAdmin):
-    """Read-only in admin: the model's own docstring documents this as an
-    immutable ledger ('never update or delete'), but — unlike AuditLog —
-    that invariant isn't enforced in code here (see admin_notes below).
-    Enforcing it at the admin layer at least keeps this specific view honest."""
     list_display = ('product', 'movement_type', 'quantity_change', 'stock_before', 'stock_after', 'reference_type', 'reference_id', 'performed_by', 'created_at')
     search_fields = ('product__sku', 'product__name', 'reference_type')
     list_filter = ('movement_type',)
     ordering = ('-created_at',)
     list_select_related = ('product', 'performed_by')
 
+    # Workaround: save()/delete() raise a bare PermissionError -- avoids a 500.
     def has_change_permission(self, request, obj=None):
         return False
 
@@ -160,18 +154,13 @@ class NotificationAdmin(admin.ModelAdmin):
 
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
-    """Read-only in admin: AuditLog.save()/delete() raise a bare
-    PermissionError on update/delete (see admin_notes below) rather than a
-    Django-recognized exception, so an admin edit/delete attempt would
-    otherwise surface as an unhandled 500 instead of a clean permission
-    message. Disabling change/delete here avoids that and matches the
-    model's own documented immutability."""
     list_display = ('timestamp', 'user', 'action', 'module', 'status', 'affected_id', 'ip_address')
     search_fields = ('action', 'module')
     list_filter = ('module', 'status', 'action')
     ordering = ('-timestamp',)
     list_select_related = ('user',)
 
+    # Workaround: save()/delete() raise a bare PermissionError -- avoids a 500.
     def has_change_permission(self, request, obj=None):
         return False
 
@@ -181,18 +170,11 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(SystemSettings)
 class SystemSettingsAdmin(admin.ModelAdmin):
-    """Registered as a singleton in the admin: the model itself doesn't
-    enforce single-row-only (see admin_notes below) — get_settings() is a
-    convention, not a constraint — so `has_add_permission` blocks adding a
-    second row once one exists, to at least keep the admin UI honest about
-    the intended usage."""
     list_display = ('company_name', 'default_reorder_level', 'slow_moving_threshold_days', 'dead_stock_threshold_days', 'session_timeout_seconds', 'email_notifications_enabled')
 
+    # Rule: blocks Add once a row exists -- save() forces pk=1 either way.
     def has_add_permission(self, request):
-        # Called on every admin page (index, sidebar app list), not just the
-        # add view, so a DB error here would take down the whole admin site.
-        # Fail open (defer to the default) rather than let the table lookup
-        # crash unrelated pages — e.g. before migrations exist.
+        # Edge: fails open on DatabaseError -- e.g. before migrations exist.
         try:
             if SystemSettings.objects.exists():
                 return False

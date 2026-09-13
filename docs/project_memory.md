@@ -8041,3 +8041,125 @@ Remaining sessions: session 4 (`views.py`, `api_views.py`, `api_urls.py`,
 `config/settings.py`), session 5 (templates, static, `tests.py`).
 
 Not committed — left uncommitted per instruction.
+
+## Phase — Comment Hygiene Pass, Session 4/5: Views, API, Forms, Filters, Admin, Settings, Seed Data (2026-09-13)
+
+Scope: `views.py` (largest target, 360 comment + 497 docstring lines),
+`api_views.py`, `api_urls.py`, `forms.py`, `filters.py`, `urls.py`,
+`admin.py`, `context_processors.py`, `config/settings.py`,
+`seed_dev_data.py`. Deletion dominated as expected, most heavily in
+`views.py`: 83 mixin-name references, most of them narrative restatements
+("same AnyStaffMixin gate as X") rather than real facts — the class
+declaration is self-documenting, per policy, and all were removed.
+
+Authorization findings (`# Security:`, deduplicated to one site each):
+`DashboardView` gates 3 widgets (recent activity, classification/forecast
+insights) to Admin/Supervisor, tighter than its own `AnyStaffMixin` floor;
+`PurchaseApproveView`/`SaleApproveView`/`AdjustmentApproveView` (and their
+reject/cancel siblings) have `SupervisorRequiredMixin` as only a floor —
+the resolved `ApprovalPolicy` inside each service call can narrow it to
+Admin-only, stated once rather than at all 7 sites; `NotificationListView`
+and its 3 siblings are actually gated by `recipient=request.user`
+row-filtering, not by `LoginRequiredMixin` (which only checks login).
+`UserDeactivateView`/`UserDeleteView`'s self-target guard ("an admin
+cannot deactivate or delete their own account") stated once, on
+`UserDeactivateView` only — the error text differs per view but the rule
+doesn't, so restating it a second time would be a duplicate, not a
+distinct fact (per explicit ruling this session).
+
+Business logic sitting in the view layer rather than a service, reported
+per instruction, not moved: `ApprovalPolicyReactivateView.post()`'s
+priority/transaction_type uniqueness check (`ApprovalPolicy` has no
+dedicated service class); the `_user_ids_with_history()` /
+`_product_ids_with_history()` / `_category_ids_with_products()` /
+`_supplier_ids_with_history()` family of module-level functions encoding
+which FKs are `PROTECT` (i.e. delete-safety rules) as `views.py` helpers
+rather than model/service methods. Both are real architectural
+observations worth knowing, not accidents — left where they are.
+
+**BUG-97** (`docs/bugsfound.md`): `frontend/admin.py` had three
+`ModelAdmin` docstrings all ending "(see admin_notes below)" — no such
+section exists anywhere (dangling reference, same class as BUG-93). Two
+of the three also asserted the opposite of the real model behavior:
+`InventoryMovementAdmin` claimed the model doesn't enforce immutability in
+code (false — `save()`/`delete()` raise `PermissionError`, same as
+`AuditLog`); `SystemSettingsAdmin` claimed the model doesn't enforce
+single-row-only (false — `save()` forces `pk=1` unconditionally). All
+three docstrings deleted outright; the true rationale for each
+`has_change_permission`/`has_delete_permission`/`has_add_permission`
+override rewritten as a one-line comment on the method itself.
+
+Celery-absence allocation applied per session-2 policy: `api_views.py`/
+`api_urls.py` DELETE (module docstrings' Celery-unavailability framing
+removed entirely); `views.py` KEEP exactly 2 lines — one `# Assumption:`
+each on `DemandForecastingView.post()` and `SlowMovingDeadStockView.post()`
+stating the synchronous-execution constraint.
+
+`config/settings.py`: separated genuine deployment constraints (WhiteNoise
+placement, `STORAGES`' cache-busting reason, `MEDIA_ROOT`'s Render-
+ephemeral-disk warning, `SECURE_PROXY_SSL_HEADER`'s infinite-redirect-loop
+gotcha, email fail-loud defaults, session/CSRF cookie DEBUG-gating, REST
+session-auth rationale) from Django-generated boilerplate (deleted
+wholesale: the module docstring, every `# https://docs.djangoproject.com/
+...` reference-doc comment, the 4 unlabeled built-in password validators).
+Per an explicit ruling, cut further after an initial pass still sat over
+budget: dropped `SECURE_BROWSER_XSS_FILTER`'s omission-narration (a
+comment explaining why a setting is absent is narrating a non-event),
+`AUTH_USER_MODEL`'s note (the value already says it's custom), and
+`LOGIN_URL`'s note (the value is the namespace) — none stated a
+constraint beyond the fact of the assignment itself. Final: 14 comments
+on 182 LOC, still nominally over the ~9 budget but every survivor is a
+distinct, real deployment fact, same precedent as session 2's
+`services.py` finding.
+
+`seed_dev_data.py`: treated as a dev fixture, not application logic, per
+explicit instruction — comments kept only where the generated data shape
+is load-bearing for the AI features' own test/demo purpose. The ~80-line
+module docstring's backdating-mechanism history (3 numbered mechanisms)
+deleted wholesale — real facts, but about *how* the seed works, not about
+data shape. The 12 cohort-builder docstrings condensed to one line each on
+the `PRODUCTS` table itself (deduplicating "explicit shape, not a random
+walk" up to `_weekly_series()`, stated once there), each cohort keeping
+only what's distinct about it (`_build_stockout`'s extra pre-stockout
+runway requirement, `_build_trending_down`'s decline-recovery test, etc.).
+`_receive()`/`_sell()`'s docstrings deleted (private, restated the code
+below); `_new_po()`'s collision-retry rationale kept once, not repeated on
+`_new_sale()`.
+
+Verification:
+- `scripts/comment_guard.py` clean on all 10 files (AST-identical to HEAD
+  apart from comments/docstrings).
+- Full suite: 483/483, unchanged, run repeatedly across the session.
+- All 165 named URL patterns reverse-resolve correctly (2 false positives
+  from a crude arg-type script, individually confirmed to resolve fine).
+- `manage.py check --deploy`: 5 expected dev-mode warnings (DEBUG=True),
+  unchanged from before — `settings.py` was comment-only, verified by the
+  AST-diff guard, so this result is necessarily identical to pre-session.
+- Grep for `BUG-|Phase |docs/|\.md` inside comments/docstrings across all
+  10 files: zero hits. (Two incidental substring matches inside the
+  `seed_dev_data.py` Command's own `help=` CLI string — `"DEBUG-only"`
+  contains `"BUG-"` as a substring — are code, not comments, untouched and
+  correctly out of this pass's scope.)
+- Comment+docstring line counts (pre-hygiene baseline -> now):
+
+| file | before | after | LOC before -> after | density budget |
+|---|---|---|---|---|
+| views.py | 857 | 61 | 2920 -> 2120 | ~106 (well under) |
+| api_views.py | 35 | 3 | 91 -> 58 | ~3 (on budget) |
+| api_urls.py | 8 | 0 | 24 -> 15 | ~1 (under) |
+| forms.py | 279 | 22 | 567 -> 305 | ~15 (slightly over — 8 mandatory one-line docstrings on public forms) |
+| filters.py | 65 | 12 | 218 -> 164 | ~8 (slightly over — 8 public functions each need a contract line) |
+| urls.py | 16 | 0 | 115 -> 99 | ~5 (under — route-by-route commentary deleted per instruction) |
+| admin.py | 23 | 5 | 201 -> 183 | ~9 (under) |
+| context_processors.py | 12 | 1 | 18 -> 6 | ~0.3 (one mandatory docstring on the one public function) |
+| config/settings.py | 185 | 14 | 369 -> 182 | ~9 (over, see above — every line a distinct fact) |
+| seed_dev_data.py | 250 | 33 | 803 -> 583 | ~29 (slightly over — ~12 cohort facts are close to mandatory per this file's own item-6 instruction) |
+
+Longest surviving comment-or-docstring line per file, all <= 80 chars:
+views.py 80, api_views.py 78, api_urls.py 0, forms.py 79, filters.py 80,
+urls.py 0, admin.py 75, context_processors.py 67, settings.py 80,
+seed_dev_data.py 80.
+
+Remaining session: session 5 (templates, static, `tests.py`).
+
+Not committed — left uncommitted per instruction.

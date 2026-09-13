@@ -1,25 +1,3 @@
-"""
-docs/01_AUTH.md's `apps/authentication/views.py`, translated into the
-single `frontend` app — no `apps/authentication/` app created (see
-docs/project_memory.md §13). `apps.users.models.User` -> `frontend.models.User`;
-`apps.audit.services.log_action` -> `frontend.audit.log_action`;
-`apps.settings_manager.models.SystemSettings` -> `frontend.models.SystemSettings`;
-`apps.notifications.services.notify_user` -> `frontend.notifications.notify_user`.
-
-`redirect_by_role()` is intentionally NOT implemented as documented: the
-reference code assumes three distinct routes (`dashboard:admin`/
-`dashboard:supervisor`/`dashboard:staff`), but only one `/dashboard/`
-route exists in this project (no dedicated Dashboard module doc — see
-docs/project_memory.md §12/§17 gap list). Everyone redirects to the one
-real `frontend:dashboard` route; role-conditional content inside that
-template (02_RBAC.md's own template example shows exactly this pattern)
-is the right fix, not inventing new routes.
-
-`auth:login`/`auth:logout` -> `frontend:login`/`frontend:logout` — this
-project's login route lives in the `frontend` namespace (see
-docs/project_memory.md §12 bug #1: an earlier bug fix moved *away* from
-django.contrib.auth's built-in `accounts:` namespace).
-"""
 import json
 from datetime import date, timedelta
 
@@ -136,8 +114,7 @@ def login(request):
             )
             return render(request, "accounts/login.html")
 
-        # Lockout check happens before authenticate() — a locked-out
-        # account never even reaches a password comparison.
+        # Rule: locked-out account never reaches a password comparison.
         if user_obj.locked_until and user_obj.locked_until > timezone.now():
             messages.error(
                 request,
@@ -146,15 +123,7 @@ def login(request):
             )
             return render(request, "accounts/login.html")
 
-        # is_active check also happens before authenticate() — not after,
-        # unlike 01_AUTH.md's own reference code. Django's default
-        # ModelBackend already refuses to authenticate an inactive user
-        # (returns None), which makes an `if not user.is_active` check
-        # placed AFTER a successful authenticate() call unreachable dead
-        # code as originally written. Checking first gives a correct,
-        # specific message without also bumping the failed-attempt
-        # counter for a deactivated account whose password was actually
-        # correct — that's not a failed *login attempt* by the user.
+        # Rule: checked before authenticate() -- gives a specific message.
         if not user_obj.is_active:
             messages.error(request, "Your account is inactive. Contact administrator.")
             return render(request, "accounts/login.html")
@@ -179,7 +148,6 @@ def login(request):
                 audit.log_action(user_obj, audit.ACCOUNT_LOCKED, "authentication", status="failure", request=request)
             return render(request, "accounts/login.html")
 
-        # Successful login.
         user.failed_login_attempts = 0
         user.locked_until = None
         user.save(update_fields=["failed_login_attempts", "locked_until"])
@@ -209,15 +177,7 @@ def profile_view(request):
         user.contact_number = request.POST.get("contact_number", user.contact_number).strip()
         if "profile_image" in request.FILES:
             image = request.FILES["profile_image"]
-            # Phase 8.98e: profile_image (SCHEMA.md's own field, already on
-            # the model since Phase 1) had no validation at all before this
-            # — any file of any type/size would silently become the user's
-            # avatar. Reuses validate_product_image() unchanged: its check
-            # (extension + size) is generic image validation with nothing
-            # product-specific in it. Phase 13's SystemSettings.company_logo
-            # gets its own validate_company_logo() instead (SVG support, a
-            # profile photo doesn't need) — same precedent, different
-            # validator once the two fields' real requirements diverged.
+            # Rule: reuses validate_product_image() -- generic image checks.
             try:
                 validate_product_image(image)
             except ValidationError as exc:
@@ -234,22 +194,12 @@ def profile_view(request):
 
 
 def _record_password_change(user, request):
-    """Phase 8.99a — extracted out of change_password_view so
-    StockwellPasswordResetConfirmView (below) can fire the exact same
-    audit/notify sequence, not a second hand-copied one. Every path that
-    ends in a successful set_password() — the profile modal, and now the
-    emailed reset link — must be equally visible to the audit log and
-    every Admin; before this, only the modal's path was. Never receives
-    the new password itself: nothing here takes one as an argument, so
-    there's nothing to leak into `notify_user`/`notify_admins`' stored
-    Notification rows or `audit.log_action`'s `details`."""
+    """Shared by every path that ends in set_password(): profile, reset."""
     notify_user(
         user, NotificationType.PASSWORD_CHANGED, "Password Changed",
         "Your password was successfully updated.",
     )
-    # Every admin is told a password changed — reusing the same documented
-    # PASSWORD_CHANGED type for a second recipient set
-    # (frontend.notifications.notify_admins()), never the new password.
+    # Security: never passes the new password into notify_admins()/details=.
     notify_admins(
         NotificationType.PASSWORD_CHANGED, f"Password Changed: {user.full_name}",
         f"{user.full_name} ({user.username}) changed their account password.",
@@ -259,16 +209,6 @@ def _record_password_change(user, request):
 
 @login_required
 def change_password_view(request):
-    """Phase 8.98a — split out of profile_view's old inline "new password"
-    field (which had no current-password check and no confirm field, both
-    real gaps for a self-service password change). This is the only
-    server-side path that ever calls set_password() for the logged-in
-    user's own account now — validate_password() (the same
-    AUTH_PASSWORD_VALIDATORS chain, StrongPasswordValidator included) is
-    still the actual enforcement point, same as before. Returns JSON,
-    matching modal-form.js's fetch()-based onSubmit contract — a real
-    page redirect (like profile_view's own POST) isn't right for a modal."""
-
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Method not allowed."}, status=405)
 
@@ -292,30 +232,14 @@ def change_password_view(request):
 
     user.set_password(new_password)
     user.save()
-    update_session_auth_hash(request, user)  # keep this session alive post-change
+    update_session_auth_hash(request, user)  # Rule: keeps this session alive.
     _record_password_change(user, request)
     messages.success(request, "Password changed successfully.")
     return JsonResponse({"success": True})
 
 
 class StockwellPasswordResetConfirmView(PasswordResetConfirmView):
-    """Phase 8.99a — Django's own PasswordResetConfirmView.form_valid()
-    calls form.save() (SetPasswordForm, which itself already runs
-    validate_password()/StrongPasswordValidator via
-    UserModel.clean_new_password2() — no re-validation needed here) and
-    redirects; it never goes through change_password_view, so without
-    this override a password reset via the emailed link would be
-    invisible to both the audit log and every Admin, while the identical
-    change made through the profile modal is fully recorded — a genuine
-    compliance-record inconsistency, confirmed by reading Django's own
-    form_valid() source before writing this, not assumed.
-
-    Only adds the missing audit/notify call — form.save()'s actual
-    password-setting logic is untouched, reused via super().form_valid(),
-    not reimplemented. form.user (set by SetPasswordForm.__init__, not by
-    save()) is the target user the password was just changed for; the new
-    password itself is never read here, so there is nothing for
-    _record_password_change() to leak."""
+    """Adds the audit/notify call Django's own form_valid() never makes."""
 
     def form_valid(self, form):
         response = super().form_valid(form)
@@ -323,23 +247,12 @@ class StockwellPasswordResetConfirmView(PasswordResetConfirmView):
         return response
 
 
-# -------------------------------------------------------------- Dashboard
-# Phase 8.96 — docs/09_DASHBOARD.md (originated + approved Phase 8.95/
-# 8.95.1). Every number below traces to a row in that spec's decision
-# table; nothing here is a number invented to fill a gap — where the spec
-# says an element can't be real yet (AI Insights) it's simply absent, not
-# faked or shown as an empty state.
+DASHBOARD_PREVIEW_ROWS = 5
 
-DASHBOARD_PREVIEW_ROWS = 5  # 09_DASHBOARD.md Decision 3 — the one place this is defined.
-
-_PURCHASE_ACTIVITY_STATUSES = (POStatus.APPROVED, POStatus.PARTIAL, POStatus.RECEIVED)  # Decision 2b
+_PURCHASE_ACTIVITY_STATUSES = (POStatus.APPROVED, POStatus.PARTIAL, POStatus.RECEIVED)
 
 
 def _dashboard_date_buckets(unit, count):
-    """(bucket_start, label) tuples, oldest first, ending at the current
-    bucket. 'day'/'week'/'month' per 09_DASHBOARD.md's chart windows —
-    Decision 2a. Week buckets start Monday (matches Django's TruncWeek);
-    month buckets start on the 1st (matches TruncMonth)."""
     today = timezone.localdate()
     buckets = []
     if unit == "day":
@@ -351,7 +264,7 @@ def _dashboard_date_buckets(unit, count):
         for i in range(count - 1, -1, -1):
             d = week_start - timedelta(weeks=i)
             buckets.append((d, d.strftime("%b %d")))
-    else:  # month
+    else:
         y, m = today.year, today.month
         for i in range(count - 1, -1, -1):
             total_month = (y * 12 + (m - 1)) - i
@@ -361,10 +274,6 @@ def _dashboard_date_buckets(unit, count):
 
 
 def _sales_purchases_series(unit, count):
-    """09_DASHBOARD.md §3a — Sales = completed SaleTransactions by
-    transaction_date; Purchases = APPROVED/PARTIAL/RECEIVED PurchaseOrders
-    by order_date (Decision 2b). Both DB-aggregated (Sum + annotate), zero-
-    filled per bucket in Python rather than pulling raw rows."""
     buckets = _dashboard_date_buckets(unit, count)
     start = buckets[0][0]
     trunc = {"day": None, "week": TruncWeek, "month": TruncMonth}[unit]
@@ -391,10 +300,6 @@ def _sales_purchases_series(unit, count):
 
 
 def _inventory_movement_series():
-    """09_DASHBOARD.md §3b — Received/Dispatched by InventoryMovement's
-    own quantity_change sign, last 6 months (the mock's own given window,
-    not a decision). created_at is a DateTimeField, so TruncMonth returns
-    an aware datetime — .date() normalizes it to match the bucket keys."""
     buckets = _dashboard_date_buckets("month", 6)
     start = buckets[0][0]
     qs = InventoryMovement.objects.filter(created_at__date__gte=start)
@@ -403,6 +308,7 @@ def _inventory_movement_series():
         qs.filter(quantity_change__gt=0).annotate(bucket=TruncMonth("created_at"))
         .values("bucket").annotate(total=Sum("quantity_change"))
     )
+    # Workaround: TruncMonth returns an aware datetime; .date() matches buckets.
     received_totals = {r["bucket"].date(): r["total"] or 0 for r in received_rows}
 
     dispatched_rows = (
@@ -419,18 +325,9 @@ def _inventory_movement_series():
 
 
 class DashboardView(AnyStaffMixin, View):
-    """Phase 8.97 (Part A) — previously a bare function view with no auth
-    check at all, a real risk once Phase 8.96 made this page compute
-    genuine business aggregates (inventory value, stock levels, real
-    headcounts) instead of fabricated numbers. `AnyStaffMixin` matches
-    every other real view's convention and `09_DASHBOARD.md`'s own
-    "Any role, same content" decision — not gated to a single role, just
-    to "logged in at all" (all 3 roles satisfy `AnyStaffMixin`)."""
 
     def get(self, request):
-        # BUG-37 fix (Phase 8.6): greeting tracks time of day in Bangladesh
-        # time, the same clock every other timestamp in the app renders in
-        # (TIME_ZONE = 'Asia/Dhaka', see config/settings.py).
+        # Assumption: Asia/Dhaka clock -- matches every other rendered timestamp.
         now_local = timezone.localtime()
         hour = now_local.hour
         if hour < 12:
@@ -442,43 +339,34 @@ class DashboardView(AnyStaffMixin, View):
 
         thirty_days_ago = timezone.now() - timedelta(days=30)
 
-        # ---- KPI cards (Decision 1: "+N new in the last 30 days", all 4) ----
         kpis = {
             "total_products": Product.objects.count(),
             "new_products_30d": Product.objects.filter(created_at__gte=thirty_days_ago).count(),
             "total_categories": Category.objects.count(),
             "new_categories_30d": Category.objects.filter(created_at__gte=thirty_days_ago).count(),
-            # "Active suppliers", not raw total — Decision 7.
             "active_suppliers": Supplier.objects.filter(is_active=True).count(),
             "new_active_suppliers_30d": Supplier.objects.filter(
                 is_active=True, created_at__gte=thirty_days_ago
             ).count(),
-            # Not in API_CONTRACTS.md's documented stats payload — Decision 6.
             "total_users": User.objects.count(),
             "new_users_30d": User.objects.filter(created_at__gte=thirty_days_ago).count(),
         }
 
-        # ---- Compact stat strip ----
         inv_agg = InventoryRecord.objects.aggregate(value=Sum("total_value"), units=Sum("current_stock"))
         stats = {
             "inventory_value": inv_agg["value"] or 0,
-            "stock_units": inv_agg["units"] or 0,  # Decision 6.
+            "stock_units": inv_agg["units"] or 0,
             "low_stock_count": InventoryRecord.objects.filter(status=InventoryStatus.LOW_STOCK).count(),
             "out_of_stock_count": InventoryRecord.objects.filter(status=InventoryStatus.OUT_OF_STOCK).count(),
         }
 
-        # ---- Stock Alerts widget (§4a) ----
         stock_alerts = list(
             InventoryRecord.objects.filter(status__in=[InventoryStatus.LOW_STOCK, InventoryStatus.OUT_OF_STOCK])
             .select_related("product").order_by("current_stock")[:DASHBOARD_PREVIEW_ROWS]
         )
         for record in stock_alerts:
-            # Reused from InventoryListView (Phase 8.9) — same badge convention,
-            # not redefined. Looked up lazily (method body, not module level)
-            # since _INVENTORY_STATUS_BADGE is defined later in this file.
             record.status_badge = _INVENTORY_STATUS_BADGE.get(record.status, "badge-indigo")
 
-        # ---- Pending Approvals widget (§4b) — read-only, no action buttons ----
         pending_po_count = PurchaseOrder.objects.filter(status=POStatus.PENDING).count()
         pending_adjustment_count = InventoryAdjustment.objects.filter(status=AdjustmentStatus.PENDING).count()
 
@@ -505,12 +393,7 @@ class DashboardView(AnyStaffMixin, View):
         pending_items.sort(key=lambda item: item["created_at"], reverse=True)
         pending_items = pending_items[:DASHBOARD_PREVIEW_ROWS]
 
-        # ---- Recent Activity widget (§4c) — Decision 5: admin/supervisor only ----
-        # `AnyStaffMixin` now guarantees an authenticated user with a role
-        # reaches this point at all, so `is_authenticated` here is
-        # belt-and-suspenders, not load-bearing — kept anyway since it's
-        # harmless and keeps this check correct in isolation if the mixin
-        # is ever changed.
+        # Security: 3 widgets below are Admin/Supervisor only, above the mixin floor.
         recent_activity = None
         if request.user.is_authenticated and request.user.role in (UserRole.ADMIN, UserRole.SUPERVISOR):
             recent_activity = list(
@@ -520,36 +403,13 @@ class DashboardView(AnyStaffMixin, View):
             for log in recent_activity:
                 log.user_label = log.user.full_name if log.user else "System"
 
-        # ---- AI Insights: Stock Classification (§4d, REQ 11.9/11.10, PROMPT_C_STEP_3) ----
-        # 09_DASHBOARD.md §4d's own query shape ("most recently classified
-        # 4 rows") was written when neither AI table had any rows at all
-        # and was never re-verified once they did (docs/bugsfound.md
-        # BUG-76) — "most recently classified" is meaningless once
-        # run_full_classification() updates every active product's
-        # classified_at in the same batch (ties, arbitrary order), and
-        # says nothing about priority. Replaced here with what the page
-        # actually needs: real counts across all four states (matching
-        # SlowMovingDeadStockView's own counting, so this widget can
-        # never silently disagree with /ai/slow-moving/ — the exact
-        # failure mode BUG-64 was for forecasts) and the highest-priority
-        # dead/slow products by stagnation_index, the same composite
-        # score /ai/slow-moving/ itself sorts and displays by. Same
-        # Supervisor+ role gate as the page these link to
-        # (SlowMovingDeadStockView is SupervisorRequiredMixin) — showing
-        # this widget to a Staff user who can't open the linked page
-        # would be a dead end, not an insight.
+        # Rule: counts must match SlowMovingDeadStockView's own -- one truth.
         classification_insights = None
         if request.user.is_authenticated and request.user.role in (UserRole.ADMIN, UserRole.SUPERVISOR):
             classification_counts = {choice: 0 for choice in StockClassification.values}
             for row in InventoryClassification.objects.values('classification').annotate(count=Count('id')):
                 classification_counts[row['classification']] = row['count']
 
-            # PROMPT_C_STEP_3 — priority is stagnation_index today. Step 4
-            # adds capital-at-risk ranking (current_stock * purchase_price
-            # for dead/slow products) — this stays a plain list of rows
-            # with one sort key, so swapping the key (or blending it with
-            # stagnation_index) is a one-line change here, not a
-            # restructure of the widget or its template.
             priority_products = list(
                 InventoryClassification.objects.filter(
                     classification__in=[StockClassification.DEAD, StockClassification.SLOW],
@@ -566,28 +426,12 @@ class DashboardView(AnyStaffMixin, View):
                 "priority_products": priority_products,
             }
 
-        # ---- AI Insights: Forecast Replenishment (§4d, REQ 11.9, PROMPT_C_STEP_3) ----
-        # Deliberately NOT ForecastSummaryAPIView — that endpoint has a
-        # known, still-open aggregation defect (docs/bugsfound.md BUG-64:
-        # it aggregates every DemandForecast row ever created, no dedup
-        # by latest run, so repeated "Run forecast now" clicks skew its
-        # counts toward whichever products got re-run most). Uses
-        # frontend.forecasting.latest_forecast_batch() instead — the same
-        # dedup-by-latest-created-per-(product, period, period_start)
-        # DemandForecastingView's own HTML page uses, extracted specifically
-        # so this widget can't define a second, divergent "current
-        # forecast." "Needs replenishment" = forecasted_demand exceeds
-        # current_stock, the identical condition run_full_forecast()'s own
-        # replenish_alerts uses; "urgency" = the size of that shortfall.
+        # Rule: latest_forecast_batch() -- same dedup as DemandForecastingView.
         forecast_insights = None
         if request.user.is_authenticated and request.user.role in (UserRole.ADMIN, UserRole.SUPERVISOR):
             forecasts, forecast_last_run = latest_forecast_batch()
             stock_by_product = dict(InventoryRecord.objects.values_list('product_id', 'current_stock'))
 
-            # needs_replenishment() (frontend/forecasting.py) is the same
-            # function run_full_forecast()'s own replenish_alerts calls —
-            # written once so tuning this threshold can't happen in one
-            # call site and silently drift from the other.
             replenishment_needed = []
             for f in forecasts:
                 current_stock = stock_by_product.get(f.product_id, 0)
@@ -600,17 +444,11 @@ class DashboardView(AnyStaffMixin, View):
 
             forecast_insights = {
                 "last_run": forecast_last_run,
-                # Same computation ForecastSummaryAPIView and
-                # DemandForecastingView both use against the same
-                # latest_forecast_batch() rows — BUG-64 was exactly this
-                # figure disagreeing across surfaces, so it's exposed
-                # here too rather than only implied by the widget's list.
                 "products_forecasted": len({f.product_id for f in forecasts}),
                 "replenishment_count": len(replenishment_needed),
                 "replenishment_products": replenishment_needed[:DASHBOARD_PREVIEW_ROWS],
             }
 
-        # ---- Charts (§3) ----
         chart_data = {
             "sales_purchases": {
                 "daily": _sales_purchases_series("day", 7),
@@ -639,18 +477,7 @@ class DashboardView(AnyStaffMixin, View):
 
 
 def _product_ids_with_history():
-    """Phase 8.99i — mirrors `_user_ids_with_history()`'s own reasoning
-    (Phase 8.99f-2) for Products: `Product` is referenced by `PROTECT` FKs
-    from `PurchaseOrderItem`/`SaleItem`/`InventoryMovement`/
-    `InventoryAdjustment` — a genuine hard-delete must refuse all of
-    those. `InventoryRecord.product` (a `OneToOneField`, also `PROTECT`)
-    is deliberately NOT included here: every product gets exactly one at
-    creation (`InventoryService.initialize_for_product()`) regardless of
-    whether it's ever actually used, so it's current-state bookkeeping,
-    not history — `ProductDeleteView` deletes it explicitly as part of a
-    genuinely safe delete, the one place this project ever removes an
-    `InventoryRecord`. `DemandForecast`/`InventoryClassification` are
-    `CASCADE` (disposable, AI-generated) and need no check at all."""
+    # Rule: InventoryRecord excluded -- current-state, not history.
     ids = set()
     ids |= set(PurchaseOrderItem.objects.values_list("product_id", flat=True))
     ids |= set(SaleItem.objects.values_list("product_id", flat=True))
@@ -660,30 +487,9 @@ def _product_ids_with_history():
 
 
 class ProductListCreateView(AnyStaffMixin, View):
-    """docs/03_PRODUCTS.md's product_list_view/product_create_view,
-    combined into one view against the one existing /products/ route (this
-    project has no separate products:list/products:create URL split, and
-    the Add Product modal already posts back to the same page). AnyStaffMixin
-    (frontend/mixins.py, Phase 4) mirrors 03_PRODUCTS.md's own
-    @staff_required on both — the doc guards read and write the same way,
-    so both are guarded here too, not just create.
-
-    GET renders the real product list (§2 of this phase); POST is the
-    Add Product modal's real endpoint, called via fetch() from
-    product-form.js's onSubmit (Phase 5.5 — modal-form.js now natively
-    supports a Promise-returning onSubmit, see that file's header)."""
 
     def get(self, request):
-        # PDF/Table Pagination pass (2026-08-25) — counts are now global,
-        # not filtered: an .aggregate() over the whole table, computed
-        # once, independent of whatever page/search/category/status the
-        # request also carries. Loading every product into Python just to
-        # count it would defeat the pagination below; see
-        # docs/project_memory.md for the "KPI cards show the whole
-        # business, not the current search" reasoning. Mirrors the same
-        # branching the per-row loop used to do (out_of_stock first, then
-        # low_stock, else in_stock — mutually exclusive by construction,
-        # so in_stock = total - the other two is exact, not an estimate).
+        # Perf: whole-table aggregate -- counts ignore the filter/pagination below.
         counts = Product.objects.aggregate(
             total=Count("id"),
             out_of_stock=Count("id", filter=Q(current_stock__lte=0)),
@@ -698,33 +504,14 @@ class ProductListCreateView(AnyStaffMixin, View):
 
         history_ids = _product_ids_with_history()
         for product in page.object_list:
-            # Phase 8.99i — same "compute once, reuse for both the row's
-            # own display and the delete endpoint's own enforcement" split
-            # as _user_ids_with_history() (Phase 8.99f-2).
             product.deletable = product.pk not in history_ids
-            # Mirrors product-form.js's old client-side deriveStatus() and
-            # InventoryRecord.update_status()'s thresholds — read from
-            # Product.current_stock/reorder_level (kept in sync by
-            # InventoryService, the only code path allowed to write them)
-            # rather than joining InventoryRecord, since legacy rows
-            # created before this phase (e.g. via /admin/) may have no
-            # InventoryRecord at all.
+            # Assumption: reads Product's own fields -- a legacy row may have none.
             if product.current_stock <= 0:
                 product.stock_label, product.stock_badge = "Out of stock", "badge-danger"
             elif product.reorder_level and product.current_stock <= product.reorder_level:
                 product.stock_label, product.stock_badge = "Low stock", "badge-warning"
             else:
                 product.stock_label, product.stock_badge = "In stock", "badge-success"
-            # Phase 8.99e — same "compute once server-side, read via a
-            # data-* attribute" pattern PurchaseOrder.receive_items_json
-            # already uses for the Receive modal: lets the Edit modal be
-            # pre-filled with zero extra network round-trips, reusing the
-            # existing embed-JSON-on-the-row mechanism rather than adding
-            # a new fetch helper.
-            # description/image dropped (form simplification pass,
-            # docs/bugsfound.md) — ProductForm no longer accepts either,
-            # so pre-filling them here would just feed fields the edit
-            # form can no longer submit back.
             product.edit_json = json.dumps({
                 "name": product.name, "sku": product.sku, "barcode": product.barcode or "",
                 "category": product.category_id, "supplier": product.supplier_id,
@@ -755,11 +542,7 @@ class ProductListCreateView(AnyStaffMixin, View):
         with transaction.atomic():
             product = form.save(commit=False)
             product.save()
-            # Phase 5.5 correction: creating a product means a catalog entry
-            # now exists, not that stock arrived — no InventoryMovement is
-            # written here. See InventoryService.initialize_for_product()'s
-            # docstring and docs/bugsfound.md's Phase 5.5 entry. Stock only
-            # moves for real once a Purchase Order is received.
+            # Rule: no InventoryMovement yet -- stock moves only once a PO is received.
             InventoryService.initialize_for_product(product)
             audit.log_action(
                 request.user, audit.PRODUCT_CREATED, "products",
@@ -770,48 +553,11 @@ class ProductListCreateView(AnyStaffMixin, View):
 
 
 class ProductUpdateView(AnyStaffMixin, View):
-    """Phase 8.99e — this project's first per-entity update route (see
-    docs/project_memory.md §13: no per-entity detail/update route existed
-    anywhere before this phase, by deliberate decision — every module had
-    list+create only). 02_RBAC.md: "Create/edit products" is ✅ for all 3
-    roles, same as create — `AnyStaffMixin`, not `SupervisorRequiredMixin`
-    (that gate is reserved for `ProductDeactivateView` below; 02_RBAC.md's
-    "Deactivate products" row is Admin/Supervisor only — a real asymmetry
-    between these two buttons in the same table row, not a copy-paste of
-    the same gate twice).
-
-    Reuses `ProductForm` completely unchanged via `instance=` — the exact
-    same server-side validation (unique SKU/barcode, non-negative prices,
-    active-only Category/Supplier, tax_rate, image type/size) applies to
-    an edit exactly as it does to a create, per this phase's own explicit
-    instruction not to fork the form. 03_PRODUCTS.md documents no
-    `product_update_view` reference code at all (only list/create/
-    deactivate) — this view's shape (reuse the create form via `instance=`,
-    log `PRODUCT_UPDATED`) follows `PurchaseOrderForm`/`SaleTransactionForm`
-    not needing a separate edit form either, and the doc's own Audit
-    Actions table, which does list `PRODUCT_UPDATED`.
-
-    SKU is read-only on edit (disclosed decision — no doc gives a reason
-    it should be changeable after creation, and it's an identifier a
-    product is referenced by across the app: POs, sales, reports, already-
-    issued PDFs). Enforced server-side, not just by disabling the input
-    client-side: the posted `sku` is always overwritten with the
-    instance's current value before `ProductForm` ever sees it. This also
-    sidesteps a real gotcha — `ProductForm.clean_sku()`'s "blank ->
-    auto-generate a new one" branch exists for *create*; if a disabled
-    client-side SKU input simply omitted the field (which browsers do),
-    an edit would silently issue the product a brand-new SKU on every
-    save without this override.
-
-    Does not touch `InventoryService`/the ledger beyond
-    `sync_reorder_level()` — editing a catalogue entry never moves stock
-    (the §13 rule BUG-34 established for create applies identically to
-    edit); reorder_level is a config value, not a stock quantity, so
-    syncing it to InventoryRecord writes no InventoryMovement row."""
 
     def post(self, request, pk):
         product = get_object_or_404(Product, pk=pk)
         data = request.POST.copy()
+        # Rule: sku is read-only on edit -- overwritten before the form sees it.
         data["sku"] = product.sku
         form = ProductForm(data, request.FILES, instance=product)
         if not form.is_valid():
@@ -829,17 +575,6 @@ class ProductUpdateView(AnyStaffMixin, View):
 
 
 class ProductDeactivateView(SupervisorRequiredMixin, View):
-    """02_RBAC.md: "Deactivate products" is Admin/Supervisor only — Staff
-    can edit a product (ProductUpdateView, AnyStaffMixin above) but not
-    deactivate one; two different gates on two buttons in the same row.
-    03_PRODUCTS.md: "Never hard-delete a product — use is_active = False"
-    — this is that soft-delete, matching its own `product_deactivate_view`
-    reference shape (pure status flip, no InventoryService/ledger
-    involvement — deactivating a catalogue entry doesn't move stock,
-    same reasoning as create/edit above). Idempotent, matching
-    `UserDeactivateView`'s own precedent: no special-cased error for
-    deactivating an already-inactive product, just re-confirms the flag
-    and logs it."""
 
     def post(self, request, pk):
         product = get_object_or_404(Product, pk=pk)
@@ -853,10 +588,6 @@ class ProductDeactivateView(SupervisorRequiredMixin, View):
 
 
 class ProductReactivateView(SupervisorRequiredMixin, View):
-    """Phase 8.99i — same gate as ProductDeactivateView (its own natural
-    counterpart); Products had no reactivate path at all before this
-    phase (Phase 8.99e scoped it out as optional). Idempotent, same
-    precedent as UserReactivateView/ProductDeactivateView above."""
 
     def post(self, request, pk):
         product = get_object_or_404(Product, pk=pk)
@@ -870,20 +601,6 @@ class ProductReactivateView(SupervisorRequiredMixin, View):
 
 
 class ProductDeleteView(SupervisorRequiredMixin, View):
-    """Phase 8.99i — true delete, mirroring UserDeleteView's own shape
-    (Phase 8.99f-2) exactly: only ever succeeds for a product referenced
-    by none of the 4 PROTECT FKs in _product_ids_with_history(). Every
-    other product — meaning any product actually used anywhere — can only
-    be deactivated (ProductDeactivateView); hard-deleting it would raise
-    ProtectedError. Same SupervisorRequiredMixin gate as Deactivate (its
-    own sibling action in the same row), not AnyStaffMixin.
-
-    Explicitly deletes the product's own InventoryRecord first — the one
-    PROTECT relation _product_ids_with_history() deliberately excludes,
-    since every product has exactly one regardless of use (current-state
-    bookkeeping, not history) and it would otherwise block this delete
-    even for a genuinely unused product. InventoryClassification/
-    DemandForecast are CASCADE and need no explicit handling."""
 
     def post(self, request, pk):
         product = get_object_or_404(Product, pk=pk)
@@ -894,6 +611,7 @@ class ProductDeleteView(SupervisorRequiredMixin, View):
             }, status=400)
         name = product.name
         with transaction.atomic():
+            # Rule: InventoryRecord deleted explicitly -- excluded from the check above.
             InventoryRecord.objects.filter(product=product).delete()
             product.delete()
         audit.log_action(
@@ -905,20 +623,9 @@ class ProductDeleteView(SupervisorRequiredMixin, View):
 
 
 class ProductExportView(AnyStaffMixin, View):
-    """Phase 8.98 (BUG-44) — Products' "Export" button was decorative.
-    Real CSV now, via `frontend/reports.py`'s shared `generate_csv_response()`
-    (the same CSV-writing utility every export in this app uses) rather
-    than a new export mechanism.
-
-    Pagination pass (2026-08-25) — the filter is server-side now
-    (`frontend.filters.filter_products()`, same function the list page
-    itself calls), so this export honors it for real: whatever's
-    filtered/searched on screen is exactly what exports, the same
-    guarantee Movement History's own export already gives. Not the
-    current *page* — an export of 10 rows would be worse than useless —
-    the whole matching set, same as before the filter existed."""
 
     def get(self, request):
+        # Rule: filter_products() -- whole matching set, never just the current page.
         products = filters.filter_products(
             request, Product.objects.select_related("category", "supplier").order_by("name")
         )
@@ -937,29 +644,16 @@ class ProductExportView(AnyStaffMixin, View):
         return report_lib.generate_csv_response(headers, rows, "products.csv")
 
 def _category_ids_with_products():
-    """Phase 8.99i — Category's only PROTECT reference is Product.category
-    (related_name='products'); a category is safe to hard-delete only if
-    it has zero products, ever."""
     return set(Product.objects.values_list("category_id", flat=True))
 
 
 def _supplier_ids_with_history():
-    """Phase 8.99i — Supplier is referenced by two PROTECT FKs:
-    Product.supplier and PurchaseOrder.supplier — safe to hard-delete
-    only if zero of both."""
     ids = set(Product.objects.values_list("supplier_id", flat=True))
     ids |= set(PurchaseOrder.objects.values_list("supplier_id", flat=True))
     return ids
 
 
 class CategoryListCreateView(AnyStaffMixin, View):
-    """Phase 6 — same shape as Phase 5's ProductListCreateView. GET
-    renders the real Category queryset (with each category's real product
-    count); POST creates via CategoryForm, called from category-form.js's
-    onSubmit using the Phase 5.5 fetch()/Promise contract directly (no
-    sync-XHR-in-extraValidate workaround needed this time — that
-    workaround only ever existed because modal-form.js didn't support
-    async onSubmit yet when Phase 5 shipped; it does now)."""
 
     def get(self, request):
         categories = list(Category.objects.order_by("name"))
@@ -967,9 +661,6 @@ class CategoryListCreateView(AnyStaffMixin, View):
         for category in categories:
             category.product_count = category.products.count()
             category.deletable = category.pk not in history_ids
-            # Phase 8.99i — same embed-JSON-on-the-row pattern
-            # ProductListCreateView.get() already uses for its own Edit
-            # modal pre-fill (Phase 8.99e) — no new mechanism.
             category.edit_json = json.dumps({
                 "name": category.name, "description": category.description,
             })
@@ -992,21 +683,6 @@ class CategoryListCreateView(AnyStaffMixin, View):
 
 
 class CategoryUpdateView(AnyStaffMixin, View):
-    """Phase 8.99i — mirrors ProductUpdateView's own shape: reuses
-    CategoryForm unchanged via instance=, same AnyStaffMixin gate as
-    create (02_RBAC.md draws no edit/deactivate distinction for
-    Categories, unlike Products — there's no documented rule requiring
-    one, so this stays a single gate for both, matching the doc rather
-    than inventing an asymmetry it doesn't call for).
-
-    Deliberately does NOT process CategoryForm's own `status` field on
-    edit, even though CategoryForm.Meta doesn't include is_active anyway
-    (status is a synthetic, non-model ChoiceField the create view
-    interprets manually) — is_active only ever changes through
-    CategoryDeactivateView/CategoryReactivateView below, the same "one
-    way to change active status" rule Products already established, kept
-    consistent here rather than giving Categories a second path to the
-    same flag."""
 
     def post(self, request, pk):
         category = get_object_or_404(Category, pk=pk)
@@ -1024,12 +700,6 @@ class CategoryUpdateView(AnyStaffMixin, View):
 
 
 class CategoryDeactivateView(SupervisorRequiredMixin, View):
-    """Phase 8.99i — same SupervisorRequiredMixin gate as
-    ProductDeactivateView/SupplierDeactivateView, for consistency across
-    all three modules (02_RBAC.md's "Deactivate products"/"Deactivate
-    suppliers" rows are both Admin/Supervisor only; Categories has no
-    documented rule of its own, so it follows its two siblings rather
-    than inventing a third gating rule)."""
 
     def post(self, request, pk):
         category = get_object_or_404(Category, pk=pk)
@@ -1056,9 +726,6 @@ class CategoryReactivateView(SupervisorRequiredMixin, View):
 
 
 class CategoryDeleteView(SupervisorRequiredMixin, View):
-    """Phase 8.99i — true delete, only for a category with zero products
-    ever assigned to it (_category_ids_with_products()). Everyone else
-    refuses cleanly, matching ProductDeleteView/UserDeleteView's shape."""
 
     def post(self, request, pk):
         category = get_object_or_404(Category, pk=pk)
@@ -1078,7 +745,6 @@ class CategoryDeleteView(SupervisorRequiredMixin, View):
 
 
 class SupplierListCreateView(AnyStaffMixin, View):
-    """Phase 6 — same shape as Phase 5's ProductListCreateView."""
 
     def get(self, request):
         suppliers = list(Supplier.objects.order_by("company_name"))
@@ -1113,11 +779,6 @@ class SupplierListCreateView(AnyStaffMixin, View):
 
 
 class SupplierUpdateView(AnyStaffMixin, View):
-    """Phase 8.99i — mirrors CategoryUpdateView exactly: reuses
-    SupplierForm via instance=, same AnyStaffMixin gate as create, and
-    deliberately doesn't touch is_active on edit (SupplierDeactivateView/
-    SupplierReactivateView own that, consistent with the other two
-    modules)."""
 
     def post(self, request, pk):
         supplier = get_object_or_404(Supplier, pk=pk)
@@ -1137,8 +798,6 @@ class SupplierUpdateView(AnyStaffMixin, View):
 
 
 class SupplierDeactivateView(SupervisorRequiredMixin, View):
-    """02_RBAC.md: "Deactivate suppliers" is Admin/Supervisor only —
-    same asymmetry as Products (Staff can edit, not deactivate)."""
 
     def post(self, request, pk):
         supplier = get_object_or_404(Supplier, pk=pk)
@@ -1165,8 +824,6 @@ class SupplierReactivateView(SupervisorRequiredMixin, View):
 
 
 class SupplierDeleteView(SupervisorRequiredMixin, View):
-    """Phase 8.99i — true delete, only for a supplier with zero products
-    AND zero purchase orders ever (_supplier_ids_with_history())."""
 
     def post(self, request, pk):
         supplier = get_object_or_404(Supplier, pk=pk)
@@ -1186,9 +843,6 @@ class SupplierDeleteView(SupervisorRequiredMixin, View):
 
 
 class SupplierExportView(AnyStaffMixin, View):
-    """Phase 8.98 (BUG-44) — same treatment as ProductExportView: real CSV
-    via the shared `generate_csv_response()`, full dataset (client-side
-    filter has no server-side equivalent yet)."""
 
     def get(self, request):
         suppliers = Supplier.objects.order_by("company_name")
@@ -1199,19 +853,9 @@ class SupplierExportView(AnyStaffMixin, View):
         ]
         return report_lib.generate_csv_response(headers, rows, "suppliers.csv")
 
-# ------------------------------------------------------------- Purchases
-# Phase 7 — docs/05_PURCHASES.md. PurchaseService (frontend/services.py,
-# Phase 3) is the ONLY code path allowed to touch stock here; every view
-# below either delegates to it or (PurchaseListCreateView.post(), PO
-# *creation*) stays out of stock entirely, per PurchaseService's own
-# docstring ("PO creation isn't part of this service"). Never call
-# InventoryMovement.save() on an existing row anywhere here — Phase 3.4
-# (BUG-20) made that raise PermissionError by design.
+# Rule: PurchaseService is the only code path allowed to touch stock here.
 
 class PurchaseListCreateView(AnyStaffMixin, View):
-    """GET lists the real PurchaseOrder queryset; POST creates a new PO
-    as DRAFT (matching the modal's own "Saved as a draft" copy) with its
-    line items via PurchaseOrderForm + parse_line_items()."""
 
     _STATUS_BADGE = {
         POStatus.DRAFT: "badge-indigo", POStatus.PENDING: "badge-warning",
@@ -1221,10 +865,7 @@ class PurchaseListCreateView(AnyStaffMixin, View):
     }
 
     def get(self, request):
-        # Pagination pass (2026-08-25) — global counts via .aggregate(),
-        # independent of the filtered/paginated queryset below (see
-        # ProductListCreateView's own note on why: loading every PO into
-        # Python just to count it would defeat the pagination).
+        # Perf: whole-table aggregate -- counts ignore the filter/pagination below.
         now = timezone.now()
         counts = PurchaseOrder.objects.aggregate(
             open=Count("id", filter=~Q(status__in=[POStatus.RECEIVED, POStatus.REJECTED, POStatus.CANCELLED])),
@@ -1246,14 +887,8 @@ class PurchaseListCreateView(AnyStaffMixin, View):
         for po in page.object_list:
             po.item_count = po.items.count()
             po.status_badge = self._STATUS_BADGE.get(po.status, "badge-indigo")
-            # Phase 8.99c — mirrors PurchaseService._CANCELLABLE_STATUSES
-            # exactly (narrowed from also including APPROVED/PARTIAL);
-            # hiding the button here is UX only, cancel() itself is the
-            # real enforcement (Phase 8.5 pattern).
+            # Rule: hiding the button here is UX only -- cancel() is the real gate.
             po.cancellable = po.status in (POStatus.DRAFT, POStatus.PENDING)
-            # Phase 12 — §8b: shown-but-disabled-with-reason, not hidden,
-            # when the current user can't act on this specific PO's
-            # resolved policy (SupervisorRequiredMixin is only the floor).
             if po.status == POStatus.PENDING:
                 _, po.required_level, _ = resolve_for_transaction(po)
                 po.can_approve, po.approve_denied_reason = can_approve(request.user, po)
@@ -1276,9 +911,7 @@ class PurchaseListCreateView(AnyStaffMixin, View):
             "counts": counts,
             "suppliers": Supplier.objects.filter(is_active=True).order_by("company_name"),
             "products": Product.objects.filter(is_active=True).order_by("name"),
-            # Phase 8.98b — Asia/Dhaka "today" (not the OS clock), server-
-            # computed so the Expected Delivery date input's real min=
-            # attribute agrees with PurchaseOrderForm's own validation.
+            # Assumption: Asia/Dhaka "today" -- matches PurchaseOrderForm's own check.
             "today": timezone.localdate(),
             "q": request.GET.get("q", ""),
             "status": request.GET.get("status", ""),
@@ -1300,11 +933,7 @@ class PurchaseListCreateView(AnyStaffMixin, View):
             po = form.save(commit=False)
             po.created_by = request.user
             po.save()
-            # PurchaseOrder.total_cost has no auto-compute anywhere in
-            # SCHEMA.md/PurchaseService (unlike PurchaseOrderItem.line_total,
-            # which computes itself in save()) — a pre-existing doc gap, not
-            # invented here; summing the items' own computed line_total is
-            # the obvious, disclosed way to fill it.
+            # Rule: total_cost has no auto-compute -- summed from each item's line_total.
             total_cost = 0
             for item in items:
                 po_item = PurchaseOrderItem.objects.create(
@@ -1323,12 +952,6 @@ class PurchaseListCreateView(AnyStaffMixin, View):
 
 
 class PurchaseSubmitView(AnyStaffMixin, View):
-    """No dedicated doc URL exists for this in this project's flat routing
-    style, but the state machine (05_PURCHASES.md) requires SOME way to
-    move DRAFT -> PENDING, and the mock's own Draft-row actions (Edit/
-    Delete only) had no path to do it — a real gap in the mock, not a
-    field mismatch, fixed by adding a real Submit action. Same role as
-    create (any staff), matching 05_PURCHASES.md's "who creates" rule."""
 
     def post(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
@@ -1339,11 +962,8 @@ class PurchaseSubmitView(AnyStaffMixin, View):
         return JsonResponse({"success": True})
 
 
+# Security: this mixin is a floor -- ApprovalPolicy can narrow it to Admin-only.
 class PurchaseApproveView(SupervisorRequiredMixin, View):
-    """05_PURCHASES.md: "Who approves | Supervisor or Admin only" — that's
-    still the floor (SupervisorRequiredMixin). Phase 12's ApprovalPolicy
-    engine, enforced inside PurchaseService.approve() itself, can narrow
-    it further to Admin-only for a specific PO's own resolved value."""
 
     def post(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
@@ -1373,9 +993,7 @@ class PurchaseRejectView(SupervisorRequiredMixin, View):
 
 
 class PurchaseReceiveView(AnyStaffMixin, View):
-    """05_PURCHASES.md's own purchase_receive_view uses @staff_required,
-    not @supervisor_required — receiving a shipment is an operational
-    task, not an approval decision. receive_json: [{item_id, received_qty}]."""
+    """receive_json: [{item_id, received_qty}, ...]."""
 
     def post(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
@@ -1408,9 +1026,6 @@ class PurchaseReceiveView(AnyStaffMixin, View):
 
 
 class PurchaseCancelView(SupervisorRequiredMixin, View):
-    """Phase 8.99c: cancel is now draft/pending-only (see §13, overriding
-    05_PURCHASES.md's original "any state -> CANCELLED") and requires a
-    reason — same ReasonForm PurchaseRejectView already uses."""
 
     def post(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
@@ -1427,29 +1042,15 @@ class PurchaseCancelView(SupervisorRequiredMixin, View):
 
 
 class PurchaseOrderPDFView(AnyStaffMixin, View):
-    """Phase 8.98d — a single PO's own PDF, not one of Reports' 9 whole-
-    report exports (frontend/reports.py's REPORT_BUILDERS/ReportExportView,
-    untouched by this phase). Same `AnyStaffMixin` gate as
-    PurchaseListCreateView.get() above, since this is just another way of
-    viewing a PO already on that page — no stricter/looser access than
-    seeing the record itself. Reuses reports.py's
-    generate_purchase_order_pdf(), which itself reuses generate_pdf_response()'s
-    own Table/TableStyle via the shared _styled_data_table() helper — no new
-    PDF mechanism."""
 
     def get(self, request, pk):
         po = get_object_or_404(PurchaseOrder, pk=pk)
         return report_lib.generate_purchase_order_pdf(po, generated_by=request.user.full_name)
 
 
-# ----------------------------------------------------------------- Sales
-# Phase 7 — docs/06_SALES.md. SaleService (Phase 3) is the ONLY code path
-# allowed to touch stock here.
+# Rule: SaleService is the only code path allowed to touch stock here.
 
 class SaleListCreateView(AnyStaffMixin, View):
-    """Phase 8.99b: GET lists the real SaleTransaction queryset; POST
-    creates a new sale as DRAFT (mirrors PurchaseListCreateView's own
-    "Saved as a draft" behavior exactly — see SaleService.create_sale())."""
 
     _STATUS_BADGE = {
         SaleStatus.DRAFT: "badge-indigo", SaleStatus.PENDING: "badge-warning",
@@ -1458,10 +1059,7 @@ class SaleListCreateView(AnyStaffMixin, View):
     }
 
     def get(self, request):
-        # Pagination pass (2026-08-25) — global counts via .aggregate(),
-        # same reasoning as ProductListCreateView's own note. Avg() over
-        # the exact same COMPLETED+cutoff filter as the old manual
-        # total/count division is the identical number, not an estimate.
+        # Perf: whole-table aggregate -- counts ignore the filter/pagination below.
         today = timezone.now().date()
         cutoff = today - timedelta(days=30)
         counts = SaleTransaction.objects.aggregate(
@@ -1483,8 +1081,6 @@ class SaleListCreateView(AnyStaffMixin, View):
             sale.item_count = sale.items.count()
             sale.status_badge = self._STATUS_BADGE.get(sale.status, "badge-indigo")
             sale.cancellable = sale.status in (SaleStatus.DRAFT, SaleStatus.PENDING)
-            # Phase 12 — §8b: same shown-but-disabled-with-reason pattern
-            # as Purchases/Adjustments, for ApprovalTxType.SALE_CANCEL.
             if sale.cancellable:
                 _, sale.required_level, _ = resolve_for_transaction(sale)
                 sale.can_cancel, sale.cancel_denied_reason = can_approve(request.user, sale)
@@ -1506,10 +1102,7 @@ class SaleListCreateView(AnyStaffMixin, View):
 
     def post(self, request):
         form = SaleTransactionForm(request.POST)
-        # Phase 8.99b: no stock check happens here anymore — creating a
-        # sale no longer touches InventoryService at all (draft, per
-        # SaleService.create_sale()'s own docstring). Availability is
-        # re-checked for real at approve_sale() time instead.
+        # Rule: no stock check here -- re-checked for real at approve_sale() time.
         items, item_errors = parse_line_items(request.POST.get("items_json"), min_quantity=1)
 
         if not form.is_valid() or item_errors:
@@ -1541,8 +1134,6 @@ class SaleListCreateView(AnyStaffMixin, View):
 
 
 class SaleSubmitView(AnyStaffMixin, View):
-    """Phase 8.99b — mirrors PurchaseSubmitView exactly: same role as
-    create (any staff), moves DRAFT -> PENDING."""
 
     def post(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
@@ -1554,10 +1145,6 @@ class SaleSubmitView(AnyStaffMixin, View):
 
 
 class SaleApproveView(SupervisorRequiredMixin, View):
-    """Phase 8.99b — mirrors PurchaseApproveView: Supervisor or Admin
-    only (the same confirmed hierarchy, Phase 7). No creator≠approver
-    restriction, deliberately matching how Purchases already works —
-    disclosed, not silent, see docs/project_memory.md §13."""
 
     def post(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
@@ -1573,7 +1160,6 @@ class SaleApproveView(SupervisorRequiredMixin, View):
 
 
 class SaleRejectView(SupervisorRequiredMixin, View):
-    """Phase 8.99b — mirrors PurchaseRejectView, same ReasonForm."""
 
     def post(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
@@ -1590,11 +1176,6 @@ class SaleRejectView(SupervisorRequiredMixin, View):
 
 
 class SaleCancelView(SupervisorRequiredMixin, View):
-    """06_SALES.md's own sale_cancel_view uses @supervisor_required.
-    Phase 8.99b: SaleService.cancel_sale() refuses anything past DRAFT/
-    PENDING — a completed sale can no longer reach this at all, server-
-    side, regardless of what the UI shows. Phase 8.99c: now requires a
-    reason — same ReasonForm SaleRejectView already uses."""
 
     def post(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
@@ -1611,15 +1192,9 @@ class SaleCancelView(SupervisorRequiredMixin, View):
 
 
 class SaleTransactionPDFView(AnyStaffMixin, View):
-    """Phase 8.98d — same treatment as PurchaseOrderPDFView above: a
-    single sale's own PDF, same `AnyStaffMixin` gate as
-    SaleListCreateView.get(), reuses reports.py's
-    generate_sale_transaction_pdf()."""
 
     def get(self, request, pk):
         sale = get_object_or_404(SaleTransaction, pk=pk)
-        # BUG-65 (docs/bugsfound.md) — SALE_INVOICE_PRINTED was defined
-        # but never fired anywhere; this is the one real trigger.
         audit.log_action(
             request.user, audit.SALE_INVOICE_PRINTED, "sales",
             affected_id=sale.pk, status="success", request=request,
@@ -1627,22 +1202,7 @@ class SaleTransactionPDFView(AnyStaffMixin, View):
         return report_lib.generate_sale_transaction_pdf(sale, generated_by=request.user.full_name)
 
 
-# ------------------------------------------------------------- Inventory
-# Phase 8.9 — docs/07_INVENTORY.md's inventory_list_view. GET-only, no
-# create/edit form anywhere: InventoryRecord rows only ever come into
-# existence via InventoryService.initialize_for_product() (Phase 5.5) and
-# only ever mutate via InventoryService.increase_stock()/decrease_stock()
-# (Phase 3), both called exclusively from Purchase/Sale/Adjustment's
-# service-layer methods — never from this view or any form. `status` is
-# read straight off InventoryRecord, not recomputed here: InventoryService
-# already calls record.update_status() and saves before any view ever
-# reads it, so re-deriving it in the view would just be a second,
-# potentially-drifting copy of the same logic. 07_INVENTORY.md's own
-# reference view uses `@staff_required`, which in this project's RBAC
-# (frontend/decorators.py) means "any authenticated role" (admin,
-# supervisor, and staff are all listed) — the same as AnyStaffMixin,
-# used here for consistency with every other real list view.
-
+# Rule: status is read straight off InventoryRecord, never recomputed here.
 _INVENTORY_STATUS_BADGE = {
     InventoryStatus.AVAILABLE: "badge-success",
     InventoryStatus.LOW_STOCK: "badge-warning",
@@ -1653,8 +1213,7 @@ _INVENTORY_STATUS_BADGE = {
 class InventoryListView(AnyStaffMixin, View):
 
     def get(self, request):
-        # Pagination pass (2026-08-25) — global counts via .aggregate(),
-        # same reasoning as ProductListCreateView's own note.
+        # Perf: whole-table aggregate -- counts ignore the filter/pagination below.
         counts = InventoryRecord.objects.aggregate(
             total_skus=Count("id"),
             total_value=Sum("total_value"),
@@ -1674,10 +1233,6 @@ class InventoryListView(AnyStaffMixin, View):
             latest_movement = record.product.movements.order_by("-created_at").first()
             record.last_movement_at = latest_movement.created_at if latest_movement else None
 
-        # BUG-65 (docs/bugsfound.md) — INVENTORY_VIEWED was defined in
-        # 13_AUDIT.md's constant list but never fired anywhere; this is
-        # that page. Same "view = auditable" precedent ReportsView's own
-        # REPORT_GENERATED calls already establish in this codebase.
         audit.log_action(request.user, audit.INVENTORY_VIEWED, "inventory", status="success", request=request)
 
         context = {
@@ -1692,37 +1247,12 @@ class InventoryListView(AnyStaffMixin, View):
 
 
 class MovementHistoryListView(AnyStaffMixin, View):
-    """Phase 8.98 — the "Movement history" button on Inventory used to do
-    nothing; this is the real page it now opens. `InventoryMovement` is
-    the immutable stock ledger (Phase 3, `save()`/`delete()` raise on any
-    mutation attempt per BUG-20) — nothing new is created here, this only
-    ever reads what already exists.
-
-    Phase 8.99d — every filter (date_from/date_to, product, movement_type,
-    and search) is now server-side, all applied via
-    `frontend/reports.py`'s `filter_movements()` — the exact same function
-    `MovementHistoryExportView` calls, so the CSV/PDF export can never
-    silently disagree with what's on screen again. Previously only date
-    range was server-side (via a *different* date comparison than the
-    export used — `created_at__date__gte` here vs. `build_movement_report()`'s
-    own `_date_bounds()`-based range — a latent mismatch this phase closed
-    by sharing one function) and search/type were client-side
-    (`table-filter.js`), which meant an export honored the date range but
-    silently ignored type, and could never reflect what was typed into
-    search at all. Real `Paginator`-backed pagination (page size 50) on
-    top, since the ledger is append-only and grows forever — narrowing
-    happens in the query, not by hiding rows client-side.
-
-    The `?product=<id>` deep-link from Inventory's per-row links now
-    lands in the same filter form as every other field (a real `<select>`,
-    pre-selected) rather than being a separate hidden-input-only
-    mechanism.
-    """
 
     PAGE_SIZE = 50
 
     def get(self, request):
         movements = InventoryMovement.objects.select_related("product", "performed_by").order_by("-created_at")
+        # Rule: filter_movements() is shared with the export -- can't disagree.
         movements = report_lib.filter_movements(request, base_qs=movements)
 
         date_from = request.GET.get("date_from", "")
@@ -1737,8 +1267,6 @@ class MovementHistoryListView(AnyStaffMixin, View):
         for movement in page.object_list:
             movement.reference_label = f"{movement.reference_type} #{movement.reference_id}"
 
-        # Preserves every filter param across pagination links and feeds
-        # both export buttons, so exporting honors exactly what's on screen.
         querystring = request.GET.copy()
         querystring.pop("page", None)
 
@@ -1753,10 +1281,7 @@ class MovementHistoryListView(AnyStaffMixin, View):
             "search": search,
             "filtered_product": Product.objects.filter(pk=product_id).first() if product_id else None,
             "products": Product.objects.order_by("name"),
-            # RETURN dropped (Phase 8.99d) — confirmed via grep that no
-            # code path anywhere ever creates a MovementType.RETURN
-            # movement; a filter value that can never match is left on
-            # the model (SCHEMA.md's) but no longer offered as a choice.
+            # Rule: RETURN excluded -- no code path ever creates that movement type.
             "movement_types": [c for c in MovementType.choices if c[0] != MovementType.RETURN],
             "export_querystring": querystring.urlencode(),
         }
@@ -1764,16 +1289,7 @@ class MovementHistoryListView(AnyStaffMixin, View):
 
 
 class MovementHistoryExportView(AnyStaffMixin, View):
-    """CSV/PDF export for Movement History — reuses `frontend/reports.py`'s
-    `build_movement_report()` (which itself now calls the shared
-    `filter_movements()`) and `generate_csv_response()`/
-    `generate_pdf_response()` verbatim, just gated with `AnyStaffMixin`
-    here instead of Reports' `SupervisorRequiredMixin`, matching this
-    page's own access level — not a new export mechanism, and no second
-    PDF library (Phase 8.99d, mirrors Phase 8.98d's per-record PDFs).
-    `?format=csv` (default, unchanged link) or `?format=pdf`; both take
-    the exact same querystring as the page, so what's exported is
-    precisely what was filtered."""
+    """`?format=csv` (default) or `?format=pdf`; same querystring as the page."""
 
     def get(self, request):
         title, headers, rows = report_lib.build_movement_report(request)
@@ -1803,11 +1319,7 @@ class MovementHistoryExportView(AnyStaffMixin, View):
         return report_lib.generate_csv_response(headers, rows, "movement_history.csv")
 
 
-# --------------------------------------------------------- Adjustments
-# Phase 7 — no dedicated doc (project_memory.md §12/§17); built from
-# SCHEMA.md's InventoryAdjustment + the existing adjustments.html mock,
-# mirroring Purchase/Adjustment's approve/reject shape. AdjustmentService
-# (Phase 3) is the ONLY code path allowed to touch stock here.
+# Rule: AdjustmentService is the only code path allowed to touch stock here.
 
 class AdjustmentListCreateView(AnyStaffMixin, View):
 
@@ -1825,10 +1337,6 @@ class AdjustmentListCreateView(AnyStaffMixin, View):
         cutoff = now - timedelta(days=30)
         for adjustment in adjustments:
             adjustment.status_badge = self._STATUS_BADGE.get(adjustment.status, "badge-indigo")
-            # Phase 12 — §8b: the approve control is shown-but-disabled
-            # with a reason when the current user isn't the one who can
-            # act on it, never hidden. Only meaningful for PENDING rows —
-            # everything else has no approve action to gate at all.
             if adjustment.status == AdjustmentStatus.PENDING:
                 _, adjustment.required_level, _ = resolve_for_transaction(adjustment)
                 adjustment.can_approve, adjustment.approve_denied_reason = can_approve(request.user, adjustment)
@@ -1849,7 +1357,6 @@ class AdjustmentListCreateView(AnyStaffMixin, View):
             "active_nav": "adjustments",
             "adjustments": adjustments,
             "counts": counts,
-            # Not filtered to is_active — see AdjustmentForm's docstring.
             "products": Product.objects.order_by("name"),
             "reason_codes": AdjustmentReason.choices,
         }
@@ -1860,27 +1367,17 @@ class AdjustmentListCreateView(AnyStaffMixin, View):
         if not form.is_valid():
             return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
 
-        # Phase 12 — AdjustmentService.create() now owns the whole
-        # request-time decision (AUTO posts immediately, SUPERVISOR/ADMIN
-        # saves PENDING and notifies the right audience) — moved out of
-        # this view so the service layer is the boundary that must hold
-        # regardless of caller, matching approve()'s own gate.
+        # Rule: AdjustmentService.create() decides AUTO-post vs PENDING-save.
         adjustment = form.save(commit=False)
         try:
             AdjustmentService.create(adjustment, request.user)
         except InsufficientStockError as e:
-            # Only reachable for an AUTO-outcome DECREASE adjustment
-            # against insufficient stock — a PENDING one never touches
-            # stock at creation time.
+            # Edge: only an AUTO-outcome DECREASE reaches this -- PENDING never does.
             return JsonResponse({"success": False, "error": str(e)}, status=400)
         return JsonResponse({"success": True})
 
 
 class AdjustmentApproveView(SupervisorRequiredMixin, View):
-    """SupervisorRequiredMixin is the floor (any supervisor/admin may
-    reach this URL) — AdjustmentService.approve()'s own can_approve()
-    call (Phase 12) is the finer-grained gate that can still refuse a
-    genuine supervisor when the resolved policy requires ADMIN."""
 
     def post(self, request, pk):
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
@@ -1910,65 +1407,18 @@ class AdjustmentRejectView(SupervisorRequiredMixin, View):
 
 
 class AdjustmentPDFView(AnyStaffMixin, View):
-    """Phase 13 — new: no per-adjustment PDF existed before this (only
-    the whole-Adjustments report table did). Same treatment as
-    PurchaseOrderPDFView/SaleTransactionPDFView above: AnyStaffMixin,
-    since this is just another way of viewing a record already visible
-    on the Adjustments list page, not a stricter/looser access level."""
 
     def get(self, request, pk):
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
         return report_lib.generate_adjustment_pdf(adjustment, generated_by=request.user.full_name)
 
-# Phase 8.99j — closes BUG-43: both views had zero auth requirement at
-# all (reachable by anyone, logged in or not), found in Phase 8.97's
-# audit and deliberately left unfixed for its own scoped phase. BUG-43's
-# own text suggested AnyStaffMixin (matching BUG-42's fix on the
-# Dashboard) — this phase's actual, more specific requirement ("staff
-# can't see the AI models") is narrower, so SupervisorRequiredMixin is
-# used instead, a disclosed deviation from BUG-43's own suggestion, not
-# an oversight. Converted from bare function views to CBVs to match this
-# app's dominant convention (every other real, RBAC-gated view in this
-# file is a class with a mixin, not a decorated function).
 
 class DemandForecastingView(SupervisorRequiredMixin, View):
-    """Phase 11 — real DemandForecast data (was a static TREND_DATA/table
-    mock). SupervisorRequiredMixin is unchanged from Phase 8.99j/BUG-43 —
-    not re-added, not modified; both GET and POST inherit the same gate.
-
-    DemandForecast rows accumulate real history by design (REQ 9.9 needs
-    past forecasts kept around to compare against actual_demand once
-    backfilled) — run_full_forecast() never deletes old rows, matching
-    the doc's own reference code (a plain .create(), no update_or_create;
-    unlike InventoryClassification, DemandForecast has no OneToOneField
-    forcing one-row-per-product). Repeated "Run forecast now" clicks are
-    therefore expected to accumulate rows over time — this view's own GET
-    query keeps the *display* sane, in two layers. First,
-    frontend.forecasting.latest_forecast_batch() dedupes by (product,
-    period, period_start), keyed off created_at — one row per period
-    ever forecast, not changing what gets written (extracted so the
-    Dashboard's AI Insights widget, REQ 11.9, shares the exact same
-    definition of "current forecast" rather than risking a second,
-    divergent one). Second, BUG-89 (docs/bugsfound.md) —
-    latest_forecast_batch()'s own pool still spans every period ever
-    forecast across every run, which is correct for REQ 9.9 but not the
-    same question as "what should a user see right now"; the trend
-    chart and the table's per-product row both go through
-    frontend.forecasting.current_forecast_window() on top of that,
-    which further restricts to period_start >= today — the shared
-    answer to "what's current," so a stale accumulated period can't
-    silently win just for being chronologically first."""
 
     _PERIOD_LABEL = {ForecastPeriod.WEEKLY: 'weekly', ForecastPeriod.MONTHLY: 'monthly'}
 
     def _build_chart_data(self, period_choice):
-        # BUG-89 (docs/bugsfound.md) — used to bucket every period
-        # latest_forecast_batch() had ever returned (every run, ever) and
-        # take sorted(keys)[:4], which is the 4 OLDEST periods on record,
-        # not the 4 soonest upcoming ones. current_forecast_window()
-        # already restricts to period_start >= today and caps at 4
-        # distinct periods, so this just buckets whatever it returns —
-        # no further sorting/slicing needed here.
+        # Rule: current_forecast_window() already caps at 4 upcoming periods.
         window = current_forecast_window(period_choice, horizon=4)
         buckets = {}
         for f in window:
@@ -1986,19 +1436,7 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
         _, last_run = latest_forecast_batch()
         stock_by_product = dict(InventoryRecord.objects.values_list('product_id', 'current_stock'))
 
-        # One table row per (product, period-type): the soonest upcoming
-        # forecast only — matches the page's own shape (a row is "this
-        # product's next weekly/monthly forecast", not every future
-        # step). BUG-89 — used to take the chronological MINIMUM
-        # period_start across latest_forecast_batch()'s full accumulated
-        # history, which is always whatever was forecast furthest in the
-        # past, not the closest upcoming period. current_forecast_window()
-        # (horizon=None: the table needs every future period available,
-        # not just the chart's fixed 4 bars) pre-filters to period_start
-        # >= today, so the same "keep the smaller one" comparison below
-        # now finds the soonest *upcoming* period instead — a product
-        # with no current-or-future forecast simply gets no row, rather
-        # than a stale one.
+        # Rule: one row per (product, period-type) -- the soonest upcoming only.
         upcoming = (
             current_forecast_window(ForecastPeriod.WEEKLY, horizon=None)
             + current_forecast_window(ForecastPeriod.MONTHLY, horizon=None)
@@ -2049,14 +1487,7 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
         return render(request, "intelligence/forecasting.html", context)
 
     def post(self, request):
-        """Manual "Run forecast now" — synchronous (no Celery). Backfills
-        elapsed forecasts first, then retrains both period models with
-        the latest data and generates fresh forecasts for every active
-        product. The doc's slow/dead-equivalent here is notify_supervisors
-        for 'ai_replenish' — documented as living inside the same un-built
-        Celery task; fired from this view instead, per replenish_alerts
-        run_full_forecast() returns (that function stays notify-free,
-        matching frontend/classification.py's run_full_classification())."""
+        # Assumption: runs synchronously -- blocks for a full retrain-and-forecast.
         backfilled = backfill_actual_demand()
         audit.log_action(
             request.user, audit.AI_ACTUAL_DEMAND_BACKFILLED, "ai_forecasting",
@@ -2101,30 +1532,19 @@ class DemandForecastingView(SupervisorRequiredMixin, View):
 
 
 class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
-    """Phase 10 — real InventoryClassification data (was a static mock
-    table). SupervisorRequiredMixin is unchanged from Phase 8.99j/BUG-43 —
-    not re-added, not modified; both GET and POST inherit the same gate
-    from the class, so the manual "Run classification now" action is
-    guarded identically to the page itself."""
 
     _BADGE = {
         StockClassification.FAST: "badge-success",
         StockClassification.SLOW: "badge-warning",
         StockClassification.DEAD: "badge-danger",
-        # Prompt 2 (2026-08-24) — deliberately not badge-indigo (the
-        # generic/AI-accent fallback): insufficient_data isn't a problem
-        # state, so it gets its own neutral/muted badge, not one that
-        # reads as "some other kind of alert."
+        # Rule: insufficient_data gets its own neutral badge -- not a problem state.
         StockClassification.INSUFFICIENT_DATA: "badge-neutral",
     }
 
     def get(self, request):
         settings_obj = SystemSettings.get_settings()
 
-        # Pagination pass (2026-08-25) — global counts via .aggregate(),
-        # same reasoning as ProductListCreateView's own note: independent
-        # of whatever search/category/classification the request also
-        # carries.
+        # Perf: whole-table aggregate -- counts ignore the filter/pagination below.
         counts_agg = InventoryClassification.objects.aggregate(
             fast=Count("id", filter=Q(classification=StockClassification.FAST)),
             slow=Count("id", filter=Q(classification=StockClassification.SLOW)),
@@ -2138,13 +1558,7 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
             StockClassification.INSUFFICIENT_DATA: counts_agg["insufficient_data"],
         }
 
-        # dead_watch/slow_watch stay Python-side (not worth a DB NULLS
-        # LAST for a ~44-row table): Prompt 2 — days_since_last_sale is
-        # genuinely nullable (a Force-DEAD override on a product that's
-        # never sold at all still classifies DEAD with no real number to
-        # rank by) — `-(days or 0)` ranks a None the same as a real 0
-        # would: last, not first. INSUFFICIENT_DATA is excluded from both
-        # lists — not a problem state to flag.
+        # Assumption: a None days_since_last_sale ranks as 0 -- last, never first.
         dead_and_slow = list(
             InventoryClassification.objects.filter(classification__in=[StockClassification.DEAD, StockClassification.SLOW])
             .select_related("product")
@@ -2160,14 +1574,7 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
         for c in slow_watch:
             c.days_to_dead = max(settings_obj.dead_stock_threshold_days - (c.days_since_last_sale or 0), 0)
 
-        # BUG-90 (docs/bugsfound.md) — the AI Insight block used to show
-        # static methodology text (how the classifier works) instead of
-        # what it found. Real insight data instead, reusing what's
-        # already fetched above (dead_and_slow) plus two cheap additions:
-        # capital_at_risk() (frontend/classification.py, shared with the
-        # classification report's own PDF/CSV export, not a second
-        # definition) summed over DEAD rows only, and a single
-        # Max(classified_at) so a user knows how current the run is.
+        # Rule: capital_at_risk() -- shared with the classification report's export.
         stock_by_product = dict(InventoryRecord.objects.values_list("product_id", "current_stock"))
         dead_value_at_risk = sum(
             (capital_at_risk(c, stock_by_product) or 0)
@@ -2222,12 +1629,7 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
         return render(request, "intelligence/slow_moving.html", context)
 
     def post(self, request):
-        """Manual "Run classification now" — synchronous (no Celery, see
-        docs/project_memory.md §13). The doc hosts the slow/dead
-        supervisor notification inside a Celery task this project isn't
-        building; fired here instead, from the one real trigger that
-        exists, so the REQ-covered behavior isn't lost to an un-built
-        host."""
+        # Assumption: runs synchronously -- blocks for a full classification run.
         try:
             results = run_full_classification()
         except Exception as e:
@@ -2259,38 +1661,8 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
 
         return JsonResponse({"success": True, "results": results})
 
-# ------------------------------------------------------------------ Reports
-# Phase 8 — docs/10_REPORTS.md: "All report access is Supervisor+ only and
-# must be audit-logged." SupervisorRequiredMixin (Phase 7, confirmed there
-# to mean Admin-or-Supervisor via the RBAC hierarchy, not an exact-role
-# match) is the same mixin that guards Purchase/Adjustment approve/reject.
-# frontend/reports.py holds the 9 report builders + PDF/CSV generators —
-# kept out of this file the same way frontend/audit.py and
-# frontend/notifications.py already are.
-
 class ReportsView(SupervisorRequiredMixin, View):
-    """GET renders the reports page itself: 9 report cards, each a
-    direct PDF/CSV link to ReportExportView, identical in structure —
-    no per-card HTML preview, no per-card filter UI.
-
-    BUG-92 (docs/bugsfound.md) — this view used to also build the Sales
-    and Low Stock preview panels' data unconditionally on every GET
-    (aggregates the panels no longer exist to show) and log a
-    REPORT_GENERATED audit entry for each, unconditionally, on every
-    page load. That was false data, not just wasted work: nobody
-    "generated" a report by merely opening this page, and the query
-    work was pure waste once nothing on the page reads it. Removed
-    along with the panels themselves — REPORT_GENERATED is now
-    permanently unreachable (only ever fired from here); see
-    docs/10_REPORTS.md and docs/bugsfound.md for the disclosure.
-
-    Sales and Low Stock briefly (2026-09-12) also carried their own
-    date/category filter inputs, which needed this view to pass
-    `categories` into the template. Removed the same day — visually
-    wider/taller than the other 7 cards — so `categories` is gone too;
-    date_from/date_to/category still work, honoured server-side by
-    build_sales_report()/build_low_stock_report() (frontend/reports.py)
-    for a direct URL request, just not exposed as UI here anymore."""
+    """9 report cards, each a direct PDF/CSV link to ReportExportView."""
 
     def get(self, request):
         context = {"active_nav": "reports"}
@@ -2298,9 +1670,7 @@ class ReportsView(SupervisorRequiredMixin, View):
 
 
 class ReportExportView(SupervisorRequiredMixin, View):
-    """GET .../reports/export/<report_type>/?format=pdf|csv — a plain GET
-    download link, not a fetch()-based endpoint (10_REPORTS.md's own
-    format param is a query string on a GET, not a POST body)."""
+    """GET .../reports/export/<report_type>/?format=pdf|csv"""
 
     def get(self, request, report_type):
         builder = report_lib.REPORT_BUILDERS.get(report_type)
@@ -2310,11 +1680,7 @@ class ReportExportView(SupervisorRequiredMixin, View):
         export_format = request.GET.get("format")
         filename_base = report_type.replace("-", "_")
 
-        # Phase 13 Task 4 — the Sales Report's PDF is now the same
-        # aggregate/summary shape its on-page panel shows, not
-        # build_sales_report()'s per-transaction rows; CSV is untouched
-        # (still the detailed export), so this only short-circuits the
-        # pdf branch, before build_sales_report() ever runs.
+        # Rule: sales PDF is the aggregate summary shape; CSV keeps detailed rows.
         if report_type == "sales" and export_format == "pdf":
             audit.log_action(request.user, audit.REPORT_EXPORTED_PDF, "reports", status="success",
                               details={"report": report_type}, request=request)
@@ -2335,21 +1701,8 @@ class ReportExportView(SupervisorRequiredMixin, View):
 
         return JsonResponse({"success": False, "error": "format must be 'pdf' or 'csv'."}, status=400)
 
-# --------------------------------------------------------- Notifications
-# Phase 8 — docs/11_NOTIFICATIONS.md's list/mark-read/mark-all-read/
-# unread-count views. notify_user()/notify_supervisors() (Phase 3.5,
-# frontend/notifications.py) already write the Notification rows this
-# phase only ever reads/updates is_read on — never creates one directly,
-# matching that module's own "Never create Notification objects directly
-# in other modules" rule. Any authenticated user sees their own
-# notifications (no role gate — 11_NOTIFICATIONS.md's views use
-# @login_required only, not a role-restricted decorator).
+# Security: recipient=request.user row-filtering is the real gate below.
 
-# icon id + inline tint style per NotificationType, matching the exact
-# icon/color choices the Phase 3.6 mock already used per notification
-# type (see notifications.html's original mock rows) — kept as a style
-# string (not new CSS classes) since every value here already exists as
-# a design-token CSS var, just applied inline like the mock did.
 _NOTIF_ICON = {
     NotificationType.LOW_STOCK: ("icon-alert-triangle", "background:var(--c-warning-tint); color:#9C6B12;"),
     NotificationType.OUT_OF_STOCK: ("icon-alert-circle", "background:var(--c-danger-tint); color:var(--c-danger);"),
@@ -2368,12 +1721,6 @@ _NOTIF_ICON_DEFAULT = ("icon-bell", "background:var(--c-slate-100); color:var(--
 
 
 class NotificationListView(LoginRequiredMixin, View):
-    """BUG-86 (docs/bugsfound.md) — used to hard-cap at [:100] with no
-    pagination, and derived unread_count from that same capped slice
-    (silently undercounting once a user passed 100 notifications with an
-    unread one beyond the cut). Now paginates the full ordered queryset
-    and computes unread_count as its own global count, the same query
-    NotificationUnreadCountView (navbar bell badge) already uses."""
 
     def get(self, request):
         qs = Notification.objects.filter(recipient=request.user).order_by("-created_at")
@@ -2412,34 +1759,11 @@ class NotificationUnreadCountView(LoginRequiredMixin, View):
         count = Notification.objects.filter(recipient=request.user, is_read=False).count()
         return JsonResponse({"unread_count": count})
 
-# ------------------------------------------------------------- Users & Roles
-# Phase 8 — no dedicated doc (project_memory.md §12/§17); built from
-# SCHEMA.md's User model + API_CONTRACTS.md's User Management Endpoints
-# table (list/create/deactivate/reactivate, all Admin-only) plus the
-# existing users.html mock. See UserForm's own docstring (frontend/forms.py)
-# for the one disclosed field-list deviation: a required password field,
-# which the mock explicitly didn't have.
-
 _ROLE_BADGE = {UserRole.ADMIN: "badge-indigo", UserRole.SUPERVISOR: "badge-warning", UserRole.STAFF: "badge-success"}
 
 
 def _user_ids_with_history():
-    """Phase 8.99f-2 — every User FK in this project is either PROTECT
-    (PurchaseOrder.created_by/approved_by/cancelled_by, SaleTransaction.
-    created_by/approved_by/cancelled_by, InventoryMovement.performed_by,
-    InventoryAdjustment.requested_by/approved_by) or SET_NULL
-    (AuditLog.user) — never CASCADE except Notification.recipient (a
-    user's own in-app notifications, harmless to lose). Hard-deleting a
-    user referenced by any PROTECT FK raises ProtectedError (a 500, not a
-    clean refusal); hard-deleting one referenced only via AuditLog.user
-    would silently null out who performed real, audited actions. Neither
-    is acceptable, so UserDeleteView only ever allows deleting a user
-    who appears in none of these — one shared computation (10 queries,
-    each a cheap `.values_list(...flat=True)`), used both to decide which
-    rows get a real "Delete" pill (UserListCreateView.get()) and to
-    enforce the same rule server-side (UserDeleteView) — one source of
-    truth, not two, matching this phase's own "server check is the real
-    gate, hiding is UX" convention (Phase 8.5)."""
+    # Rule: AuditLog.user (SET_NULL) counts too -- would orphan an audited action.
     ids = set()
     ids |= set(PurchaseOrder.objects.values_list("created_by_id", flat=True))
     ids |= set(PurchaseOrder.objects.exclude(approved_by=None).values_list("approved_by_id", flat=True))
@@ -2455,23 +1779,8 @@ def _user_ids_with_history():
 
 
 def _credentials_email_feedback(user, password, is_resend=False):
-    """The 3-way outcome `UserListCreateView.post()` built up across
-    Phase 8.99f-3/f-4/f-5 — factored out (Phase 8.99f-7) so
-    `UserResendCredentialsView` doesn't duplicate it (§18: consolidate
-    duplicate logic before adding new code). Why 3 outcomes, not 2:
-    `send_new_user_credentials_email()` fails open (catches its own
-    exception, returns False) rather than raising, so a genuine failure
-    (f-3) is surfaced as `warning`, never a silent identical success. But
-    `email_sent=True` alone still isn't "a real email reached this
-    address" (f-5) — Django's console backend never raises either, it
-    "sends" by printing to whichever terminal runs the process, so a
-    console-backend send and a real SMTP send used to produce the exact
-    "credentials emailed to X" text either way. `message` is now split:
-    a real send says so plainly, a console send says so plainly too,
-    distinct from both. Returns a dict with exactly one of
-    `message`/`warning`, meant to be merged into the caller's own
-    {"success": True} response."""
     email_sent = send_new_user_credentials_email(user, password)
+    # Rule: console backend "sends" by printing -- not a real delivery.
     console_dev_mode = email_sent and django_settings.EMAIL_BACKEND.endswith("console.EmailBackend")
 
     if console_dev_mode:
@@ -2509,12 +1818,7 @@ class UserListCreateView(AdminRequiredMixin, View):
         for user in users:
             user.role_badge = _ROLE_BADGE.get(user.role, "badge-indigo")
             user.deletable = user.pk not in history_ids and user.pk != request.user.pk
-            # Phase 8.99f-7 — "Resend credentials" is offered for anyone
-            # who has never successfully logged in yet (a real signal,
-            # last_login is Django's own field, not a new one): if the
-            # original credentials email genuinely reached them, they'd
-            # have used it by now. Disappears naturally on their first
-            # real login, no separate "did the email fail" flag needed.
+            # Rule: resendable until the user's first real login -- no separate flag.
             user.resendable = user.is_active and user.last_login is None
             counts["total"] += 1
             counts[user.role] += 1
@@ -2522,29 +1826,11 @@ class UserListCreateView(AdminRequiredMixin, View):
         return render(request, "users/users.html", context)
 
     def post(self, request):
-        """Phase 8.98e: the Admin no longer supplies a password at all —
-        UserForm has none (see its own docstring). A strong random one is
-        generated here, set directly via set_password(), and never placed
-        anywhere this view's own response, the audit log, or a
-        Notification row could surface it back to the Admin — `details=`
-        below deliberately carries no password field, matching every
-        other audit.log_action() call in this view.
-
-        The account is still created even if the credentials email fails
-        to send (Phase 8.99f-3) — deliberately, not an oversight: rolling
-        it back would throw away real, valid admin work (username/
-        employee_id/role already chosen and validated) over what's
-        usually a transient delivery problem, and there's now a real
-        recovery path (`UserResendCredentialsView`, Phase 8.99f-7) for
-        exactly this case. What the response says about the send itself —
-        real delivery / console dev-mode / genuine failure — is
-        `_credentials_email_feedback()`'s own job (above); see that
-        function's docstring for the full Phase 8.99f-3/f-4/f-5 history
-        of why those 3 distinct outcomes exist."""
         form = UserForm(request.POST)
         if not form.is_valid():
             return JsonResponse({"success": False, "errors": form.errors.get_json_data()}, status=400)
 
+        # Security: a strong random password -- never returned, logged, or notified.
         password = generate_strong_password()
         user = form.save(commit=False)
         user.set_password(password)
@@ -2554,21 +1840,12 @@ class UserListCreateView(AdminRequiredMixin, View):
             affected_id=user.pk, status="success", request=request,
         )
         response = {"success": True}
+        # Rule: created even if the credentials email fails -- recoverable via resend.
         response.update(_credentials_email_feedback(user, password))
         return JsonResponse(response)
 
 
 class UserResendCredentialsView(AdminRequiredMixin, View):
-    """Phase 8.99f-7 — the missing piece that makes real SMTP delivery
-    operationally safe: without this, one transient send failure (or a
-    user who genuinely never saw the original email) means an account
-    that can never be accessed, since the Admin never sees the password
-    either. Generates a fresh strong password via the exact same
-    generate_strong_password() UserListCreateView.post() uses (the Admin
-    still never sees it), sets it, and re-sends through the exact same
-    send_new_user_credentials_email() — no new password-generation or
-    email-sending mechanism. Logs `USER_CREDENTIALS_RESENT` with no
-    password in `details=`, same discipline as USER_CREATED."""
 
     def post(self, request, pk):
         target = get_object_or_404(User, pk=pk)
@@ -2585,12 +1862,10 @@ class UserResendCredentialsView(AdminRequiredMixin, View):
 
 
 class UserDeactivateView(AdminRequiredMixin, View):
-    """API_CONTRACTS.md: `PATCH /api/v1/users/{id}/deactivate/`, Admin
-    only — POST here to match every other action endpoint in this project
-    (approve/reject/cancel are all POST, not PATCH; see Phase 7)."""
 
     def post(self, request, pk):
         target = get_object_or_404(User, pk=pk)
+        # Rule: an admin cannot deactivate or delete their own account.
         if target.pk == request.user.pk:
             return JsonResponse({"success": False, "error": "You cannot deactivate your own account."}, status=400)
         target.is_active = False
@@ -2616,13 +1891,6 @@ class UserReactivateView(AdminRequiredMixin, View):
 
 
 class UserDeleteView(AdminRequiredMixin, View):
-    """Phase 8.99f-2 — true delete, deliberately narrow: only a user with
-    zero referential history anywhere (_user_ids_with_history(), above)
-    can ever be hard-deleted. Every other user — meaning anyone who has
-    actually done anything in the system — can only be deactivated
-    (UserDeactivateView): hard-deleting them would either raise
-    ProtectedError (a 500) or silently null their identity off real
-    audit rows. Same self-action guard as deactivate."""
 
     def post(self, request, pk):
         target = get_object_or_404(User, pk=pk)
@@ -2635,10 +1903,7 @@ class UserDeleteView(AdminRequiredMixin, View):
             }, status=400)
         username = target.username
         target.delete()
-        # affected_id below points at an id that no longer exists (this
-        # is the one User action where that's unavoidable — every other
-        # audited user action leaves the row in place) — details= carries
-        # the username so the log entry still means something on its own.
+        # Assumption: affected_id is now a deleted row -- username kept in details=.
         audit.log_action(
             request.user, audit.USER_DELETED, "users",
             affected_id=pk, status="success", request=request,
@@ -2646,17 +1911,7 @@ class UserDeleteView(AdminRequiredMixin, View):
         )
         return JsonResponse({"success": True})
 
-# ------------------------------------------------------------- Audit Log
-# Phase 8 — docs/13_AUDIT.md: "Only System Administrator can view the full
-# audit log" and "read-only — no update, no delete (enforced in model)".
-# AuditLog.save()/delete() already raise PermissionError on any attempt to
-# mutate an existing row (Phase 1) — this view only ever reads.
-
 def _format_audit_details(details):
-    """AI_CLASSIFIER_WEIGHTS_CHANGED/SETTINGS_UPDATED (frontend/audit.py)
-    now log a field-level {"field": {"old": ..., "new": ...}} diff instead
-    of an empty details={} — this is the only place that payload becomes
-    readable rather than raw JSON a reader has to mentally parse."""
     if not details:
         return None
     parts = []
@@ -2669,16 +1924,6 @@ def _format_audit_details(details):
 
 
 class AuditLogListView(AdminRequiredMixin, View):
-    """Pagination pass (2026-08-25), BUG-85 (docs/bugsfound.md) — this
-    view used to hard-cap at `[:500]`: rows 501+ of a real, currently
-    6000+-row and growing ledger were neither visible NOR reachable by
-    the (client-side, only-searches-what's-in-the-DOM) search box —
-    silently, with no indication to the user that the log they were
-    looking at wasn't the whole log. REQ 16.10 is append-only
-    *completeness*; a cap that quietly drops most of the table is the
-    opposite of that. Real Paginator now, no cap: filter first
-    (frontend.filters.filter_audit_log(), server-side, searches every
-    matching row not just the current page's 10), then paginate."""
 
     def get(self, request):
         qs = filters.filter_audit_log(request, AuditLog.objects.select_related("user").order_by("-timestamp"))
@@ -2701,17 +1946,8 @@ class AuditLogListView(AdminRequiredMixin, View):
         return render(request, "audit/audit_log.html", context)
 
 
+# Rule: filter_audit_log() -- full matching set, never just the current page.
 class AuditLogExportView(AdminRequiredMixin, View):
-    """Phase 8.98 (BUG-44) — same `AdminRequiredMixin` as AuditLogListView
-    itself, per 13_AUDIT.md's "Admin only" rule — the export must never be
-    a way around that gate. Reuses the shared `generate_csv_response()`.
-
-    Pagination pass (2026-08-25) — filter-aware now
-    (`frontend.filters.filter_audit_log()`, the same function the list
-    page calls), matching the page's own BUG-85 fix: this always exported
-    the *full*, uncapped log (unaffected by the page's old [:500]), and
-    still exports the full *matching* set now that a filter exists to
-    match against — never just the current page."""
 
     def get(self, request):
         logs = filters.filter_audit_log(request, AuditLog.objects.select_related("user").order_by("-timestamp"))
@@ -2726,22 +1962,7 @@ class AuditLogExportView(AdminRequiredMixin, View):
         ]
         return report_lib.generate_csv_response(headers, rows, "audit_log.csv")
 
-# --------------------------------------------------------------- Settings
-# Phase 8 — SystemSettings (SCHEMA.md §13) is a documented singleton,
-# already enforced at the model level (SystemSettings.save() forces
-# pk=1 — Phase 3.4, BUG-21). This is the one and only place that form is
-# ever rendered/saved from.
 
-# REQ 17.10 (docs/13_AUDIT.md) follow-up, alongside AI_CLASSIFIER_WEIGHTS_CHANGED
-# above — SETTINGS_UPDATED used to fire with no details= payload at all, so an
-# admin could see *that* something changed but never *what*. _settings_snapshot()
-# is taken before and after form.save() (before is captured pre-bind: a
-# ModelForm's own is_valid()/full_clean() already mutates form.instance —
-# the same settings_obj — to the new values, so "before" must be read first)
-# and diffed field-by-field, same shape as _policy_snapshot()/_POLICY_AUDIT_FIELDS
-# below for ApprovalPolicy. AI_CLASSIFIER_WEIGHTS_CHANGED reuses this diff,
-# filtered to just the classifier-parameter subset, rather than computing its
-# own separate snapshot.
 _SETTINGS_AUDIT_FIELDS = SystemSettingsForm.Meta.fields
 _CLASSIFIER_AUDIT_FIELDS = [
     "weight_recency", "weight_turnover", "weight_coverage", "weight_frequency",
@@ -2763,6 +1984,7 @@ class SettingsView(AdminRequiredMixin, View):
 
     def post(self, request):
         settings_obj = SystemSettings.get_settings()
+        # Assumption: read before is_valid() -- full_clean() mutates form.instance.
         before = _settings_snapshot(settings_obj)
 
         form = SystemSettingsForm(request.POST, request.FILES, instance=settings_obj)
@@ -2786,21 +2008,6 @@ class SettingsView(AdminRequiredMixin, View):
         return JsonResponse({"success": True})
 
 
-# ------------------------------------------------- Approval Policy (Phase 12)
-# §8a — admin-only: the admin defines which transactions a supervisor is
-# permitted to approve, and a supervisor must never even reach the page
-# where that boundary is set (§2's own framing) — AdminRequiredMixin
-# throughout, same gate as Settings/Users/Audit Log.
-#
-# Phase 12.2 — simplified back down to "list the policies that exist,
-# let an admin add one": the rule simulator, the unreachable-rule
-# warning, the cumulative-usage panel, and ABC as a display/matching
-# concept are all removed from this screen (ApprovalPolicySimulateView
-# deleted outright). cumulative_window_days/cumulative_value_cap and
-# their enforcement in frontend.approvals are untouched — only the
-# analysis-oriented UI around them is gone; the condition column still
-# shows the cap when one is set.
-
 _POLICY_AUDIT_FIELDS = [
     "name", "transaction_type", "reason_code", "min_value",
     "max_value", "max_variance_pct", "required_level",
@@ -2808,17 +2015,13 @@ _POLICY_AUDIT_FIELDS = [
 ]
 
 
+# Security: policy changes must be as auditable as the transactions they govern.
 def _policy_snapshot(policy):
-    """Plain-dict before/after snapshot for AuditLog.details — §4's own
-    instruction: "the policy table must be at least as auditable as the
-    transactions it governs." An admin who can silently raise the
-    supervisor ceiling has defeated the entire control."""
     return {f: (None if getattr(policy, f) is None else str(getattr(policy, f))) for f in _POLICY_AUDIT_FIELDS}
 
 
 class ApprovalPolicyListCreateView(AdminRequiredMixin, View):
-    """GET renders every policy grouped by transaction_type, ordered by
-    priority (matching ApprovalPolicy.Meta.ordering); POST creates one."""
+    """GET: every policy grouped by transaction_type. POST: creates one."""
 
     def get(self, request):
         policies = list(ApprovalPolicy.objects.order_by("transaction_type", "priority"))
@@ -2838,10 +2041,7 @@ class ApprovalPolicyListCreateView(AdminRequiredMixin, View):
             })
             by_type.setdefault(policy.transaction_type, []).append(policy)
 
-        # Template needs an ordered list, not a dict keyed by variable
-        # value (Django templates can't do `dict[var]` lookup without a
-        # custom filter) — one group per ApprovalTxType, including empty
-        # ones, in the enum's own declared order.
+        # Workaround: templates can't do dict[var] lookup -- pre-grouped to a list.
         grouped_policies = [
             {"value": value, "label": label, "policies": by_type.get(value, [])}
             for value, label in ApprovalTxType.choices

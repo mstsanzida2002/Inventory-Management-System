@@ -8163,3 +8163,96 @@ seed_dev_data.py 80.
 Remaining session: session 5 (templates, static, `tests.py`).
 
 Not committed — left uncommitted per instruction.
+
+## Session 5/5, Pass 1 — templates, JS, CSS
+
+Scope: `frontend/templates/**`, `frontend/static/**/*.js`,
+`frontend/static/**/*.css`. Pass 2 (`frontend/tests.py`) not started yet.
+
+**Phase A discovery correction, reported before any edit:** the initial
+comment-inventory script only regex-matched `{#...#}` spans and reported
+"66 comment lines across 36 templates." It completely missed Django's
+`{% comment %}...{% endcomment %}` block syntax, which exists in 28 of the
+36 templates and totals 358 additional lines (~424 true total). Processed
+under the same authorization as everything else in Phase B rather than
+re-running Phase A from scratch.
+
+**Template-safety grep** (multi-line `{# #}` — the defect class that once
+silently swallowed a whole page into an inert DOM fragment): zero hits,
+both before and after every edit, checked two independent ways (Python
+regex over `{#...#}` spans containing a newline; ripgrep for a `{#` with
+no `#}` on the same line).
+
+**Templates:** every `{% comment %}` block and every `{# ---- banner ---- #}`
+divider across all 36 templates removed. A genuinely non-obvious fact
+inside a block was extracted to one `{# #}` line at its actual code site
+and the rest (Phase numbers, BUG- tags, doc pointers, restatements of a
+Python-side comment) deleted. Recurring UI-convention lines (e.g. "a
+denied approve/cancel is shown disabled with a reason, not hidden";
+"icon-x means deactivate, not delete"; "no status field -- is_active
+changes only via Deactivate/Reactivate") are kept independently per
+template rather than cross-template-deduplicated, since each page is read
+on its own and there's no shared partial to hold one copy — same
+precedent as CSS's `[hidden]` cascade note. A same-fact restatement of a
+comment already on the Python view/model (e.g. `resendable`'s condition,
+the weights-sum-to-1.00 rule) was deleted as a cross-layer duplicate.
+
+**JS:** all 24 files' banners/headers replaced with one `// Rule:` line
+per modal-architecture module stating what it owns (`modal.js`,
+`form-validation.js`, `dom-utils.js`, `modal-form.js`); every other file's
+banner deleted outright or replaced with a single `// Assumption:` at the
+exact `data-*`/`JSON.parse` site it's coupled to a server response shape.
+`async-run-button.js` given the session-2 Celery allocation.
+
+**CSS:** every section-banner divider deleted across all 6 files; every
+per-token inline comment in `tokens.css` kept as-is (the actual
+design-token documentation); genuine browser/cascade workarounds kept
+(4 in `components.css`, 3 in `dashboard.css`) — everything else (UX
+rationale, Phase notes) deleted per the CSS-specific narrower rule.
+
+**Live documentation-drift findings** (same class as BUG-93/96/97),
+logged in `docs/bugsfound.md`:
+- BUG-98 (fixed) — `async-run-button.js`'s header falsely claimed a
+  "simulated" branch for Demand Forecasting; neither current caller uses
+  one.
+- BUG-99 (fixed) — `components.css`'s `.empty-state` comment claimed no
+  `display` override was needed, directly contradicted by the
+  `display:flex`/`[hidden]{display:none}` rules two lines below.
+- BUG-100 (2 of 3 reported/not fixed, 1 fixed as a side effect) — the
+  topbar's notification dropdown is permanently static markup never wired
+  to `notifications.js`; `sidebar.html`'s nav hrefs are still hardcoded
+  literal paths despite the named routes existing since session 4;
+  `movement_history.html`'s own now-deleted comment falsely claimed
+  `table-filter.js` was "still used by Forecasting/Slow-Moving" (neither
+  page uses it — confirmed by grep before deleting the block that
+  contained the claim).
+
+**`scripts/comment_guard.py` — known false-positive shapes, all
+confirmed comment-only via a custom strict-diff check** (strips all
+comment syntax — `/* */`, `//`, `{# #}`, `{% comment %}...{% endcomment %}`
+— from both HEAD and working copy, then diffs the remaining tokens):
+deleting a multi-line `/* ... */` banner whose body lines don't
+individually start with `*`; editing a same-line trailing comment (the
+whole line differs even though only the comment text changed); and a
+newly confirmed third shape this session — a `{% comment %}...
+{% endcomment %}` block's body lines carry no per-line comment marker at
+all, so the generic checker's line-regex can't recognize them as comment
+lines and flags their removal as a code change. 59 of the 60 touched
+`.html`/`.js`/`.css` files hit one of these three shapes and show FAIL on
+the raw tool; all 60 show `IDENTICAL non-comment content` under the
+strict-diff check.
+
+**Verification:**
+- Full suite: 483/483, unchanged.
+- All 18 touched dashboard pages plus the landing page and the full
+  password-reset flow (including the invalid-link branch) rendered via a
+  real request/response cycle: every one returned `200` with a
+  substantial, non-empty body.
+- Grep for `BUG-|Phase |docs/|\.md` inside comments across the full Pass-1
+  scope: zero hits.
+- Diff stats: templates 29 files, +28/-457 lines; JS+CSS 31 files,
+  +60/-730 lines.
+
+Remaining: Pass 2 (`frontend/tests.py`).
+
+Not committed — left uncommitted per instruction.

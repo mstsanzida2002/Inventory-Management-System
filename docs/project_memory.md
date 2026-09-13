@@ -7960,8 +7960,84 @@ application data an admin sees in the UI), not a comment; correctly
 left untouched since editing it would be a data/code change, not a
 comment-only one.
 
-Remaining sessions: `classification.py`/`forecasting.py`/`filters.py`
-next (session 3 per the original split), then session 4/5 for
-templates/JS/CSS and the rest of `frontend/*.py`.
-
 Not committed — reported back for review per instruction.
+
+## Phase — Comment Hygiene Pass, Session 3/5: Forecasting, Classification, Reports, PDF (2026-09-13)
+
+Scope: `forecasting.py`, `classification.py`, `reports.py`, `pdf.py`. No
+separate ABC-classification/analytics module exists outside these four
+files (checked via import grep). Framing enforced throughout: supervised
+ML for forecasting, rule-based expert system for dead-stock — no comment
+implies the classifier learns from data.
+
+Distribution-baseline correction: the task's stated 28/5/9/1 was a dated
+snapshot carried forward without accounting for wall-clock drift (the
+classifier is date-relative, so an absolute count is never a valid
+invariant). Actual baseline, run immediately before editing:
+`{FAST: 13, SLOW: 21, DEAD: 9, INSUFFICIENT_DATA: 2}`. Same run
+immediately after all edits: identical. Proves no logic moved.
+
+Two-tier model selection: `build_features()`'s `dropna()` (drops rows
+short of 4 lag periods) is the actual, undocumented-as-such skip tier —
+verified against `docs/DEMAND_FORECASTING.md` line 35, confirmed a real
+mechanism, not a phantom feature; kept as a one-line `# Rule:` on the
+`dropna()` call rather than deleted.
+
+Magic numbers, one `# Rule:`/`# Assumption:`/`# Edge:` each, no invented
+rationale (per explicit instruction — left unexplained where no real
+source justifies the number):
+| name | value | file:line | comment |
+|---|---|---|---|
+| lag depth / rolling window | 4 | forecasting.py:26-27 | `# Assumption: rolling window matches lag depth (4 periods), inherited.` (unexplained beyond "inherited") |
+| min pooled training rows | 10 | forecasting.py:127 | `# Edge: <10 pooled rows raises rather than train on too little data.` (unexplained numerically) |
+| train/test split ratio | 0.8 | forecasting.py:136 | `# Assumption: 80/20 split, matching the original reference pipeline's ratio.` |
+| split ordering | chronological | forecasting.py (train_model) | `# Rule: chronological split -- prevents leakage from future data.` |
+| random seed | 42 | forecasting.py:147 | `# Assumption: fixed seed for reproducible training runs.` |
+| category_id native-categorical | — | forecasting.py (train_model) | `# Rule: category_id is native-categorical -- short-history SKUs borrow signal.` |
+| stockout_flag inclusion | — | forecasting.py (build_features) | `# Rule: unmarked, a stockout period reads as zero demand, not censored.` |
+| confidence clamp | 0.50 / 0.95 | forecasting.py:214 | no comment added — bounds themselves unexplained beyond "per the original reference formula" (stated on the caller, `predict_demand()`) |
+| demand window | 90 days | classification.py:19 | `# Rule: one shared window -- every demand-derived figure here reads it.` |
+| frequency bucket | 7 days | classification.py:22 | `# Rule: 7-day buckets distinguish a steady weekly seller from one bulk sale.` |
+| Force-FAST recency | 14 days | classification.py:26 | `# Rule: 14 days -- wide enough to include a ~10-day sale cycle as "fast".` |
+| turnover-rate cap | 9999.9999 | classification.py:131 | `# Edge: capped at the DecimalField's ceiling -- avoids an overflow crash.` |
+| `dead_threshold`/`target_days_of_cover`/`extreme_coverage_days` `or 1` fallback | 1 | classification.py:185-188 | `# Edge: a 0-valued setting would divide-by-zero or degenerate the index.` (one comment, three sites — deduplicated per policy) |
+
+`or 1` fallback prefix: confirmed as `# Edge:`, not `# Rule:` — it guards
+against a divide-by-zero/degenerate-index failure mode, it does not
+encode a business rule.
+
+`ApprovalPolicy.notes` live UI exposure logged as **BUG-96** in
+`docs/bugsfound.md` (not fixed — data fix and `views.py` fix both
+outside this session's scope).
+
+Verification:
+- `scripts/comment_guard.py` clean on all 4 files (AST-identical to HEAD
+  apart from comments/docstrings).
+- Full suite: 483/483, unchanged.
+- Classifier distribution: identical before and after (see above).
+- Grep for `BUG-|Phase |docs/|\.md` inside comments/docstrings across
+  all 4 files: zero hits.
+- Comment/docstring line counts (pre-hygiene baseline -> now):
+
+| file | before | after | LOC before -> after | density budget |
+|---|---|---|---|---|
+| forecasting.py | 74 | 25 | 571 -> 360 | ~24 (on budget) |
+| classification.py | 57 | 21 | 636 -> 365 | ~28 (under — no padding added) |
+| reports.py | 48 | 8 | 649 -> 487 | ~27 (far under — mechanical, expected) |
+| pdf.py | 47 | 16 | 564 -> 443 | ~24 (under — mechanical, expected) |
+
+Longest surviving comment per file, all <= 80 chars: forecasting.py 80,
+classification.py 78, reports.py 75, pdf.py 77.
+
+Caught and fixed during self-check: a comment on `FEATURE_COLUMNS`
+promised its rationale was "justified below" but no such justification
+existed anywhere in the file (a NO SPECULATIVE PLACEMENT violation from
+earlier in this session's own editing) — resolved by writing the actual
+rationale at `category_id`'s and `stockout_flag`'s real usage sites and
+deleting the dangling forward-reference.
+
+Remaining sessions: session 4 (`views.py`, `api_views.py`, `api_urls.py`,
+`forms.py`, `filters.py`, `urls.py`, `admin.py`, `seed_dev_data.py`,
+`config/settings.py`), session 5 (templates, static, `tests.py`).
+
+Not committed — left uncommitted per instruction.

@@ -231,7 +231,7 @@
   position: absolute;
   top: calc(100% + var(--sp-3));
   left: 0;
-  width: 340px;
+  width: 250px;
   max-width: calc(100vw - var(--sp-8));
   background: var(--c-white);
   border: 1px solid var(--c-slate-200);

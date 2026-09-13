@@ -7939,12 +7939,12 @@ class AppFooterTests(TestCase):
         self.client.login(username='footeruser', password='x')
         response = self.client.get(reverse('frontend:dashboard'))
         self.assertContains(response, 'Stockwell Inventory Management System')
-        self.assertContains(response, 'Goiinovior Limited')
+        self.assertContains(response, 'Goinnovior Limited')
 
     def test_footer_absent_from_login_page(self):
         response = self.client.get(reverse('frontend:login'))
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, 'Goiinovior Limited')
+        self.assertNotContains(response, 'Goinnovior Limited')
 
     def test_current_year_renders_as_the_real_current_year_not_a_literal(self):
         self.client.login(username='footeruser', password='x')

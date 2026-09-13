@@ -1,9 +1,3 @@
-"""docs/02_RBAC.md's `apps/rbac/decorators.py`, translated into this
-single `frontend` app -- no separate `apps/rbac/` app exists.
-
-Not applied to any real view -- `frontend/mixins.py`'s class-based
-RoleRequiredMixin family is what views.py actually uses; only
-frontend/tests.py imports these function-based decorators."""
 from functools import wraps
 
 from django.contrib import messages
@@ -13,16 +7,13 @@ from frontend.models import UserRole
 
 
 def require_role(*roles):
-    """
-    Usage:
-        @require_role('admin')
-        @require_role('admin', 'supervisor')
-    """
+    """Restricts a view to users whose role is in `roles`."""
     def decorator(view_func):
         @wraps(view_func)
         def wrapper(request, *args, **kwargs):
             if not request.user.is_authenticated:
                 return redirect('frontend:login')
+            # Security: denies access when the user's role isn't in roles.
             if request.user.role not in roles:
                 messages.error(request, 'Access denied. You do not have permission to perform this action.')
                 return redirect('frontend:dashboard')

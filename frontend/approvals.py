@@ -1,76 +1,3 @@
-"""
-Phase 12 — Approval Authority Matrix. Generalises the old static
-"is this user a supervisor?" role check into a policy engine: the admin
-defines which transactions a supervisor is permitted to approve, per
-transaction type/value/reason — not just per role. No `apps/approvals/`
-app created (single-app architecture, see docs/project_memory.md §13,
-same as every other module).
-
-Read this alongside frontend/models.py's "14. Approval Policy" section
-(ApprovalTxType/ApprovalOutcome/ApprovalPolicy) and
-docs/project_memory.md §13 for the full disclosure of two premise gaps
-this phase's own brief had, found during discovery rather than guessed
-past:
-
-1. There was no pre-existing purchase-order approval value ceiling
-   anywhere in this codebase (no SystemSettings field, no service-layer
-   check) to migrate byte-identically from — confirmed by reading
-   SystemSettings' full field list and PurchaseService.approve(). The
-   seed migration (frontend/migrations/000X_seed_approval_policies.py)
-   writes the two purchase-order rows directly instead.
-2. InventoryAdjustment has no stored currency value or "variance" concept
-   at all (only quantity + adjustment_type). Both are computed here, at
-   resolution time, not stored:
-   - value = quantity * product.purchase_price
-   - variance_pct = |quantity| / current_stock * 100 (None when
-     current_stock is 0 — an undefined variance against a zero base,
-     deliberately excluded from matching rather than treated as infinite
-     or zero, so it falls through to a catch-all/Supervisor rule instead
-     of accidentally satisfying an AUTO threshold on a technicality).
-
-ApprovalPolicy.max_variance_pct's comparison direction depends on the
-policy's own required_level, disclosed here since the model spec alone
-doesn't fix it: for an ADMIN-outcome policy it's a floor the transaction's
-variance must EXCEED to match (escalate when variance is unusually high);
-for AUTO/SUPERVISOR-outcome policies it's a ceiling the variance must stay
-AT OR BELOW to match (only automate/keep-at-supervisor when variance is
-routine). Both directions are named "max_variance_pct" in the model
-because both express "the most variance this policy tolerates before its
-own outcome no longer applies" — which side of that boundary counts as a
-match flips with what the policy is granting vs. withholding.
-
-Phase 12.1 — hardening pass. Two fail-open defaults closed (a third,
-ABC-related one from this same pass was later reversed — see Phase 12.2
-below), each disclosed inline at its fix site rather than silently
-changed: §5a `variance_pct is None` (zero current_stock) now matches an
-ADMIN-outcome variance condition instead of skipping it — undefined
-variance against a zero base is treated as exceeding every threshold,
-not as absence of a signal. §4 a cumulative window/cap on AUTO-outcome
-adjustment policies (resolve_adjustment_with_cumulative_cap()) closes a
-real salami-slicing hole: N consecutive just-under-threshold adjustments
-on the same product previously moved unbounded stock with zero human
-approval events.
-
-Also discovery-only, Phase 12.1: asked to harden a "record unlock"
-system (re-resolve approval authority when a terminal PO/adjustment is
-edited via an unlock). No such system exists anywhere in this codebase —
-confirmed by an exhaustive grep (models, services, views, all migrations)
-and a full read of every §15 timeline entry. Not built here; see
-docs/project_memory.md §13 for the full discovery writeup. Nothing in
-this module references it.
-
-Phase 12.2 — ABC class removed as an approval-routing input entirely
-(the matching condition, the seeded "Class-A product, high variance"
-policy, Phase 12.1 §5b's unclassified-resolves-as-'A' fallback, the
-rule simulator and cumulative-usage-panel UI that surfaced it here): too
-much complexity for the value it added. `ABCClass`/`recompute_abc_classes()`
-themselves stayed for a while as an analytics-only feature — Prompt 2
-(2026-08-24) removed them outright, along with `InventoryClassification.
-abc_class` and `SystemSettings.abc_last_recomputed_at`: ABC classification
-was never part of any documented requirement (confirmed by a full grep of
-docs/*.md, see docs/project_memory.md §13/§15), so this module no longer
-references it at all.
-"""
 from decimal import Decimal
 
 from django.utils import timezone
@@ -86,29 +13,7 @@ from frontend.models import (
     SaleTransaction,
 )
 
-# The starting ruleset (§9), also frozen as a snapshot inside
-# frontend/migrations/0007_seed_approval_policies.py — deliberately
-# duplicated, not imported from there: a migration must stay
-# self-contained against the schema it was written for, so it carries
-# its own copy rather than importing this evolving module (importing
-# live app code from a migration is the real anti-pattern — a future
-# edit here would silently change what an old migration replays).
-# This copy is what seed_dev_data.py calls, via ensure_default_policies()
-# below, to restore the table after its own call_command("flush", ...) —
-# flush truncates every table, including one a data migration seeded only
-# once; found empirically (seed_dev_data.py's first post-Phase-12 run
-# failed every PurchaseService.approve() call with "no matching policy"),
-# not assumed.
-#
-# Phase 12.2 — the "Class-A product, high variance" row (priority 20)
-# is gone; ABC is no longer a matching condition anywhere in this list.
-# Coverage re-checked after removing it: shrinkage_unknown (10) and the
-# damage/expiry rows (30/31) still resolve their specific cases, the
-# catch-all (50) still resolves everything else for ADJUSTMENT, and
-# resolve_required_level()'s own "no match -> None -> caller fails
-# closed to ADMIN" guarantee is a resolver-level property that never
-# depended on which specific rows exist — removing one row can never
-# weaken it.
+# Rule: migrations carry their own copy of this list; never import it.
 DEFAULT_APPROVAL_POLICIES = [
     {
         "name": "Unexplained shrinkage — any value", "transaction_type": ApprovalTxType.ADJUSTMENT,
@@ -128,12 +33,7 @@ DEFAULT_APPROVAL_POLICIES = [
         "name": "Small, low-variance adjustment", "transaction_type": ApprovalTxType.ADJUSTMENT,
         "max_value": Decimal("500.00"), "max_variance_pct": Decimal("2.00"),
         "required_level": ApprovalOutcome.AUTO, "priority": 40,
-        # Phase 12.1 §4 — the cumulative cap: without it, N consecutive
-        # sub-threshold adjustments on the same product move unbounded
-        # stock with zero human approval events. 30 days / ৳2,000 per
-        # product; once exceeded, resolution continues to the next
-        # priority (here, row 50 — Supervisor) instead of hard-coding an
-        # escalation target.
+        # Rule: caps AUTO value at ৳2,000 per product per 30 days.
         "cumulative_window_days": 30, "cumulative_value_cap": Decimal("2000.00"),
         "notes": "The lever that makes this a policy engine, not just a permission "
                  "wall: routine, low-value, low-variance adjustments post immediately, no human approval. "
@@ -164,10 +64,7 @@ DEFAULT_APPROVAL_POLICIES = [
 
 
 def ensure_default_policies():
-    """Idempotent: get_or_create per (transaction_type, priority), same
-    keying as the migration. Safe to call after a flush (dev seed) or any
-    time the table is found empty — never overwrites an admin's own
-    edits to an existing row, only fills in rows that are missing."""
+    """Idempotent; fills in missing seed rows without touching admin edits."""
     created = 0
     for entry in DEFAULT_APPROVAL_POLICIES:
         _, was_created = ApprovalPolicy.objects.get_or_create(
@@ -193,19 +90,9 @@ def ensure_default_policies():
 
 def resolve_required_level(*, transaction_type, value, reason_code='',
                             variance_pct=None, exclude_policy_ids=None):
-    """Returns the first matching active ApprovalPolicy for this
-    transaction_type, ordered by priority (lower wins), or None.
-    None means NO POLICY MATCHED -> the caller (can_approve()) fails
-    closed to ADMIN — never to SUPERVISOR, never to AUTO. A transaction
-    the ruleset can't classify is, by definition, the kind that needs the
-    most senior signature.
-
-    exclude_policy_ids (Phase 12.1 §4): pks to skip during this
-    resolution, letting the cumulative-cap check
-    (resolve_adjustment_with_cumulative_cap()) re-resolve "as if this
-    AUTO policy didn't exist" without hard-coding what the fallback
-    outcome should be — the ruleset decides, same as every other
-    resolution."""
+    """Returns the first matching active policy by priority, or None."""
+    # Security: None means fail closed to ADMIN, never SUPERVISOR/AUTO.
+    # Assumption: exclude_policy_ids lets a caller re-resolve without it.
     policies = ApprovalPolicy.objects.filter(
         transaction_type=transaction_type, is_active=True,
     ).order_by('priority')
@@ -220,16 +107,7 @@ def resolve_required_level(*, transaction_type, value, reason_code='',
         if policy.max_value is not None and value > policy.max_value:
             continue
         if policy.max_variance_pct is not None:
-            # Phase 12.1 §5a: variance_pct is None only for an
-            # adjustment against zero current_stock — an undefined
-            # variance against a zero base, not an absent one. Treated
-            # as EXCEEDING every threshold (infinite variance: the
-            # "phantom stock"/"found in overflow storage" case), never
-            # as "no variance to report." For an ADMIN-outcome policy
-            # (match = exceeds) that means None now MATCHES, escalating
-            # — the fail-closed-consistent fix. For AUTO/SUPERVISOR
-            # (match = at-or-below) None still fails to match, unchanged
-            # from before — it was already correctly excluded there.
+            # Edge: null variance (zero stock) escalates for ADMIN, else excludes.
             if policy.required_level == ApprovalOutcome.ADMIN:
                 if variance_pct is not None and not (variance_pct > policy.max_variance_pct):
                     continue
@@ -254,14 +132,7 @@ def _adjustment_context(adjustment):
 
 
 def _tx_context(tx):
-    """Returns (transaction_type, value, reason_code, variance_pct,
-    created_by) for any of the three transaction kinds this phase's
-    policy engine governs. Purchase-order approval and sale-cancellation
-    have no reason-code concept of their own (only adjustments do) — both
-    pass through blank/None for it, which only ever matches policies that
-    also leave that condition blank (a deliberate, not accidental,
-    exclusion — see §9's own seed table: rows 60/70/80/90 never set
-    reason_code)."""
+    # Assumption: PO/Sale have no reason_code; only Adjustments do.
     if isinstance(tx, PurchaseOrder):
         return ApprovalTxType.PURCHASE_ORDER, tx.total_cost, '', None, tx.created_by
     if isinstance(tx, InventoryAdjustment):
@@ -272,10 +143,7 @@ def _tx_context(tx):
 
 
 def resolve_for_transaction(tx):
-    """Returns (policy_or_None, required_level, created_by) for a live
-    PurchaseOrder/InventoryAdjustment/SaleTransaction instance. Shared by
-    can_approve() and the service layer's own audit-detail logging, so
-    both agree on exactly what was resolved and why."""
+    """Resolves (policy, required_level, creator) for a live transaction."""
     tx_type, value, reason_code, variance_pct, created_by = _tx_context(tx)
     policy = resolve_required_level(
         transaction_type=tx_type, value=value, reason_code=reason_code,
@@ -286,15 +154,7 @@ def resolve_for_transaction(tx):
 
 
 def _cumulative_auto_total(product, policy):
-    """Sum of AUTO-posted-under-this-exact-policy adjustment values for
-    `product` within `policy.cumulative_window_days` (Phase 12.1 §4).
-    Scoped per-policy, not per-product-globally: each AUTO policy tracks
-    its own window/cap independently, matching where the fields live
-    (on the policy, not the product). Uses each row's own quantity times
-    the product's CURRENT purchase_price, not a historical snapshot —
-    InventoryAdjustment doesn't store a value at all (see this module's
-    own docstring, gap 2), so there is no historical price to recover;
-    disclosed simplification, not silently assumed."""
+    # Assumption: uses current purchase_price; no historical value stored.
     cutoff = timezone.now() - timedelta(days=policy.cumulative_window_days)
     rows = InventoryAdjustment.objects.filter(
         product=product, resolved_policy=policy, was_auto_posted=True,
@@ -304,22 +164,7 @@ def _cumulative_auto_total(product, policy):
 
 
 def resolve_adjustment_with_cumulative_cap(adjustment):
-    """Phase 12.1 §4 — like resolve_for_transaction(), but for
-    InventoryAdjustment only: if the first-matched policy would resolve
-    to AUTO and carries a cumulative cap, checks whether posting this
-    adjustment would push the trailing-window total for this product
-    over that cap. If so, the policy does NOT apply — re-resolves with
-    it excluded and lets the ruleset's own next-priority rule decide
-    (the seeded set lands on the Supervisor catch-all, but this function
-    doesn't hard-code that).
-
-    Returns (policy_or_None, required_level, deflected_from_policy_or_None,
-    cumulative_total_or_None). deflected_from is only set when a cap
-    genuinely deflected a match — the caller uses it to decide whether to
-    write the ADJUSTMENT_AUTO_DEFLECTED audit entry (§4's own instruction:
-    "this is the trail that makes the control provable"). Still enforced
-    exactly as built in Phase 12.1 — Phase 12.2 only removed ABC from the
-    UI/matching, not this."""
+    """Deflects an AUTO match that would exceed its cumulative cap."""
     tx_type, value, reason_code, variance_pct, _created_by = _adjustment_context(adjustment)
     policy = resolve_required_level(
         transaction_type=tx_type, value=value, reason_code=reason_code,
@@ -344,23 +189,7 @@ def resolve_adjustment_with_cumulative_cap(adjustment):
 
 
 def can_approve(user, tx):
-    """Returns (allowed: bool, reason: str) — reason is a human-readable
-    denial explanation (empty string when allowed), for both the JSON
-    error the view surfaces and the disabled-button label the template
-    renders (§8b — the control is shown-but-disabled, never hidden).
-
-    Rule order (§5):
-    1. No matching policy -> ADMIN (fail closed).
-    2. AUTO -> no human approval needed at all.
-    3. SUPERVISOR -> admin or supervisor may approve.
-    4. ADMIN -> admin only.
-    5. Self-approval: creator == approver is blocked when the matched
-       policy's block_self_approval is True -- UNLESS the approver is
-       admin. Admin may self-approve; supervisor may not. Deliberate
-       (§5), and a reversal of the previously-disclosed "no creator≠
-       approver restriction" decision for Purchases/Sales (Phase 7/
-       8.99b, docs/project_memory.md §13) -- flagged there, not silent.
-    """
+    """Returns (allowed, reason) -- reason is empty when allowed."""
     policy, required_level, created_by = resolve_for_transaction(tx)
 
     if required_level == ApprovalOutcome.AUTO:
@@ -374,6 +203,7 @@ def can_approve(user, tx):
         return False, 'Requires supervisor or administrator approval.'
 
     block_self = policy.block_self_approval if policy else True
+    # Security: blocks self-approval unless the approver is admin.
     if block_self and created_by_id_equals(created_by, user) and not user.is_admin:
         return False, 'You cannot approve your own request — a different supervisor or an administrator must review it.'
 

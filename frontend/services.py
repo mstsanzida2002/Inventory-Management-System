@@ -1,24 +1,3 @@
-"""
-Service layer per docs/05_PURCHASES.md, docs/06_SALES.md, docs/07_INVENTORY.md
-(and, for adjustments, this task's own "mirrors Purchase's approval workflow"
-instruction — no docs/08_ADJUSTMENTS.md exists, see docs/project_memory.md §12).
-
-This is the ONLY code path allowed to mutate InventoryRecord.current_stock /
-Product.current_stock or write InventoryMovement rows — per 07_INVENTORY.md's
-own instruction: "All stock quantity changes flow through the service layer."
-
-No views/forms/urls/RBAC wiring yet (that's a later phase) — every method here
-assumes the caller is already authorized and passes in the acting user object
-directly; nothing here touches request objects (so log_action()'s ip_address
-is always None for now).
-
-Every state-changing method here calls frontend.audit.log_action() and, where
-a documented notification type exists, frontend.notifications.notify_user()/
-notify_supervisors() (Phase 3.5) — matching each doc's own reference code
-call-for-call. Where a doc's reference code logs but doesn't notify (or vice
-versa), that's matched literally, not an oversight — see the inline comments
-at each call site.
-"""
 from decimal import Decimal
 
 from django.db import transaction
@@ -46,60 +25,33 @@ from frontend.models import (
 from frontend.notifications import notify_admins, notify_supervisors, notify_user
 from frontend.pricing import calculate_line_total
 
+# Rule: reject and cancel use a plain role check; only approve is policy-routed.
+
 
 class InsufficientStockError(Exception):
     pass
 
 
 class ApprovalAuthorityError(Exception):
-    """Phase 12 — raised by PurchaseService.approve()/AdjustmentService.
-    approve()/SaleService.cancel_sale() when frontend.approvals.
-    can_approve() denies the acting user. Raised in the service layer,
-    not only checked in the view (§6): the service layer is the boundary
-    that must hold regardless of caller.
-
-    Phase 12.1 §7 / BUG-57 close-out — also raised by a plain
-    supervisor-or-admin role check (not routed through the
-    ApprovalPolicy engine; reject/cancel were never in Phase 12's
-    ApprovalTxType scope) in SaleService.approve_sale(), PurchaseService.
-    reject()/cancel(), SaleService.reject_sale(), and AdjustmentService.
-    reject() — every service method that mutates a purchase/sale/
-    adjustment's status and was previously gated only by the matching
-    view's SupervisorRequiredMixin."""
+    """Raised in the service layer when frontend.approvals.can_approve()
+    or a plain role check denies the acting user."""
     pass
 
 
 def _notify_pending_audience(required_level, *args, **kwargs):
-    """§6: a transaction that resolves to ADMIN notifies admins, not
-    supervisors (a supervisor can't act on it, so notifying them is
-    noise); SUPERVISOR keeps the existing notify_supervisors() behaviour
-    (which already includes admins)."""
+    # Rule: ADMIN-level notifies admins only; others notify supervisors.
     notify_fn = notify_admins if required_level == ApprovalOutcome.ADMIN else notify_supervisors
     return notify_fn(*args, **kwargs)
 
 
 class InventoryService:
     """The only place InventoryRecord/Product stock fields and
-    InventoryMovement rows are written. docs/07_INVENTORY.md."""
+    InventoryMovement rows are written."""
 
     @classmethod
     @transaction.atomic
     def initialize_for_product(cls, product):
-        """Create the InventoryRecord for a newly-catalogued product, at
-        zero stock, with NO InventoryMovement row (Phase 5.5 — see
-        docs/bugsfound.md's Phase 5.5 entry). Creating a product means a
-        catalog entry now exists, not that stock arrived — that only
-        happens for real when a Purchase Order is received (increase_stock(),
-        called from PurchaseService.receive_items()). A zero-to-zero change
-        is not a movement, so unlike increase_stock()/decrease_stock() this
-        deliberately writes nothing to the immutable ledger — their whole
-        contract ("log a real movement with a real cause") doesn't apply to
-        "nothing happened yet." Matches 03_PRODUCTS.md's own
-        product_create_view, which creates InventoryRecord with the implied
-        current_stock=0 default and nothing else, and
-        docs/project_memory.md §13's existing architecture decision that
-        InventoryMovement rows are only ever an internal side effect of
-        purchase-receive/sale/adjustment-approval."""
+        """Creates a zero-stock InventoryRecord; writes no movement row."""
         record, _ = InventoryRecord.objects.get_or_create(
             product=product,
             defaults={'current_stock': 0, 'reorder_level': product.reorder_level},
@@ -111,19 +63,7 @@ class InventoryService:
     @classmethod
     @transaction.atomic
     def sync_reorder_level(cls, product):
-        """Phase 8.99e — ProductUpdateView editing a product's
-        reorder_level must keep InventoryRecord.reorder_level (an
-        undocumented duplicate of Product.reorder_level, see
-        docs/project_memory.md §6) in sync, without writing a ledger row:
-        a reorder-threshold change isn't a stock movement, the same
-        reasoning initialize_for_product() above already applies to
-        product creation. Also recomputes status via update_status() —
-        moving the threshold can flip LOW_STOCK/AVAILABLE on its own, even
-        with current_stock unchanged. Kept here, not in the view, since
-        this class's own docstring already claims sole ownership of
-        writing InventoryRecord fields; a no-op if no InventoryRecord
-        exists yet (shouldn't happen in practice — every product gets one
-        at creation — but this method has no reason to assume it does)."""
+        """Syncs InventoryRecord.reorder_level from Product; no movement row."""
         try:
             record = InventoryRecord.objects.select_for_update().get(product=product)
         except InventoryRecord.DoesNotExist:
@@ -198,9 +138,7 @@ class InventoryService:
         product.current_stock = record.current_stock
         product.save(update_fields=['current_stock'])
 
-        # 07_INVENTORY.md's own reference code fires this from
-        # decrease_stock (never from increase_stock) — check low/out-of-
-        # stock and notify.
+        # Rule: low/out-of-stock alerts fire only from decrease_stock.
         if record.status in (InventoryStatus.LOW_STOCK, InventoryStatus.OUT_OF_STOCK):
             cls._send_low_stock_notification(product, record, performed_by)
 
@@ -208,6 +146,7 @@ class InventoryService:
 
     @classmethod
     def _send_low_stock_notification(cls, product, record, performed_by=None):
+        # Assumption: performed_by is the real actor, not a system placeholder.
         if record.status == InventoryStatus.OUT_OF_STOCK:
             notify_supervisors(
                 notification_type=NotificationType.OUT_OF_STOCK,
@@ -215,13 +154,6 @@ class InventoryService:
                 message=f'{product.name} [{product.sku}] is now out of stock.',
                 link=f'/inventory/{product.id}/',
             )
-            # BUG-65 (docs/bugsfound.md) — OUT_OF_STOCK_ALERT_SENT was
-            # defined but never fired anywhere; this is the real trigger
-            # (the Notification above already fires correctly, this was
-            # simply never also written to the audit log). `performed_by`
-            # is the sale/adjustment actor whose stock movement crossed
-            # the threshold, not a system actor — there's a real human
-            # behind every one of these.
             audit.log_action(
                 performed_by, audit.OUT_OF_STOCK_ALERT_SENT, "inventory",
                 affected_id=product.pk, status="success",
@@ -236,7 +168,6 @@ class InventoryService:
                 ),
                 link=f'/inventory/{product.id}/',
             )
-            # BUG-65 — LOW_STOCK_ALERT_SENT, same gap, same fix.
             audit.log_action(
                 performed_by, audit.LOW_STOCK_ALERT_SENT, "inventory",
                 affected_id=product.pk, status="success",
@@ -244,23 +175,9 @@ class InventoryService:
 
 
 class PurchaseService:
-    """docs/05_PURCHASES.md. submit -> approve/reject -> receive (partial
-    delivery supported). Stock increases ONLY on receive, never on approval.
+    """Submit -> approve/reject -> receive; stock moves only on receive."""
 
-    Phase 8.99c narrowed cancel() to draft/pending only — see
-    docs/project_memory.md §13 for the full disclosure of why this
-    overrides 05_PURCHASES.md's own "any state -> CANCELLED" state
-    machine (originally implemented as such in Phase 3.4 / BUG-25).
-
-    PO *creation* (and its documented inactive-supplier/inactive-product
-    checks) still isn't part of this service per the docs or the original
-    Phase 3 scope — creation happens elsewhere, not implemented here."""
-
-    # Phase 8.99c — narrowed from (DRAFT, PENDING, APPROVED, PARTIAL) to
-    # just the two pre-approval states. An approved PO is a commitment
-    # already made to the supplier; APPROVED/PARTIAL/RECEIVED/CANCELLED
-    # are now all terminal to cancel() (see §13). RECEIVED/CANCELLED/
-    # REJECTED were already terminal.
+    # Rule: only DRAFT/PENDING are cancellable; APPROVED+ is terminal.
     _CANCELLABLE_STATUSES = (POStatus.DRAFT, POStatus.PENDING)
 
     @classmethod
@@ -270,9 +187,6 @@ class PurchaseService:
             raise ValueError("Only draft POs can be submitted.")
         po.status = POStatus.PENDING
         po.save(update_fields=['status', 'updated_at'])
-        # Phase 12 — notify the audience actually empowered to act on
-        # this PO (§6): resolved against total_cost, same policy the
-        # approve() call below will re-check.
         _, required_level, _ = resolve_for_transaction(po)
         _notify_pending_audience(
             required_level,
@@ -289,10 +203,6 @@ class PurchaseService:
         if po.status != POStatus.PENDING:
             raise ValueError("Only pending POs can be approved.")
 
-        # Phase 12 — the policy engine's gate, inside the service layer
-        # (§6): this is the boundary that must hold regardless of caller,
-        # not just whatever the view's SupervisorRequiredMixin floor lets
-        # through.
         policy, required_level, _ = resolve_for_transaction(po)
         allowed, reason = can_approve(approved_by, po)
         if not allowed:
@@ -307,8 +217,6 @@ class PurchaseService:
             f'Your purchase order {po.po_number} has been approved.',
             link=f'/purchases/{po.pk}/',
         )
-        # policy_id/required_level recorded so we can later prove *why*
-        # this approver was permitted to approve (§6's own instruction).
         audit.log_action(
             approved_by, audit.PO_APPROVED, 'purchases', affected_id=po.pk, status='success',
             details={'policy_id': policy.pk if policy else None, 'required_level': required_level},
@@ -321,11 +229,6 @@ class PurchaseService:
         if po.status != POStatus.PENDING:
             raise ValueError("Only pending POs can be rejected.")
 
-        # BUG-57 close-out — same plain role check as SaleService.
-        # approve_sale() (not routed through the ApprovalPolicy engine:
-        # rejection was never in Phase 12's ApprovalTxType scope, same as
-        # sale completion), matching what PurchaseRejectView's own
-        # SupervisorRequiredMixin already enforces.
         if not (rejected_by.is_supervisor or rejected_by.is_admin):
             raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
 
@@ -376,8 +279,7 @@ class PurchaseService:
         else:
             po.status = POStatus.PARTIAL
         po.save(update_fields=['status', 'updated_at'])
-        # 05_PURCHASES.md's receive_items only calls log_action, no notify —
-        # matched literally, not an omission.
+        # Rule: receiving logs but never notifies, matching this project's design.
         audit.log_action(
             received_by, audit.PO_RECEIVED, 'purchases', affected_id=po.pk, status='success',
             details={'receive_data': receive_data},
@@ -387,26 +289,10 @@ class PurchaseService:
     @classmethod
     @transaction.atomic
     def cancel(cls, po, cancelled_by, reason):
-        """Phase 8.99c: cancellable only from DRAFT/PENDING (see §13 — this
-        overrides 05_PURCHASES.md's original "any state -> CANCELLED").
-        Never calls InventoryService — a draft/pending PO has never had
-        anything received against it (receive_items() only runs from
-        APPROVED/PARTIAL, both now cancel-ineligible), so there is no stock
-        to leave untouched or restore; "Cancelled PO does NOT affect
-        inventory" still holds, just more simply than before. `reason` is
-        now required (ReasonForm, same as reject()) and stored alongside
-        who/when, mirroring rejected_reason's own shape.
-
-        13_AUDIT.md defines a PO_CANCELLED constant (used below), but
-        11_NOTIFICATIONS.md has no 'po_cancelled' notification type — so
-        this logs but does not notify, matching what's actually documented
-        rather than inventing a type (unchanged from Phase 3.4 / BUG-25)."""
+        """Cancellable only from DRAFT/PENDING; never touches inventory."""
         if po.status not in cls._CANCELLABLE_STATUSES:
             raise ValueError(f"Cannot cancel a PO with status '{po.status}'.")
 
-        # BUG-57 close-out — same plain role check as SaleService.
-        # approve_sale(), matching PurchaseCancelView's own
-        # SupervisorRequiredMixin.
         if not (cancelled_by.is_supervisor or cancelled_by.is_admin):
             raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
 
@@ -420,43 +306,15 @@ class PurchaseService:
 
 
 class SaleService:
-    """docs/06_SALES.md, extended by Phase 8.99b to mirror
-    PurchaseService's approval workflow — see docs/project_memory.md §13
-    for the full disclosure of why this diverges from 06_SALES.md's
-    original one-step create-and-deduct model. create_sale() now creates
-    a DRAFT with no stock effect at all; submit_for_approval() moves it to
-    PENDING; approve_sale() is the ONLY place a sale's stock actually
-    moves (mirrors PurchaseService.receive_items() being the only place a
-    PO's stock moves — never on approval, there). reject_sale() and
-    cancel_sale() are both pre-approval-only; a COMPLETED sale can never
-    be cancelled or rejected by this service — Phase 8.99c confirmed and
-    locked this rule in (see §13)."""
+    """Draft -> submit -> approve; approve_sale() is where stock moves."""
 
-    # Phase 8.99b — mirrors PurchaseService._CANCELLABLE_STATUSES, but
-    # deliberately narrower: a PO can still be cancelled from APPROVED
-    # (stock hasn't moved yet either, at that point) — a Sale has no
-    # analogous post-approval-but-pre-stock-movement state at all, since
-    # approval and stock movement are the same instant here (see
-    # SaleStatus's own docstring). So the only cancellable states are the
-    # two that exist before that instant.
+    # Rule: only DRAFT/PENDING are cancellable -- approval moves stock.
     _CANCELLABLE_STATUSES = (SaleStatus.DRAFT, SaleStatus.PENDING)
 
     @classmethod
     @transaction.atomic
     def create_sale(cls, sale_data, items_data, created_by):
-        """
-        sale_data: {customer_name, notes}
-        items_data: [{product_id, quantity, unit_price, discount, tax}, ...]
-
-        Phase 8.99b: creates a DRAFT only — no stock check, no
-        InventoryService call, no InventoryMovement row. The
-        inactive-product check stays here (a create-time concern: a
-        product shouldn't be addable to a new sale at all once inactive)
-        — availability, by contrast, moves to approve_sale(), since only
-        approval actually commits stock (see Step 3's own
-        `docs/project_memory.md` §13/§15 finding on why draft sales can't
-        meaningfully reserve stock).
-        """
+        """Creates a DRAFT sale; no stock effect until approve_sale()."""
         total = 0
         sale = SaleTransaction.objects.create(
             created_by=created_by,
@@ -467,11 +325,7 @@ class SaleService:
             product = Product.objects.get(pk=item['product_id'])
             if not product.is_active:
                 raise ValueError(f"Product '{product.name}' is inactive and cannot be sold.")
-            # Phase 8.98c: tax is never trusted from items_data even if a
-            # caller happens to pass one — always the product's own
-            # tax_rate, the single real source. discount stays a genuine
-            # per-line/per-transaction value (unlike tax, this one really
-            # is a per-sale negotiation, not a product property).
+            # Rule: tax always comes from Product.tax_rate, never the caller.
             discount = Decimal(str(item.get('discount', 0)))
             tax = product.tax_rate
             line_total = calculate_line_total(item['unit_price'], item['quantity'], discount, tax)
@@ -495,11 +349,7 @@ class SaleService:
     @classmethod
     @transaction.atomic
     def submit_for_approval(cls, sale, submitted_by):
-        """Phase 8.99b — mirrors PurchaseService.submit_for_approval()
-        exactly, including firing the notification a Supervisor/Admin
-        needs to ever learn this sale exists (NotificationType.
-        SALE_PENDING, added this phase specifically because without it
-        the approval gate has no trigger — see §13)."""
+        """Mirrors PurchaseService.submit_for_approval(); notifies supervisors."""
         if sale.status != SaleStatus.DRAFT:
             raise ValueError("Only draft sales can be submitted.")
         sale.status = SaleStatus.PENDING
@@ -515,33 +365,7 @@ class SaleService:
     @classmethod
     @transaction.atomic
     def approve_sale(cls, sale, approved_by):
-        """Phase 8.99b — the ONLY place a sale's stock actually moves.
-        Re-validates availability here rather than trusting whatever was
-        true at draft/submit time — two drafts against the same limited
-        stock can each look satisfiable at creation and only one can
-        actually succeed here; this is the documented, deliberate
-        consequence, not a bug (see docs/project_memory.md §13/§15's
-        "stock-at-approval" finding). Pre-validates ALL items first
-        (same pattern the old one-step create_sale() used, moved here
-        wholesale) so a failure never partially deducts stock — this
-        whole method is wrapped in one transaction, but the pre-check
-        also gives a clean, single, specific error instead of an
-        arbitrary mid-loop one.
-
-        Phase 12.1 §7 — a minimal role check, not routed through the
-        ApprovalPolicy engine (plain sale completion was never in
-        Phase 12's ApprovalTxType scope — only PURCHASE_ORDER/ADJUSTMENT/
-        SALE_CANCEL are). Found during this phase's sweep as the
-        clearest, highest-stakes of several service methods that mutated
-        state with zero service-layer authorization, relying entirely on
-        SaleApproveView's SupervisorRequiredMixin — the one place a
-        sale's stock actually moves, previously reachable unauthorised by
-        any direct caller (a management command, a shell, a future API
-        path). Fixed here as a plain role check, matching what the view
-        already enforced; PurchaseService.reject()/cancel(),
-        AdjustmentService.reject(), SaleService.reject_sale() have the
-        same gap and are NOT fixed this phase — listed in
-        docs/project_memory.md §13, not silently left undocumented."""
+        """The only place a sale's stock moves; re-validates stock here."""
         if sale.status != SaleStatus.PENDING:
             raise ValueError("Only pending sales can be approved.")
         if not (approved_by.is_supervisor or approved_by.is_admin):
@@ -574,11 +398,6 @@ class SaleService:
         sale.approved_by = approved_by
         sale.approved_at = timezone.now()
         sale.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
-        # SALE_COMPLETED (11_NOTIFICATIONS.md, pre-existing) previously had
-        # no reference code anywhere that actually fired it and no
-        # documented recipient — this approval step is the first genuine
-        # use of it, with the obvious recipient: the person who created
-        # the sale, mirroring PO_APPROVED's notify_user(po.created_by, ...).
         notify_user(
             sale.created_by, NotificationType.SALE_COMPLETED, f'Sale {sale.invoice_number} Approved',
             f'Your sale {sale.invoice_number} has been approved and completed.',
@@ -586,13 +405,7 @@ class SaleService:
         )
         audit.log_action(approved_by, audit.SALE_APPROVED, 'sales', affected_id=sale.pk, status='success')
 
-        # Phase 10 — explicit synchronous call, not the documented
-        # post_save(SaleTransaction) signal (docs/project_memory.md §13
-        # has the full rejection reasoning). This is the one real moment a
-        # sale changes a product's classification-relevant history: items
-        # already exist (fetched above) and stock has already moved
-        # (decrease_stock() already ran, above). One settings fetch shared
-        # across every line item, not one per item.
+        # Rule: reclassifies synchronously here, not via a model signal.
         classification_settings = SystemSettings.get_settings()
         for item in items:
             classify_product(item.product, settings_obj=classification_settings)
@@ -607,20 +420,10 @@ class SaleService:
     @classmethod
     @transaction.atomic
     def reject_sale(cls, sale, rejected_by, reason):
-        """Phase 8.99b — mirrors PurchaseService.reject(). No
-        notification type exists for "sale rejected" (11_NOTIFICATIONS.md
-        lists sale_completed but nothing for rejection) — logs but does
-        not notify, matching this project's own established precedent for
-        exactly this shape of gap (AdjustmentService.reject()'s identical
-        reasoning) rather than inventing a second undocumented type this
-        same phase, on top of the one (SALE_PENDING) already disclosed as
-        load-bearing. SALE_PENDING was the load-bearing exception; this
-        one is purely informational, same as the precedent it follows."""
+        """Mirrors PurchaseService.reject(); logs but does not notify."""
         if sale.status != SaleStatus.PENDING:
             raise ValueError("Only pending sales can be rejected.")
 
-        # BUG-57 close-out — same plain role check as approve_sale() just
-        # above, matching SaleRejectView's own SupervisorRequiredMixin.
         if not (rejected_by.is_supervisor or rejected_by.is_admin):
             raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
 
@@ -633,25 +436,11 @@ class SaleService:
     @classmethod
     @transaction.atomic
     def cancel_sale(cls, sale, cancelled_by, reason):
-        """Phase 8.99b restricted this to pre-approval states only (DRAFT/
-        PENDING); Phase 8.99c locks that rule in for good (see this
-        class's own docstring and §13) — a COMPLETED sale can never be
-        cancelled by this method. 06_SALES.md's original "cancellation
-        restores stock via increase_stock()" no longer applies to what
-        this method actually does: a draft/pending sale has deducted no
-        stock at all (that only happens in approve_sale() now), so there
-        is nothing to restore. Post-completion corrections (returns,
-        mis-keyed quantities, damaged goods) go through an Inventory
-        Adjustment instead — see §13, "post-completion correction path."
-
-        `reason` is now required (ReasonForm, same as reject_sale()) and
-        stored alongside who/when, mirroring rejected_reason's own shape."""
+        """Cancellable only pre-approval; corrections go through Adjustment."""
         if sale.status not in cls._CANCELLABLE_STATUSES:
             raise ValueError(f"Cannot cancel a sale with status '{sale.status}'.")
 
-        # Phase 12 — ApprovalTxType.SALE_CANCEL: who may cancel is now
-        # policy-governed too, same gate shape as PurchaseService.approve()/
-        # AdjustmentService.approve() above.
+        # Security: cancellation is policy-routed, unlike PO/Adjustment cancel.
         policy, required_level, _ = resolve_for_transaction(sale)
         allowed, denial_reason = can_approve(cancelled_by, sale)
         if not allowed:
@@ -667,16 +456,7 @@ class SaleService:
             details={'policy_id': policy.pk if policy else None, 'required_level': required_level},
         )
 
-        # Phase 10 — reclassify here too, per instruction. Functionally a
-        # no-op today: cancel_sale() only ever runs on DRAFT/PENDING sales
-        # (the docstring above), which never reached approve_sale(), so
-        # no stock has moved and no SaleItem here has ever counted toward
-        # get_last_sold_date()/calculate_turnover_rate() (both filter
-        # status=COMPLETED) — classify_product() will recompute the exact
-        # same result it already has. Included anyway: keeps classified_at
-        # a genuine "last touched" timestamp, costs one cheap query per
-        # line item, and needs no future code change if a classification
-        # signal ever does start reading non-completed sales.
+        # Rule: reclassifies even though currently a no-op for these sales.
         classification_settings = SystemSettings.get_settings()
         for item in sale.items.select_related('product').all():
             classify_product(item.product, settings_obj=classification_settings)
@@ -690,42 +470,13 @@ class SaleService:
 
 
 class AdjustmentService:
-    """No dedicated doc exists — docs/08_ADJUSTMENTS.md is referenced by
-    INDEX.md but missing from disk (see docs/project_memory.md §12).
-    Mirrors PurchaseService's approve/reject pattern per this task's own
-    instruction. Unlike PurchaseOrder, InventoryAdjustment has no draft
-    state (SCHEMA.md defaults status to PENDING on creation) — so there's
-    no submit_for_approval equivalent; create() below resolves the policy
-    once at request time (AUTO posts immediately, SUPERVISOR/ADMIN save
-    as PENDING), approve()/reject() apply to an already-pending row."""
+    """Mirrors PurchaseService; AUTO posts immediately, others go PENDING."""
 
     @classmethod
     @transaction.atomic
     def create(cls, adjustment, requested_by):
-        """Phase 12 — adjustment: an unsaved InventoryAdjustment (product/
-        adjustment_type/quantity/reason_code/reason already set by the
-        caller's form; requested_by not yet). Resolves the applicable
-        policy BEFORE ever saving a PENDING row:
-
-        AUTO -> saved directly as APPROVED, stock posted immediately via
-        InventoryService, attributed to the creator, ONE audit entry
-        (ADJUSTMENT_AUTO_POSTED) naming the policy that authorised it —
-        never a PENDING row immediately followed by a second, fake
-        "approved" call (§6's own instruction: two log entries mimicking
-        a human review nobody actually did would pollute the approval
-        history).
-        SUPERVISOR/ADMIN -> saved as PENDING; the audience actually
-        empowered to act on it is notified (§6) — supervisors, or admins
-        only when the resolved policy requires ADMIN.
-
-        Phase 12.1 §4 — resolution goes through
-        resolve_adjustment_with_cumulative_cap(), not the plain
-        resolve_for_transaction(): an AUTO match can be deflected if it
-        would push this product's trailing-window AUTO-posted total over
-        its policy's cumulative_value_cap, in which case resolution
-        continues from the next-priority policy and a
-        ADJUSTMENT_AUTO_DEFLECTED audit entry records both figures —
-        "the trail that makes the control provable.\""""
+        """Resolves policy first; AUTO posts stock immediately, else PENDING."""
+        # Rule: an AUTO match can be deflected by the cumulative-value cap.
         adjustment.requested_by = requested_by
         policy, required_level, deflected_from, cumulative_total = resolve_adjustment_with_cumulative_cap(adjustment)
         adjustment.resolved_policy = policy
@@ -796,7 +547,6 @@ class AdjustmentService:
         if adjustment.status != AdjustmentStatus.PENDING:
             raise ValueError("Only pending adjustments can be approved.")
 
-        # Phase 12 — same service-layer gate as PurchaseService.approve().
         policy, required_level, _ = resolve_for_transaction(adjustment)
         allowed, reason = can_approve(approved_by, adjustment)
         if not allowed:
@@ -827,8 +577,6 @@ class AdjustmentService:
             f'{adjustment.product.name} has been approved.',
             link=f'/adjustments/{adjustment.pk}/',
         )
-        # 13_AUDIT.md's own usage example shows exactly this call shape,
-        # extended with policy_id/required_level (§6) alongside it.
         audit.log_action(
             approved_by, audit.ADJUSTMENT_APPROVED, 'adjustments', affected_id=adjustment.pk,
             status='success', details={
@@ -844,19 +592,13 @@ class AdjustmentService:
         if adjustment.status != AdjustmentStatus.PENDING:
             raise ValueError("Only pending adjustments can be rejected.")
 
-        # BUG-57 close-out — same plain role check as SaleService.
-        # approve_sale(), matching AdjustmentRejectView's own
-        # SupervisorRequiredMixin.
         if not (rejected_by.is_supervisor or rejected_by.is_admin):
             raise ApprovalAuthorityError('Requires supervisor or administrator approval.')
 
         adjustment.status = AdjustmentStatus.REJECTED
         adjustment.rejected_reason = reason
         adjustment.save(update_fields=['status', 'rejected_reason', 'updated_at'])
-        # No 'adj_rejected' notification type exists in 11_NOTIFICATIONS.md's
-        # type table (only adj_pending/adj_approved are listed) — logs but
-        # does not notify, matching what's documented rather than inventing
-        # a type, same reasoning as PurchaseService.cancel() above.
+        # Rule: logs but does not notify -- no notification type exists for this.
         audit.log_action(
             rejected_by, audit.ADJUSTMENT_REJECTED, 'adjustments', affected_id=adjustment.pk,
             status='success', details={'quantity': adjustment.quantity, 'type': adjustment.adjustment_type},

@@ -7876,3 +7876,92 @@ sessions: sweep the rest of `frontend/*.py`, then templates/JS/CSS, per
 `docs/COMMENT_POLICY.md`.
 
 Not committed — reported back for review per instruction.
+
+## Phase — Comment Hygiene Pass, Session 2/5: Tightened FORM, Retrofit, Service Layer (2026-09-13)
+
+FORM rule tightened: one line, <= 80 chars, no exceptions. BUG-xx tags,
+phase/version numbers, dates, and docs/*.md pointers are now banned
+outright in code comments -- the earlier session-1 exception that let a
+BUG-xx tag survive inside a kept `# Workaround:`/`# Edge:` line is
+withdrawn. `docs/COMMENT_POLICY.md` rewritten to match; the session-1
+pilot slice was not grandfathered -- it was retrofitted in this
+session's PHASE 0 to the same rule, so `models.py`/`mixins.py`/
+`permissions.py`/`decorators.py` now carry zero BUG-xx tags (including
+the BUG-93 cross-reference `mixins.py` itself gained last session --
+that cross-reference now lives only in bugsfound.md).
+
+Celery-note allocation decided globally across all 7 files that carry
+one (only `notifications.py` was actually in this session's scope, not
+two as originally framed -- verified by grep, corrected before editing):
+keep a one-line `# Assumption:` only where synchronous execution is
+load-bearing (`classification.py`/`forecasting.py` for session 3,
+`notifications.py` applied now, `views.py` x2 and
+`static/js/async-run-button.js` for a later session); delete in
+`api_views.py`/`api_urls.py`, where the note only explained a build
+decision, not a runtime constraint.
+
+Density ruling: no exemption for going over 1 comment per ~20 lines --
+fix by deduplicating repeated facts, not by trimming distinct ones. The
+recurring "plain role check, not policy-routed" fact (7 near-identical
+site-level comments across `services.py`) collapsed to one line at the
+top of the file; the 2 sites that are genuine exceptions to it
+(`SaleService.cancel_sale()`, which IS policy-routed unlike PO/
+Adjustment cancel/reject) kept their own `# Security:` line stating the
+deviation explicitly. `can_approve()`'s 4 branch comments reduced to 1
+(self-approval block) -- the other 3 restated the conditional directly
+beneath them.
+
+Docstring-vs-comment discipline: never both stating the same fact on
+one construct -- delete narrative docstrings outright (not shorten),
+one-line contract docstrings only on public entry points, private
+helpers get none. Applied uniformly across all 10 files touched across
+both sessions.
+
+**BUG-94** (docs/bugsfound.md): `audit.log_action()`'s docstring claimed
+`request` "is always None for now" -- false, 39 call sites in
+`views.py` pass a real one. Stale since before `views.py` existed;
+deleted outright rather than rewritten, per this session's own ruling
+that a false claim gets removed, not patched.
+
+**BUG-95** (docs/bugsfound.md): `notifications.py`'s module docstring
+claimed `notify_user()`/`notify_supervisors()` are the ONLY path that
+creates `Notification` rows -- false, `notify_admins()` (same file)
+also does. Verified via `grep -rn "Notification.objects.create"
+--include="*.py" .` (excluding migrations): exactly 3 application-code
+sites, all three `notify_*` helpers -- the corrected claim (all three,
+not two) is true and kept as a one-line `# Rule:`.
+
+Comment+docstring line counts (pre-hygiene baseline -> now, all 10
+files touched across sessions 1-2):
+| file | before | after |
+|---|---|---|
+| models.py | 292 | 54 |
+| mixins.py | 8 | 1 |
+| permissions.py | 16 | 1 |
+| decorators.py | 19 | 2 |
+| services.py | 292 | 34 |
+| approvals.py | 182 | 13 |
+| pricing.py | 26 | 2 |
+| audit.py | 105 | 9 |
+| validators.py | 40 | 5 |
+| notifications.py | 65 | 10 |
+
+services.py's density (34 lines over 531 LOC, ~1/16) sits above the
+1/20 budget even after deduplication -- every remaining line states a
+genuinely distinct fact across ~15 methods (contract, rule, or
+security deviation); flagged rather than cut further, since further
+cuts would lose information per the ruling's own test.
+
+Verification: `scripts/comment_guard.py` clean on all 10 files (no code
+changed anywhere). Full suite: 483/483, unchanged. Grep for
+`BUG-|Phase |docs/|\.md` across all 10 files: one hit, in
+`approvals.py` -- a seeded `ApprovalPolicy.notes` string value (real
+application data an admin sees in the UI), not a comment; correctly
+left untouched since editing it would be a data/code change, not a
+comment-only one.
+
+Remaining sessions: `classification.py`/`forecasting.py`/`filters.py`
+next (session 3 per the original split), then session 4/5 for
+templates/JS/CSS and the rest of `frontend/*.py`.
+
+Not committed — reported back for review per instruction.

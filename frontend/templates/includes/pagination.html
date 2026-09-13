@@ -1,14 +1,4 @@
-{% comment %}
-  Shared pagination controls — the ONE definition every server-paginated
-  table uses (Movement History's own inline markup, extracted here so nine
-  tables don't each carry a copy). Expects:
-    page          — a django.core.paginator Page object (from get_page())
-    querystring   — current GET params with `page` stripped, urlencoded
-                     (so any filter/search/toggle survives Previous/Next)
-    item_label    — plural noun for the "Showing X-Y of Z {item_label}" line
-
-  Renders nothing at all when the table has zero rows — never "Page 1 of 0".
-{% endcomment %}
+{# Assumption: expects page (a Paginator Page), querystring, and item_label. #}
 {% if page.paginator.count %}
   <div class="panel-body" style="padding-top:0;">
     <div class="flex items-center justify-between gap-4" style="flex-wrap:wrap;">

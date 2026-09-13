@@ -1,17 +1,3 @@
-/* ==========================================================================
-   ADJUSTMENT-FORM.JS — New Adjustment form and the real Approve/Reject
-   row actions for adjustments/adjustments.html (Phase 7). Single-entity
-   form (no line items) — plugs straight into modal-form.js like
-   product-form.js/category-form.js/supplier-form.js, following the same
-   fetch()-based onSubmit contract (Phase 5.5).
-
-   The adjustment-type <select>'s option values changed from the mock's
-   "Increase"/"Decrease" (display-only, since nothing read them before) to
-   the model's real lowercase choice values ("increase"/"decrease") — the
-   ModelForm validates against AdjustmentType.choices exactly, so the
-   posted value has to match one of those, not just look right.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -99,8 +85,6 @@
       return false;
     });
   }
-
-  /* --------------------------------------------------- row actions --- */
 
   function handleRowAction(event) {
     var row = event.target.closest("tr[data-adjustment-id]");

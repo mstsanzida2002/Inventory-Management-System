@@ -1,22 +1,4 @@
-/* ==========================================================================
-   MODAL.JS — generic, reusable modal controller
-   Works with any overlay built from the .modal-overlay/.modal markup in
-   components.css. Wire it up purely with data attributes:
-
-     <button data-modal-open="myModalId">Open</button>
-
-     <div class="modal-overlay" id="myModalId" data-modal aria-hidden="true">
-       <div class="modal" role="dialog" aria-modal="true">
-         ...
-         <button data-modal-close>Close</button>
-       </div>
-     </div>
-
-   Handles: open/close, ESC, outside click, background scroll lock, and
-   returning focus to the trigger. Emits "modal:open" / "modal:close"
-   CustomEvents on `document` (detail: { id }) so feature-specific scripts
-   (e.g. product-form.js) can react without this file knowing about them.
-   ========================================================================== */
+// Rule: owns generic modal mechanics only; no form or field knowledge.
 
 (function () {
   "use strict";
@@ -102,12 +84,7 @@
     initEscapeKey();
   });
 
-  /* Minimal public API so other scripts can open/close a modal
-     programmatically — close (e.g. after a form successfully validates
-     and "saves") already existed; open (Phase 8.99e) lets a row action
-     (e.g. Edit) populate a modal's fields with that row's own data
-     *before* showing it, which a plain data-modal-open trigger can't do
-     since it fires before any JS handler runs. */
+  // Rule: open() lets a caller populate fields before the modal shows.
   window.InventoryModal = {
     close: function (id) { closeModal(document.getElementById(id)); },
     open: function (id, trigger) { openModal(document.getElementById(id), trigger); }

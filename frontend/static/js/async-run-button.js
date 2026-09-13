@@ -1,17 +1,4 @@
-/* ==========================================================================
-   ASYNC-RUN-BUTTON.JS — button loading-state for a "run this now" action.
-   Two modes:
-   - config.action (Promise-returning function): real, synchronous server
-     call — Phase 10's "Run classification now" (no Celery in this
-     project; the classifier runs inline and returns a real result before
-     this resolves). Used on Slow-Moving & Dead Stock.
-   - no config.action: original simulated queued/running affordance for an
-     async Celery task this project doesn't build (Demand Forecasting's
-     "Run forecast now" — Phase 11 decides whether that page ever gets a
-     real backend). Unchanged behavior, so this page needed no edits.
-   Shared by both Intelligence pages instead of duplicating the disable/
-   spinner/restore sequence twice.
-   ========================================================================== */
+// Assumption: config.action is a real synchronous call -- no Celery task queue.
 
 (function () {
   "use strict";

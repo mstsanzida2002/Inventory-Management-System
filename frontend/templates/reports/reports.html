@@ -6,37 +6,7 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8 — docs/10_REPORTS.md, real data via frontend/reports.py's 9
-    builders, SupervisorRequiredMixin-gated. Every card here is a direct
-    PDF/CSV download, identical in structure (icon, heading, one-line
-    description, PDF + CSV buttons) — no on-page preview anywhere on
-    this page, and no card carries any filter UI.
-
-    BUG-92 (docs/bugsfound.md) — Sales and Low Stock used to link to an
-    inline HTML preview panel (a table, and for Sales a chart) instead
-    of exporting directly, and loading this page fired a
-    REPORT_GENERATED audit entry for both regardless of whether anyone
-    actually generated anything. Both panels are gone.
-
-    Sales and Low Stock briefly (2026-09-12) carried their own filter
-    inputs (date range + category for Sales, category for Low Stock)
-    directly on the card. Removed the same day: visibly wider/taller
-    than every other card, breaking the uniform grid this pass exists
-    to create — visual consistency won out over in-card filtering.
-    date_from/date_to/category are still fully honoured server-side by
-    build_sales_report()/build_low_stock_report() (frontend/reports.py)
-    for anyone who passes them directly in the URL; see
-    docs/10_REPORTS.md and docs/project_memory.md — this is a deliberate
-    UI choice, not a rediscoverable gap.
-
-    Sales' PDF and CSV exports intentionally differ in shape — CSV is
-    still the detailed per-transaction dump (build_sales_report()), PDF
-    is a status-breakdown aggregate (generate_sales_summary_pdf()), a
-    disclosed Phase 13 Task 4 decision, unrelated to this pass and left
-    as-is.
-  {% endcomment %}
-
+  {# Assumption: date_from/date_to/category work via URL despite no filter UI. #}
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Reports</h2>

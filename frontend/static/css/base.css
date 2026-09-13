@@ -1,8 +1,3 @@
-/* ==========================================================================
-   BASE this is the base.css file— reset, typography, layout utilities
-   Depends on tokens.css being loaded first.
-   ========================================================================== */
-
 *, *::before, *::after { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 
@@ -35,13 +30,11 @@ p { margin: 0 0 var(--sp-4); color: var(--c-slate); }
 a { color: var(--c-indigo); text-decoration: none; }
 a:hover { color: var(--c-indigo-deep); }
 
-/* Numeric / data text — SKUs, quantities, prices, timestamps */
 .mono, .data-value, .figure {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
-/* Visible keyboard focus everywhere */
 a:focus-visible, button:focus-visible, input:focus-visible,
 textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--c-indigo);
@@ -49,7 +42,6 @@ textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
   border-radius: 4px;
 }
 
-/* ---- Layout helpers ---- */
 .container {
   width: 100%;
   max-width: var(--container-max);

@@ -1,12 +1,4 @@
-{% comment %}
-  Phase 12 — shared ApprovalPolicy field markup for both the Add and Edit
-  modals in approval_policies.html (one include, two prefixes — same
-  pattern as this project's other Add/Edit modal pairs, just without a
-  second copy-pasted block of HTML to keep in sync). `prefix` sets each
-  input's id (and its matching label `for`/error-box id); `name=` stays
-  the real ModelForm field name in both cases, since each include renders
-  inside its own independent <form>.
-{% endcomment %}
+{# Assumption: prefix sets ids only -- name is the real field either way. #}
 <div class="form-alert form-alert-error" id="{{ prefix }}-form-error" hidden></div>
 <div class="form-grid">
 
@@ -91,7 +83,6 @@
     <div class="field-error" id="{{ prefix }}-notes-error" role="alert"></div>
   </div>
 
-  {% comment %} Built, tested, and enforced (Phase 12.1 §4) — kept out of the way here as optional, bottom-of-form fields rather than removed. {% endcomment %}
   <div class="field">
     <label class="form-label" for="{{ prefix }}-cumulative-window">Cumulative window (days) <span class="optional-tag">(AUTO only — blank = no cap)</span></label>
     <input class="input input-plain" type="number" id="{{ prefix }}-cumulative-window" name="cumulative_window_days" min="1" step="1">

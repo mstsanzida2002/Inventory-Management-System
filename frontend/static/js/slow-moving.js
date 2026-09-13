@@ -1,18 +1,3 @@
-/* ==========================================================================
-   SLOW-MOVING.JS — Slow-Moving & Dead Stock page: classification doughnut
-   chart + "Run classification now". Search/category/classification are
-   real server-side GET params now (Pagination pass, 2026-08-25 —
-   frontend.filters.filter_classifications()), submitted via the page's
-   own <form method="get"> and the classification toggle's real links, so
-   this file no longer wires table-filter.js. It owns the chart (real
-   counts, via {{ chart_data|json_script:"classificationChartData" }} —
-   the same server-data-into-chart convention dashboard.js already uses)
-   and the Run button's real POST (row-actions.js's postAction(), the same
-   fetch()+CSRF+blocked-redirect handling every other action in this app
-   already shares — Phase 10 is this page's first real backend call, not a
-   reason to invent a second way to make one).
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -20,6 +5,7 @@
     var el = document.getElementById("classificationChartData");
     if (!el) return { fast: 0, slow: 0, dead: 0, insufficient_data: 0 };
     try {
+      // Assumption: json_script-rendered chart_data from SlowMovingDeadStockView.
       return JSON.parse(el.textContent);
     } catch (e) {
       return { fast: 0, slow: 0, dead: 0, insufficient_data: 0 };
@@ -41,10 +27,7 @@
         labels: ["Fast-Moving", "Slow-Moving", "Dead Stock", "Insufficient Data"],
         datasets: [{
           data: [data.fast, data.slow, data.dead, data.insufficient_data],
-          // Prompt 2 (2026-08-24) — muted grey (slate200), visually
-          // distinct from the three status colors: insufficient_data
-          // isn't a problem state and shouldn't read as a fourth
-          // severity level.
+          // Rule: insufficient_data gets its own neutral color -- not a problem state.
           backgroundColor: [COLORS.success, COLORS.warning, COLORS.danger, COLORS.slate200],
           borderWidth: 0
         }]
@@ -99,10 +82,6 @@
         });
       },
       onComplete: function () {
-        // Real counts (KPIs, doughnut, table, Needs Attention) all come
-        // from server-rendered context — a reload is the simplest way to
-        // reflect them, matching every other action in this app
-        // (RowActions.reportResult()'s own default behavior).
         window.location.reload();
       }
     });

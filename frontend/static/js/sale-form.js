@@ -1,21 +1,3 @@
-/* ==========================================================================
-   SALE-FORM.JS — New Sale form (header + line items) and the real row
-   lifecycle actions (submit/approve/reject/cancel) for sales/sales.html
-   (Phase 7, extended Phase 8.99b to mirror purchase-form.js's
-   submit/approve/reject shape now that Sales has the same approval gate
-   Purchases already had).
-
-   No requiredFieldIds at the top level — confirmed intentional, not an
-   oversight: SaleTransaction has no required field beyond its line items
-   (customer_name/notes are both blank=True on the model, matching
-   06_SALES.md's "Customer info | Optional" rule exactly). Line items are
-   still gated by extraValidate, same as before.
-
-   line-items.js itself is untouched — see purchase-form.js's header for
-   the same note on productOptionsHtml now coming from a real, server-
-   rendered #realProductOptions template instead of mock-catalog.js.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -97,8 +79,6 @@
     });
   }
 
-  /* ---------------------------------------------------- row actions --- */
-
   function saleActionUrl(saleId, action) {
     var tableBody = getField("salesTableBody");
     var base = tableBody ? tableBody.getAttribute("data-base-url") : "/sales/";
@@ -118,14 +98,14 @@
       RowActions.postAction(saleActionUrl(saleId, "approve")).then(RowActions.reportResult);
     } else if (event.target.closest(".sale-reject-btn")) {
       var reason = prompt("Reason for rejecting this sale:");
-      if (reason === null) return; // cancelled
+      if (reason === null) return;
       if (!reason.trim()) { alert("A reason is required to reject a sale."); return; }
       var formData = new FormData();
       formData.append("reason", reason.trim());
       RowActions.postAction(saleActionUrl(saleId, "reject"), formData).then(RowActions.reportResult);
     } else if (event.target.closest(".sale-cancel-btn")) {
       var cancelReason = prompt("Reason for cancelling this sale?");
-      if (cancelReason === null) return; // cancelled
+      if (cancelReason === null) return;
       if (!cancelReason.trim()) { alert("A reason is required to cancel a sale."); return; }
       var cancelFormData = new FormData();
       cancelFormData.append("reason", cancelReason.trim());
@@ -134,10 +114,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // Pagination pass (2026-08-25) — search/status are real server-side
-    // GET params now (frontend.filters.filter_sales()), submitted via the
-    // page's own <form method="get">; client-side TableFilter would only
-    // ever see the current page's 10 rows.
+    // Rule: search/status are server-side GET params, not client-side.
     var tableBody = getField("salesTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
 
@@ -152,6 +129,7 @@
       priceAttr: "data-selling-price"
     });
 
+    // Rule: no requiredFieldIds -- SaleTransaction has none beyond line items.
     ModalForm.init({
       formId: FORM_ID,
       modalId: MODAL_ID,

@@ -7,19 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 4 — real view (frontend.views.profile_view), not a mock. Fields
-    match 01_AUTH.md's profile_update_view reference code exactly:
-    full_name, contact_number, profile_image.
-
-    Phase 8.98a — password change moved off this form's old inline
-    "new password" field (no current-password check, no confirm field —
-    both real gaps for a self-service change) into its own real modal,
-    posting to the dedicated frontend:change_password endpoint. Same
-    validate_password() enforcement as before, now with a required
-    current-password check and a confirm field that must match.
-  {% endcomment %}
-
   {% if messages %}
     {% for message in messages %}
       <div class="form-alert form-alert-{{ message.tags }}" role="alert">{{ message }}</div>
@@ -104,7 +91,6 @@
     </button>
   </form>
 
-  {# ------------------------------------------------- Change password modal #}
   <div class="modal-overlay" id="changePasswordModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="changePasswordModalTitle">
 

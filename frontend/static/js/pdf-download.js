@@ -1,21 +1,4 @@
-/* ==========================================================================
-   PDF-DOWNLOAD.JS — REQ 18.7: a loading indicator for PDF export links.
-   PDF generation (frontend/pdf.py, ReportLab building a full document with
-   the live company header/footer/tables) is genuinely slow next to a CSV
-   dump — before this, every "PDF" link was a plain <a href>, so the button
-   stayed clickable and gave zero feedback for however long generation took
-   (docs/bugsfound.md BUG-81). A plain navigation download also gives JS no
-   way to know when the file is actually ready — the fix is to fetch() the
-   PDF as a blob (this DOES resolve exactly when generation finishes) and
-   trigger the save from script, instead of letting the browser navigate.
-
-   Any `<a class="js-pdf-link">` is auto-wired on DOMContentLoaded — used
-   by every plain "Download PDF"/"PDF" link across Purchases/Sales/
-   Adjustments/Movement History/Reports. `fetchAndSave(url, element)` is
-   also exposed on `window.PdfDownload` for any other element that needs
-   to trigger a fetch-and-save PDF download without an `<a href>` of its
-   own to auto-wire.
-   ========================================================================== */
+// Workaround: fetch()-as-blob resolves on completion; <a href> gives no signal.
 
 (function () {
   "use strict";

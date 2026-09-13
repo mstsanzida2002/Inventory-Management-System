@@ -1,21 +1,4 @@
-/* ==========================================================================
-   TABLE-FILTER.JS — generic client-side row filtering: a search box, any
-   number of <select> filters, and an optional .segmented control, all
-   matched against data-* attributes on each <tr>. Shared by the Demand
-   Forecasting and Slow-Moving & Dead Stock pages instead of each one
-   re-implementing its own search/filter wiring.
-
-   Usage:
-     TableFilter.init({
-       tableBodyId: "forecastTableBody",
-       searchInputId: "forecastSearch",        // matches row's data-search
-       selectFilters: [{ id: "forecastCategoryFilter", attr: "data-category" }],
-       segmentedId: "forecastPeriodToggle",     // buttons need data-value
-       segmentAttr: "data-period",
-       segmentDefault: "weekly",
-       emptyStateId: "forecastEmptyState"
-     });
-   ========================================================================== */
+// Rule: client-side filtering for a plain, unpaginated table only.
 
 (function () {
   "use strict";

@@ -1,24 +1,3 @@
-/* ==========================================================================
-   PURCHASE-FORM.JS — New Purchase Order form (header + line items) and the
-   real per-row lifecycle actions (submit/approve/reject/receive/cancel)
-   for purchases/purchases.html (Phase 7).
-
-   line-items.js itself is untouched — only the HTML fed into its
-   productOptionsHtml config changed (real Product <option value="{{ pk }}">
-   from the page's #realProductOptions <template>, not mock-catalog.js's
-   name-keyed options). Create-form submission follows the same fetch()-
-   based onSubmit contract as product-form.js/category-form.js/
-   supplier-form.js (Phase 5.5/6); the client-side line-items shape check
-   still runs in extraValidate exactly as before — BUG-33's fix (Phase 5.6)
-   means that's now safe by construction, not just in this one case.
-
-   Approve/submit use a plain confirm(); reject and cancel (Phase 8.99c —
-   cancel now requires a reason too) both use a plain prompt() for the
-   reason, rather than building bespoke confirmation modals the existing
-   mock never had — Receive is the one action that genuinely needs a real
-   modal (per-line quantities), so that's the only new modal built here.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -104,8 +83,6 @@
     });
   }
 
-  /* ---------------------------------------------------- row actions --- */
-
   function poActionUrl(poId, action) {
     var tableBody = getField("purchasesTableBody");
     var base = tableBody ? tableBody.getAttribute("data-base-url") : "/purchases/";
@@ -125,14 +102,14 @@
       RowActions.postAction(poActionUrl(poId, "approve")).then(RowActions.reportResult);
     } else if (event.target.closest(".po-reject-btn")) {
       var reason = prompt("Reason for rejecting this purchase order:");
-      if (reason === null) return; // cancelled
+      if (reason === null) return;
       if (!reason.trim()) { alert("A reason is required to reject a purchase order."); return; }
       var formData = new FormData();
       formData.append("reason", reason.trim());
       RowActions.postAction(poActionUrl(poId, "reject"), formData).then(RowActions.reportResult);
     } else if (event.target.closest(".po-cancel-btn")) {
       var cancelReason = prompt("Reason for cancelling this purchase order? This cannot be undone.");
-      if (cancelReason === null) return; // cancelled
+      if (cancelReason === null) return;
       if (!cancelReason.trim()) { alert("A reason is required to cancel a purchase order."); return; }
       var cancelFormData = new FormData();
       cancelFormData.append("reason", cancelReason.trim());
@@ -142,13 +119,12 @@
     }
   }
 
-  /* --------------------------------------------------- receive modal --- */
-
   var receiveTargetPoId = null;
 
   function openReceiveModal(poId, button) {
     var items;
     try {
+      // Assumption: data-items is server-rendered from receive_items_json.
       items = JSON.parse(button.getAttribute("data-items") || "[]");
     } catch (e) {
       items = [];
@@ -254,10 +230,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // Pagination pass (2026-08-25) — search/status are real server-side
-    // GET params now (frontend.filters.filter_purchases()), submitted via
-    // the page's own <form method="get">; client-side TableFilter would
-    // only ever see the current page's 10 rows.
+    // Rule: search/status are server-side GET params, not client-side.
     var tableBody = getField("purchasesTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
     initReceiveForm();

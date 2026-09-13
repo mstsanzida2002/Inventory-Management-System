@@ -7,15 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8.9 — docs/07_INVENTORY.md's inventory_list_view, real at last
-    (BUG-37/BUG-41: this page was still 100% hardcoded mock through
-    Phase 8.8). Read-only by design — no add/edit/delete anywhere on this
-    page. InventoryRecord.status is read straight from the DB, not
-    recomputed here; InventoryService already keeps it correct on every
-    real stock mutation (purchase receipt / sale / approved adjustment).
-  {% endcomment %}
-
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Inventory</h2>
@@ -28,8 +19,6 @@
       </a>
     </div>
   </div>
-
-  {# ------------------------------------------------------- Summary strip #}
   <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All inventory &mdash; not affected by search or filters below</p>
   <div class="stat-strip">
     <div class="stat-strip-item">
@@ -61,8 +50,6 @@
       </div>
     </div>
   </div>
-
-  {# --------------------------------------------------------------- Records #}
   <div class="panel">
     <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
       <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">

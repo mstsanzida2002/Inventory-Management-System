@@ -24,7 +24,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------- Summary strip #}
   <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All products &mdash; not affected by search or filters below</p>
   <div class="stat-strip">
     <div class="stat-strip-item">
@@ -57,7 +56,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------------- Products #}
   <div class="panel">
     <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
       <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
@@ -97,6 +95,7 @@
               <th>Stock</th>
               <th>Unit price</th>
               <th>Status</th>
+      
               <th></th>
             </tr>
           </thead>
@@ -114,17 +113,17 @@
               <td><span class="badge {{ product.stock_badge }}">{{ product.stock_label }}</span></td>
               <td>
                 <div class="widget-actions">
-                  {# ProductUpdateView: AnyStaffMixin — every logged-in role may edit, no gate needed #}
+                  {# Rule: edit has no gate -- ProductUpdateView allows any logged-in role. #}
                   <button class="pill-btn product-edit-btn" type="button" aria-label="Edit product"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
                   {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
-                    {# Phase 8.99i: icon-x for deactivate (was icon-trash — the same icon Delete uses below, misleadingly implying destruction for what's actually a reversible soft-deactivate). ProductDeactivateView/ProductReactivateView: SupervisorRequiredMixin. #}
+                    {# Rule: icon-x means deactivate; icon-trash is reserved for genuine delete. #}
                     {% if product.is_active %}
                       <button class="pill-btn reject product-deactivate-btn" type="button" aria-label="Deactivate product"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
                     {% else %}
                       <button class="pill-btn product-reactivate-btn" type="button" aria-label="Reactivate product"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                     {% endif %}
                     {% if product.deletable %}
-                      {# ProductDeleteView: only ever succeeds for a product with zero purchase/sale/adjustment history — everyone else must be deactivated instead. #}
+                      {# Rule: delete only appears when the product has zero movement history. #}
                       <button class="pill-btn reject product-delete-btn" type="button" aria-label="Delete product" title="Delete product"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
                     {% endif %}
                   {% endif %}
@@ -140,6 +139,7 @@
                   No products yet — click "Add product" to create the first one.
                 {% endif %}
               </td>
+          
             </tr>
             {% endfor %}
           </tbody>
@@ -150,7 +150,6 @@
     {% include "includes/pagination.html" with page=page querystring=querystring item_label="products" %}
   </div>
 
-  {# --------------------------------------------------- Add product modal #}
   <div class="modal-overlay" id="addProductModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addProductModalTitle">
 
@@ -279,21 +278,6 @@
     </div>
   </div>
 
-  {% comment %}
-    Edit product modal (Phase 8.99e) — this project's first per-entity
-    edit UI. A separate modal/form from Add rather than one form toggling
-    mode: ModalForm.init() is called once per (formId, modalId) pair and
-    is designed to support exactly this (see modal-form.js's own header).
-    Pre-filled entirely client-side from each row's own data-product JSON
-    (product-form.js), no fetch-before-open round trip needed — the same
-    "compute once server-side, read via data-*" pattern the Receive modal
-    already uses for its per-line quantities (purchases.html).
-
-    SKU is read-only here (disclosed decision, see ProductUpdateView's
-    own docstring in frontend/views.py) — shown so the user can still see
-    it, but disabled so it can never be part of what's posted; the server
-    enforces this independently regardless of what the client sends.
-  {% endcomment %}
   <div class="modal-overlay" id="editProductModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editProductModalTitle">
 

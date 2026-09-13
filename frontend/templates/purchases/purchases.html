@@ -19,8 +19,6 @@
       </button>
     </div>
   </div>
-
-  {# ------------------------------------------------------- Summary strip #}
   <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All purchase orders &mdash; not affected by search or filters below</p>
   <div class="stat-strip">
     <div class="stat-strip-item">
@@ -52,8 +50,6 @@
       </div>
     </div>
   </div>
-
-  {# ------------------------------------------------------------ Purchases #}
   <div class="panel">
     <div class="panel-header" style="align-items:center; flex-wrap:wrap; gap: var(--sp-3); padding-bottom: var(--sp-5);">
       <form method="get" class="flex gap-3" style="flex:1; flex-wrap:wrap; align-items:center;">
@@ -106,27 +102,24 @@
               <td class="mono">{{ po.expected_delivery|date:"d M Y"|default:"—" }}</td>
               <td class="mono">${{ po.total_cost|floatformat:2 }}</td>
               <td>
-                {# Phase 8.99c: cancellation/rejection reason surfaced as a native title tooltip on the status badge — reachable on hover, no new modal/column needed. #}
+                {# Rule: cancel/reject reason shows as a hover tooltip, not a new column. #}
                 <span class="badge {{ po.status_badge }}" {% if po.display_reason %}title="{{ po.display_reason }}"{% endif %}>{{ po.get_status_display }}</span>
               </td>
               <td>
                 <div class="widget-actions">
                   {% if po.status == 'draft' %}
-                    {# PurchaseSubmitView: AnyStaffMixin — every logged-in role may submit, no gate needed #}
                     <button class="pill-btn po-submit-btn" type="button" aria-label="Submit for approval" title="Submit for approval"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                   {% elif po.status == 'pending' %}
-                    {# PurchaseApproveView/PurchaseRejectView: SupervisorRequiredMixin is the floor; Phase 12's can_approve() narrows further per-PO — shown-but-disabled-with-reason, never hidden (§8b). #}
+                    {# Rule: a denied approve is shown disabled with a reason, not hidden. #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
                       {% if po.required_level == 'admin' %}<span class="badge badge-danger" title="Requires administrator approval">Admin</span>{% endif %}
                       <button class="pill-btn approve po-approve-btn" type="button" aria-label="Approve PO" {% if not po.can_approve %}disabled title="{{ po.approve_denied_reason }}"{% endif %}><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                       <button class="pill-btn reject po-reject-btn" type="button" aria-label="Reject PO"><svg class="icon icon-sm"><use href="#icon-circle-slash"></use></svg></button>
                     {% endif %}
                   {% elif po.status == 'approved' or po.status == 'partial' %}
-                    {# PurchaseReceiveView: AnyStaffMixin — every logged-in role may receive, no gate needed #}
                     <button class="pill-btn po-receive-btn" type="button" aria-label="Receive items" data-items="{{ po.receive_items_json }}"><svg class="icon icon-sm"><use href="#icon-package-check"></use></svg></button>
                   {% endif %}
                   {% if po.cancellable %}
-                    {# PurchaseCancelView: SupervisorRequiredMixin #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
                       <button class="pill-btn reject po-cancel-btn" type="button" aria-label="Cancel PO" title="Cancel PO"><svg class="icon icon-sm"><use href="#icon-x"></use></svg></button>
                     {% endif %}
@@ -156,24 +149,10 @@
     {% include "includes/pagination.html" with page=page querystring=querystring item_label="purchase orders" %}
   </div>
 
-  {% comment %}
-    Real product options for the line-items editor (Phase 7 — replaces
-    mock-catalog.js's name-keyed options; retired, see project_memory.md).
-    A template tag so it's inert markup, read by purchase-form.js at init.
-  {% endcomment %}
   <template id="realProductOptions">
     {% for product in products %}<option value="{{ product.pk }}" data-tax-rate="{{ product.tax_rate }}" data-purchase-price="{{ product.purchase_price|default_if_none:'' }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}
   </template>
 
-  {% comment %}
-    New purchase order modal
-    Fields sourced from PurchaseOrder / PurchaseOrderItem in database/SCHEMA.md.
-    Auto-generated fields (po_number, status, created_by, order_date, total_cost)
-    and approval-stage fields (approved_by/at, rejected_reason) are not part of
-    this form — this only performs the documented "create PO as draft" step;
-    submit-for-approval is a separate, later action per the PO state machine
-    in modules/05_PURCHASES.md.
-  {% endcomment %}
   <div class="modal-overlay" id="addPurchaseModal" data-modal aria-hidden="true">
     <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="addPurchaseModalTitle">
 
@@ -255,8 +234,6 @@
 
     </div>
   </div>
-
-  {# ------------------------------------------------------ Receive modal #}
   <div class="modal-overlay" id="receivePurchaseModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="receivePurchaseModalTitle">
       <div class="modal-header">

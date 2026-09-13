@@ -1,10 +1,3 @@
-/* ==========================================================================
-   DASHBOARD JS — dashboard.js
-   Mobile sidebar toggle + Chart.js initialization for the overview page.
-   Depends on Chart.js (loaded via CDN in dashboard_base.html) and
-   window.ChartColors (chart-colors.js) for the tokens.css color mirror.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -12,7 +5,6 @@
 
   var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* ---------------------------------------------------- Mobile sidebar */
   function initSidebarToggle() {
     var toggle = document.getElementById("sidebarToggle");
     var sidebar = document.getElementById("sidebar");
@@ -33,7 +25,6 @@
     scrim.addEventListener("click", close);
   }
 
-  /* -------------------------------------------------- Topbar dropdowns */
   function initDropdowns() {
     var dropdowns = document.querySelectorAll(".dropdown");
     if (!dropdowns.length) return;
@@ -66,11 +57,11 @@
     });
   }
 
-  /* ------------------------------------------------- Sales/Purchases chart */
   function readDashboardChartData() {
     var el = document.getElementById("dashboardChartData");
     if (!el) return null;
     try {
+      // Assumption: json_script-rendered chart_data from DashboardView.get().
       return JSON.parse(el.textContent);
     } catch (e) {
       return null;
@@ -81,10 +72,6 @@
     var canvas = document.getElementById("salesChart");
     if (!canvas || typeof Chart === "undefined" || !chartData) return;
 
-    // Real data (Phase 8.96, docs/09_DASHBOARD.md §3a) — daily/weekly/monthly
-    // series computed server-side in frontend/views.py's dashboard(), passed
-    // via {{ chart_data|json_script:"dashboardChartData" }}. Keys match the
-    // segmented control's data-range values exactly.
     var datasets = chartData.sales_purchases;
 
     var ctx = canvas.getContext("2d");
@@ -170,14 +157,10 @@
     }
   }
 
-  /* --------------------------------------------------- Inventory movement */
   function initInventoryChart(chartData) {
     var canvas = document.getElementById("inventoryChart");
     if (!canvas || typeof Chart === "undefined" || !chartData) return;
     var ctx = canvas.getContext("2d");
-
-    // Real data (Phase 8.96, docs/09_DASHBOARD.md §3b) — received/dispatched
-    // by InventoryMovement.quantity_change sign, last 6 months.
     var series = chartData.inventory_movement;
 
     new Chart(ctx, {

@@ -7,24 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8 — real AuditLog queryset (AdminRequiredMixin-gated, per
-    13_AUDIT.md's "Admin only" rule). AuditLog is IMMUTABLE — model-enforced
-    (docs/bugsfound.md BUG-20's sibling fix) — so this page is, and will
-    only ever be, a read-only viewer; no edit/delete controls exist here by
-    design. Date range stays decorative like every other list page's date
-    filters — no other Phase 5-7 list page wired real server-side date
-    filtering either.
-
-    Pagination pass (2026-08-25), BUG-85 — search/module/status are real
-    server-side GET params now (frontend.filters.filter_audit_log()),
-    paginated for real instead of the old hard [:500] cap that silently
-    made rows 501+ of a 6000+-row ledger invisible and unsearchable. The
-    status toggle is a real link to ?status=..., not client-side
-    table-filter.js — a page reload, but one that can actually find a
-    match anywhere in the ledger, not just the current page's 10 rows.
-  {% endcomment %}
-
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Audit log</h2>
@@ -45,6 +27,7 @@
           <svg class="field-icon"><use href="#icon-search"></use></svg>
           <input type="search" class="input" name="q" value="{{ q }}" placeholder="Search by user or action...">
         </div>
+        {# Rule: decorative -- no name attribute, never submitted as a filter. #}
         <div class="field" style="margin-bottom:0; max-width:150px;">
           <input class="input input-plain" type="date" aria-label="From date" value="2026-07-01">
         </div>

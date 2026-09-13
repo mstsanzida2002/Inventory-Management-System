@@ -24,7 +24,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------- Summary strip #}
   <div class="stat-strip">
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-truck"></use></svg>
@@ -49,7 +48,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------------ Suppliers #}
   <div class="panel">
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
@@ -96,7 +94,6 @@
                 {% endif %}
               </td>
               <td>
-                {# Phase 8.99i: was dead markup (no class, no handler, no view) — first phase to wire any of this for Suppliers. Mirrors Products/Categories exactly. #}
                 <div class="widget-actions">
                   <button class="pill-btn supplier-edit-btn" type="button" aria-label="Edit supplier"><svg class="icon icon-sm"><use href="#icon-edit"></use></svg></button>
                   {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
@@ -135,7 +132,6 @@
     </div>
   </div>
 
-  {# -------------------------------------------------- Add supplier modal #}
   <div class="modal-overlay" id="addSupplierModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addSupplierModalTitle">
 
@@ -216,12 +212,7 @@
     </div>
   </div>
 
-  {% comment %}
-    Edit supplier modal (Phase 8.99i). No "status" field, unlike the Add
-    modal above — is_active only changes through Deactivate/Reactivate
-    (SupplierDeactivateView/SupplierReactivateView), matching Products'/
-    Categories' own "one way to change active status" pattern.
-  {% endcomment %}
+  {# Rule: no status field -- is_active changes only via Deactivate/Reactivate. #}
   <div class="modal-overlay" id="editSupplierModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editSupplierModalTitle">
 

@@ -1,11 +1,3 @@
-/* ==========================================================================
-   CHANGE-PASSWORD-FORM.JS — Change Password modal on the Profile page
-   (Phase 8.98a). Same fetch()-based onSubmit contract as every other real
-   modal in this app (Phase 5.5) — posts to frontend:change_password,
-   which returns JSON, not a page redirect (unlike profile_view's own
-   plain-form POST for name/contact/photo).
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -22,7 +14,7 @@
 
   var REQUIRED_FIELD_IDS = ["cp-current-password", "cp-new-password", "cp-confirm-password"];
 
-  // Django field name -> HTML field id, for server-side validation errors.
+  // Assumption: maps Django field names to HTML ids for setFieldError().
   var SERVER_FIELD_MAP = {
     current_password: "cp-current-password",
     new_password: "cp-new-password",
@@ -68,9 +60,6 @@
         return null;
       }).then(function (payload) {
         if (response.ok) {
-          // Real, server-flashed success message (Django messages,
-          // rendered by dashboard_base.html) — needs a real reload to
-          // actually show up, same as every other real modal in this app.
           window.location.reload();
           return true;
         }

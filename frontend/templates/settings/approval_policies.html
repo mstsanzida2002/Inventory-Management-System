@@ -7,19 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 12 — Approval Authority Matrix. "The supervisor approves
-    transactions. The admin defines which transactions the supervisor is
-    permitted to approve." Admin-only (AdminRequiredMixin) — a supervisor
-    never reaches this page at all, let alone this URL.
-
-    Phase 12.2 — simplified back down to one job: list the policies that
-    exist, and let an admin add one. The rule simulator, the
-    unreachable-rule warning, the cumulative-usage panel, and ABC as a
-    display/matching concept are all gone from this page — see
-    docs/project_memory.md §13. Editing/activating/deactivating stay.
-  {% endcomment %}
-
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Approval policies</h2>
@@ -37,7 +24,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------ Policy groups #}
   {% for group in grouped_policies %}
     <div class="panel" style="margin-bottom: var(--sp-6);" data-tx-group="{{ group.value }}">
       <div class="panel-header">
@@ -96,7 +82,6 @@
     </div>
   {% endfor %}
 
-  {# -------------------------------------------------- Add policy modal #}
   <div class="modal-overlay" id="addPolicyModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addPolicyModalTitle">
       <div class="modal-header">
@@ -121,7 +106,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------- Edit policy modal #}
   <div class="modal-overlay" id="editPolicyModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editPolicyModalTitle">
       <div class="modal-header">

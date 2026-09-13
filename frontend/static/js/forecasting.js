@@ -1,20 +1,3 @@
-/* ==========================================================================
-   FORECASTING.JS — Demand Forecasting page: trend chart + the "Run
-   forecast now" action. Search/category/period are real server-side GET
-   params now (Pagination pass, 2026-08-25 — frontend.filters.filter_
-   forecasts()), submitted via the page's own <form method="get"> and the
-   period toggle's real links, so this file no longer wires
-   table-filter.js and no longer client-side-switches the chart on
-   toggle click — the toggle is a real navigation now, and the reload it
-   causes already re-renders {{ chart_data|json_script:"forecastChartData" }}
-   fresh; initTrendChart() just needs to open on whichever period the
-   reload landed on (read off the server-rendered is-active toggle link)
-   instead of always hardcoding weekly. This file still owns the chart
-   (same server-data-into-chart convention dashboard.js/slow-moving.js
-   use) and the Run button's real POST (row-actions.js's postAction(),
-   same as Slow-Moving & Dead Stock's Run button).
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -23,6 +6,7 @@
     var empty = { weekly: { labels: [], demand: [], reorder: [] }, monthly: { labels: [], demand: [], reorder: [] } };
     if (!el) return empty;
     try {
+      // Assumption: json_script-rendered chart_data from DemandForecastingView.
       return JSON.parse(el.textContent) || empty;
     } catch (e) {
       return empty;
@@ -30,6 +14,7 @@
   }
 
   function activePeriod() {
+    // Assumption: reads the server-rendered is-active toggle link.
     var active = document.querySelector("#forecastPeriodToggle .is-active");
     return (active && active.getAttribute("data-value")) || "weekly";
   }
@@ -128,10 +113,6 @@
         });
       },
       onComplete: function () {
-        // Real KPIs/chart/table/reorder-priorities all come from
-        // server-rendered context — a reload is the simplest way to
-        // reflect them (same pattern as Slow-Moving & Dead Stock's Run
-        // button, and RowActions.reportResult()'s own default elsewhere).
         window.location.reload();
       }
     });

@@ -1,10 +1,4 @@
-/* ==========================================================================
-   CHART-COLORS.JS — hex mirror of the design tokens in tokens.css, for use
-   in <canvas> chart configs (Canvas drawing can't read CSS custom
-   properties directly). Single source of truth — extracted from
-   dashboard.js so every chart-bearing page (dashboard, forecasting,
-   slow-moving) reads the same palette instead of re-declaring it.
-   ========================================================================== */
+// Rule: owns tokens.css's hex mirror -- canvas can't read CSS variables.
 
 (function () {
   "use strict";

@@ -7,16 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8 — SystemSettings (SCHEMA.md §13) is a documented singleton, so
-    this stays ONE form page, not a multi-page settings section, exactly as
-    the Phase 3.6 mock already had it. Every field below maps 1:1 onto that
-    model (SystemSettingsForm, frontend/forms.py) — checked against
-    SCHEMA.md, no mismatch found, nothing invented, nothing dropped. Values
-    now come from the real singleton row (SystemSettings.get_settings())
-    instead of hardcoded mock text.
-  {% endcomment %}
-
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Settings</h2>
@@ -35,7 +25,6 @@
     <div class="form-alert form-alert-error" id="settingsFormError" hidden></div>
     <div class="form-alert form-alert-success" id="settingsFormSuccess" hidden>Settings saved.</div>
 
-    {# --------------------------------------------------- Company info #}
     <div class="panel" style="margin-bottom: var(--sp-6);">
       <div class="panel-header">
         <div>
@@ -100,7 +89,6 @@
       </div>
     </div>
 
-    {# ----------------------------------------------- Inventory & AI defaults #}
     <div class="panel" style="margin-bottom: var(--sp-6);">
       <div class="panel-header">
         <div>
@@ -145,14 +133,6 @@
       </div>
     </div>
 
-    {# ---------------------------------- Dead-stock classification knowledge base #}
-    {% comment %}
-      Prompt 2 (2026-08-24) — the multi-criteria weighted expert system's
-      admin-tunable inputs (docs/DEAD_STOCK_DETECTION.md). The four
-      weights must sum to exactly 1.00 (SystemSettings.clean(), rejected
-      on save, never silently normalised) — the running total below is
-      client-side convenience only, the real check happens server-side.
-    {% endcomment %}
     <div class="panel" style="margin-bottom: var(--sp-6);">
       <div class="panel-header">
         <div>
@@ -227,7 +207,6 @@
       </div>
     </div>
 
-    {# --------------------------------------------------------- Session #}
     <div class="panel" style="margin-bottom: var(--sp-6);">
       <div class="panel-header">
         <h3>Session</h3>
@@ -245,7 +224,6 @@
 
   </form>
 
-  {# --------------------------------------------- Approval authority (Phase 12) #}
   <div class="panel">
     <div class="panel-header">
       <div>

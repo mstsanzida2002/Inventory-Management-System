@@ -1,18 +1,4 @@
-{% comment %}
-  includes/topbar_actions.html
-  The right-hand portion of the topbar: notifications, user menu. Kept
-  free of {% block %} tags on purpose — blocks only resolve correctly
-  against the extends chain when they live in the base template file itself,
-  not inside a nested {% include %}. The eyebrow/title block lives in
-  dashboard_base.html directly; this partial is included right after it.
-
-  Phase 8.98: the global topbar search box (present on every page,
-  including the Dashboard) was removed — it never had any JS wiring at
-  all (confirmed: no handler anywhere), purely decorative markup with no
-  real search behind it. `.topbar-actions` picks up `margin-left: auto`
-  in dashboard.css to keep itself pinned to the right edge now that the
-  search box's `flex:1` isn't there to do that anymore.
-{% endcomment %}
+{# Assumption: no block tags here -- those only resolve in the base template. #}
 <div class="topbar-actions">
   <div class="dropdown" id="notifDropdown">
     <button class="icon-btn" type="button" aria-label="Notifications" aria-expanded="false" data-dropdown-toggle>

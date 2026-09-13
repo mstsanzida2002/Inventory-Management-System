@@ -1,9 +1,4 @@
-/* ==========================================================================
-   FORM-VALIDATION.JS — generic, reusable field-level validation helpers.
-   No DOM wiring, no modal knowledge — just get/set/clear error state on a
-   single field, plus two validators. Shared by every modal form (product,
-   category, supplier, ...) via modal-form.js.
-   ========================================================================== */
+// Rule: owns field-level validation state only -- no DOM or modal knowledge.
 
 (function () {
   "use strict";
@@ -39,7 +34,7 @@
 
   function validateNonNegative(field, label) {
     var value = field.value.trim();
-    if (value === "") return true; // optional numeric fields may be left blank
+    if (value === "") return true; // Rule: blank is valid -- this field is optional.
 
     var number = Number(value);
     if (Number.isNaN(number) || number < 0) {

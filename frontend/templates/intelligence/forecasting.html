@@ -25,8 +25,6 @@
       </button>
     </div>
   </div>
-
-  {# --------------------------------------------------------------- KPIs #}
   <p class="text-slate text-xs" style="margin-bottom: var(--sp-2);">All forecasts &mdash; not affected by search or filters below</p>
   <div class="kpi-grid">
 
@@ -68,8 +66,6 @@
     </div>
 
   </div>
-
-  {# ---------------------------------------------------------- AI insight #}
   <div class="ai-section-head">
     <span class="ai-badge">
       <svg class="icon"><use href="#icon-cpu"></use></svg>
@@ -84,11 +80,7 @@
     </p>
   </div>
 
-  {% comment %}
-    Period control
-    Single toggle drives both the trend chart and the prediction table
-    below, instead of two separate Weekly/Monthly controls.
-  {% endcomment %}
+  {# Rule: one toggle drives both the trend chart and the table below. #}
   <div class="flex items-center gap-3" style="margin-bottom: var(--sp-5); flex-wrap:wrap;">
     <span class="text-slate text-sm" style="font-weight:600;">Forecast period</span>
     <div class="segmented" id="forecastPeriodToggle">
@@ -98,8 +90,6 @@
   </div>
 
   <div class="dash-grid">
-
-    {# ------------------------------------------------------- Left column #}
     <div class="dash-col">
 
       <div class="panel">
@@ -180,8 +170,6 @@
       </div>
 
     </div>
-
-    {# ------------------------------------------------------ Right column #}
     <div class="dash-col">
 
       <div class="panel">

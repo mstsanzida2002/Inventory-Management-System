@@ -1,40 +1,3 @@
-/* ==========================================================================
-   PRODUCT-FORM.JS — Add Product form (Phase 5, updated Phase 5.5) and,
-   since Phase 8.99e, Edit Product too — this project's first per-entity
-   edit UI (see docs/project_memory.md §13). Generic validation/reset/
-   submit wiring lives in modal-form.js; generic error-state helpers live
-   in form-validation.js. This file only knows product-specific things:
-   which fields exist on each of the two forms, and how to talk to the
-   server.
-
-   Add and Edit are two separate forms/modals (#addProductForm/
-   #addProductModal, #editProductForm/#editProductModal) sharing this
-   file's logic via small parameterized helpers, not two copies of it —
-   modal-form.js's ModalForm.init() is explicitly designed to be called
-   once per (formId, modalId) pair on the same page (see its own header),
-   which is exactly what two independent forms need.
-
-   Edit is pre-filled entirely client-side from the clicked row's own
-   data-product JSON attribute (set server-side in ProductListCreateView.
-   get(), frontend/views.py) — the same "compute once server-side, read
-   via a data-* attribute" pattern the Receive modal already uses for its
-   per-line quantities (purchases.html's receive_items_json), not a new
-   fetch-before-open mechanism.
-
-   SKU's <input> on the edit form has no `name` attribute (disabled, and
-   deliberately not just visually so) — it can never be part of what's
-   posted. Read-only-on-edit is a disclosed decision (see ProductUpdateView's
-   own docstring, frontend/views.py) enforced server-side regardless.
-
-   Phase 5.5: submission happens in onSubmit via fetch(), following
-   modal-form.js's Promise-returning onSubmit contract (see that file's
-   header) — the earlier synchronous-XHR-inside-extraValidate workaround
-   is gone. modal-form.js now keeps the modal open/unreset while an async
-   onSubmit is pending, and only closes it once the returned Promise
-   resolves to something other than `false`/`{success:false}`, so there's
-   no longer a need to smuggle the real request through extraValidate.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -81,9 +44,7 @@
     "edit-product-purchase-price", "edit-product-selling-price", "edit-product-tax-rate", "edit-product-reorder-level"
   ];
 
-  // Django field name -> HTML field id, so a server-side validation error
-  // (ProductForm.errors, keyed by model/form field name) lands on the
-  // right input via form-validation.js's setFieldError.
+  // Assumption: maps Django field names to HTML ids for setFieldError().
   var ADD_SERVER_FIELD_MAP = {
     name: "product-name", sku: "product-sku", barcode: "product-barcode",
     category: "product-category", supplier: "product-supplier", brand: "product-brand",
@@ -127,13 +88,6 @@
     });
   }
 
-  /* modal-form.js's onSubmit contract: return a Promise, resolving to
-     `false` on failure (having already reported it via setFieldError/
-     showFormError) so the modal stays open, or anything else on success
-     so the modal closes. Shared by both Add and Edit — they only differ
-     in which URL the form's own `action` attribute points to (static for
-     Add, set per-row for Edit — see handleRowAction below) and which
-     field-id map/error box errors should land on. */
   function makeOnSubmit(map, errorBoxId) {
     return function onSubmit(form) {
       clearFormError(errorBoxId);
@@ -143,13 +97,10 @@
         body: new FormData(form)
       }).then(function (response) {
         return response.json().catch(function () {
-          return null; // non-JSON response body
+          return null;
         }).then(function (payload) {
           if (response.ok) {
-            // Real, server-rendered data (real Category/Supplier FK display,
-            // real computed stock status) beats maintaining a second,
-            // client-side row-building function that has to stay in sync
-            // with the backend.
+            // Rule: reload for real server-rendered rows, not a client-side rebuild.
             window.location.reload();
             return true;
           }
@@ -185,8 +136,6 @@
     setValue("edit-product-reorder-level", product.reorder_level);
   }
 
-  /* ---------------------------------------------------- row actions --- */
-
   function handleRowAction(event) {
     var row = event.target.closest("tr[data-product-id]");
     if (!row) return;
@@ -197,6 +146,7 @@
     if (event.target.closest(".product-edit-btn")) {
       var product;
       try {
+        // Assumption: data-product is server-rendered by ProductListCreateView.
         product = JSON.parse(row.getAttribute("data-product") || "{}");
       } catch (e) {
         product = {};
@@ -217,11 +167,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // Pagination pass (2026-08-25) — search/category/status are real
-    // server-side GET params now (frontend.filters.filter_products()),
-    // submitted via the page's own <form method="get">; TableFilter's
-    // client-side row-hiding would only ever see the current page's 10
-    // rows, silently missing matches on later pages (REQ 14.11).
+    // Rule: search/category/status are server-side GET params, not client-side.
     var tableBody = getField("productsTableBody");
     if (tableBody) tableBody.addEventListener("click", handleRowAction);
 

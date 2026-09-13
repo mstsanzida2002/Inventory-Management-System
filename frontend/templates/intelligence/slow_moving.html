@@ -25,8 +25,6 @@
       </button>
     </div>
   </div>
-
-  {# --------------------------------------------------------------- KPIs #}
   <p class="text-slate text-xs" style="margin:0 0 var(--sp-2);">All classified products &mdash; not affected by search or filters below</p>
   <div class="kpi-grid">
 
@@ -72,15 +70,6 @@
 
   </div>
 
-  {# ---------------------------------------------------------- AI insight #}
-  {% comment %}
-    BUG-90 (docs/bugsfound.md) — this block used to render static
-    methodology text (how the classifier works); that content's single
-    home is now docs/DEAD_STOCK_DETECTION.md. Real per-run findings
-    instead, reusing counts/total_flagged/dead_watch/dead_value_at_risk/
-    last_classified_at the view already computes — no classifier logic
-    recomputed here.
-  {% endcomment %}
   <div class="ai-section-head">
     <span class="ai-badge">
       <svg class="icon"><use href="#icon-cpu"></use></svg>
@@ -102,8 +91,6 @@
   </div>
 
   <div class="dash-grid">
-
-    {# ------------------------------------------------------- Left column #}
     <div class="dash-col">
 
       <div class="panel">
@@ -172,7 +159,7 @@
                     <td class="mono">{{ c.last_sold_label }}</td>
                     <td class="mono">{{ c.turnover_rate }}x</td>
                     <td><span class="badge {{ c.badge }}">{{ c.get_classification_display }}</span></td>
-                    {# Prompt 2 — null for insufficient_data rows (nothing scored yet); shown honestly as "—", not a fabricated number. #}
+                    {# Edge: null shown as "-" -- never a fabricated number. #}
                     <td class="mono" title="Confidence: {% if c.confidence is not None %}{{ c.confidence }}{% else %}—{% endif %}">{% if c.stagnation_index is not None %}{{ c.stagnation_index }}{% else %}&mdash;{% endif %}</td>
                     <td class="text-sm">{{ c.recommendation }}</td>
                   </tr>
@@ -196,8 +183,6 @@
       </div>
 
     </div>
-
-    {# ------------------------------------------------------ Right column #}
     <div class="dash-col">
 
       <div class="panel">

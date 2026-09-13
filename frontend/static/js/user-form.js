@@ -1,10 +1,3 @@
-/* ==========================================================================
-   USER-FORM.JS — Add User form (fetch()-based onSubmit, Phase 5.5 contract)
-   plus the real Deactivate/Reactivate row actions and the search/role/
-   status client-side filter (table-filter.js), for users/users.html
-   (Phase 8).
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -70,14 +63,7 @@
     }).then(function (response) {
       return response.json().catch(function () { return null; }).then(function (payload) {
         if (response.ok) {
-          // Phase 8.99f-3/8.99f-4: every successful create now carries
-          // either `message` (credentials really were emailed) or
-          // `warning` (created, but the email failed to send) — never
-          // both. Before this, a real success and a real failed-send
-          // looked identical (a silent reload, nothing shown), which is
-          // exactly the "no confirmation appears" report. alert() is the
-          // same mechanism this file already used for the warning case,
-          // not a new toast component.
+          // Assumption: payload carries exactly one of message/warning, never both.
           var feedback = payload && (payload.message || payload.warning);
           if (feedback) {
             alert(feedback);
@@ -98,8 +84,6 @@
     });
   }
 
-  /* --------------------------------------------------- row actions --- */
-
   function handleRowAction(event) {
     var row = event.target.closest("tr[data-user-id]");
     if (!row) return;
@@ -118,11 +102,6 @@
     } else if (event.target.closest(".user-resend-btn")) {
       if (!confirm("Resend credentials to this user? A new temporary password will be generated and emailed, replacing the old one.")) return;
       RowActions.postAction(base + userId + "/resend-credentials/").then(function (result) {
-        // Phase 8.99f-7: reuses postAction()/reportResult() unchanged
-        // (no new fetch helper) — only supplies reportResult()'s existing
-        // onSuccess hook so the message/warning from
-        // _credentials_email_feedback() is actually shown, the same way
-        // the Add User form's own onSubmit() already does.
         RowActions.reportResult(result, function () {
           var feedback = result.payload && (result.payload.message || result.payload.warning);
           if (feedback) alert(feedback);

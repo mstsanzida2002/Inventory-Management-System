@@ -1,8 +1,4 @@
-/* ==========================================================================
-   SETTINGS-FORM.JS — Settings page submit. Not modal-form.js — this is a
-   plain full-page form (no modal to open/close/reset), so it wires its own
-   fetch()-based submit directly rather than going through ModalForm.init.
-   ========================================================================== */
+// Rule: a plain full-page form, not modal-form.js -- no modal to open/close.
 
 (function () {
   "use strict";
@@ -68,11 +64,7 @@
     });
   }
 
-  // Phase 13 — instant local preview of a newly-picked logo file, before
-  // it's ever uploaded: FileReader reads the selected File straight from
-  // the browser's own memory, no round trip needed, and the same <img>
-  // stays correct after a successful save without a page reload (it's
-  // already showing exactly the file that got submitted).
+  // Workaround: FileReader previews the file locally -- no upload round trip.
   function wireLogoPreview() {
     var input = getField("settings-company-logo");
     var preview = getField("settings-company-logo-preview");

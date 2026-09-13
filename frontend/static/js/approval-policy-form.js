@@ -1,16 +1,3 @@
-/* ==========================================================================
-   APPROVAL-POLICY-FORM.JS — Add/Edit ApprovalPolicy (Phase 12), same shape
-   as category-form.js: two independent forms/modals sharing one
-   parameterized onSubmit, row actions (edit/deactivate/reactivate) via the
-   shared row-actions.js, edit pre-filled client-side from the clicked
-   row's own data-policy JSON attribute (ApprovalPolicyListCreateView.get()).
-
-   Phase 12.2 — the rule simulator (a plain fetch() against a dedicated
-   simulate endpoint) and every abc_class field reference are removed;
-   this file is back to the plain add/edit/row-action shape every other
-   module's *-form.js already uses.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -120,8 +107,6 @@
     if (selfApproval) selfApproval.checked = !!policy.block_self_approval;
   }
 
-  /* ---------------------------------------------------- row actions --- */
-
   function handleRowAction(event) {
     var row = event.target.closest("[data-policy-id]");
     if (!row) return;
@@ -131,6 +116,7 @@
     if (event.target.closest(".policy-edit-btn")) {
       var policy;
       try {
+        // Assumption: data-policy is server-rendered by ApprovalPolicyListCreateView.
         policy = JSON.parse(row.getAttribute("data-policy") || "{}");
       } catch (e) {
         policy = {};

@@ -7,17 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8 — real User queryset, AdminRequiredMixin-gated. Fields are
-    SCHEMA.md's User model: username, email, employee_id, full_name, role
-    (UserRole choices: admin/supervisor/staff), plus a password field the
-    Phase 3.6 mock explicitly didn't have — see UserForm's docstring
-    (frontend/forms.py) for why that changed. is_active defaults true and
-    only shows as a status badge in the list (not asked at creation),
-    same precedent as every other module's Add modal; Deactivate/
-    Reactivate are the real controls for flipping it afterward.
-  {% endcomment %}
-
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Users &amp; roles</h2>
@@ -31,7 +20,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------- Summary strip #}
   <div class="stat-strip">
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-users"></use></svg>
@@ -122,11 +110,10 @@
                       <button class="pill-btn user-reactivate-btn" type="button" aria-label="Reactivate user"><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                     {% endif %}
                     {% if user.resendable %}
-                      {# UserResendCredentialsView: shown while the user has never logged in — the real signal the original credentials never got used. Generates and emails a fresh password. #}
                       <button class="pill-btn user-resend-btn" type="button" aria-label="Resend credentials" title="Resend credentials"><svg class="icon icon-sm"><use href="#icon-refresh"></use></svg></button>
                     {% endif %}
                     {% if user.deletable %}
-                      {# UserDeleteView: only ever succeeds for a user with zero activity history — everyone else must be deactivated instead. #}
+                      {# Rule: delete only appears when the user has zero activity history. #}
                       <button class="pill-btn reject user-delete-btn" type="button" aria-label="Delete user" title="Delete user"><svg class="icon icon-sm"><use href="#icon-trash"></use></svg></button>
                     {% endif %}
                   </div>
@@ -148,7 +135,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------- Add user modal #}
   <div class="modal-overlay" id="addUserModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addUserModalTitle">
 
@@ -165,11 +151,6 @@
       <form class="modal-body" id="addUserForm" method="post" action="{% url 'frontend:users' %}" novalidate>
         {% csrf_token %}
         <div class="form-alert form-alert-error" id="addUserFormError" hidden></div>
-        {% comment %}
-          Phase 8.98e: no password field — a strong password is generated
-          server-side and emailed to the new user. You (the Admin) never
-          see it.
-        {% endcomment %}
         <div class="form-alert form-alert-info">
           A temporary password will be generated automatically and emailed to this user — you won't see it. They'll be prompted to change it after signing in.
         </div>

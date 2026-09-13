@@ -1,22 +1,3 @@
-/* ==========================================================================
-   CATEGORY-FORM.JS — Add Category form (Phase 6) and, since Phase 8.99i,
-   Edit/Deactivate/Reactivate/Delete too — mirrors product-form.js's own
-   shape exactly (Add and Edit as two independent forms/modals sharing one
-   parameterized onSubmit; row actions via the shared row-actions.js).
-   Generic validation/reset/submit wiring lives in modal-form.js; generic
-   error-state helpers live in form-validation.js.
-
-   Categories renders as a card grid (#categoriesGrid), not a <table> —
-   handleRowAction below reads [data-category-id] the same way
-   product-form.js reads tr[data-product-id]; .closest() doesn't care
-   which element type it's climbing through.
-
-   Edit is pre-filled entirely client-side from the clicked card's own
-   data-category JSON attribute (set server-side in
-   CategoryListCreateView.get()), the same pattern Products' own Edit
-   modal already uses — no new fetch-before-open mechanism.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -102,8 +83,6 @@
     setValue("edit-category-description", category.description);
   }
 
-  /* ---------------------------------------------------- row actions --- */
-
   function handleRowAction(event) {
     var card = event.target.closest("[data-category-id]");
     if (!card) return;
@@ -114,6 +93,7 @@
     if (event.target.closest(".category-edit-btn")) {
       var category;
       try {
+        // Assumption: data-category is server-rendered by CategoryListCreateView.
         category = JSON.parse(card.getAttribute("data-category") || "{}");
       } catch (e) {
         category = {};

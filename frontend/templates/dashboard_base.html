@@ -6,12 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block browser_title %}Dashboard{% endblock %} · Stockwell</title>
 
-  {# Fonts used by tokens.css: Archivo (display), Inter (body), IBM Plex Mono (data) #}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-  {# Shared design system — same load order as the public site #}
+  {# Rule: same CSS load order as base.html -- keep both in sync. #}
   <link rel="stylesheet" href="{% static 'css/tokens.css' %}">
   <link rel="stylesheet" href="{% static 'css/base.css' %}">
   <link rel="stylesheet" href="{% static 'css/components.css' %}">

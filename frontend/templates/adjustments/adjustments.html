@@ -20,7 +20,6 @@
     </div>
   </div>
 
-  {# ------------------------------------------------------- Summary strip #}
   <div class="stat-strip">
     <div class="stat-strip-item is-warning">
       <svg class="icon icon-lg"><use href="#icon-clock"></use></svg>
@@ -52,7 +51,6 @@
     </div>
   </div>
 
-  {# --------------------------------------------------------- Adjustments #}
   <div class="panel">
     <div class="panel-header" style="align-items:center; padding-bottom: var(--sp-5);">
       <div class="field" style="margin-bottom:0; flex:1; max-width:360px;">
@@ -111,14 +109,13 @@
               <td>
                 <div class="widget-actions">
                   {% if adjustment.status == 'pending' %}
-                    {# AdjustmentApproveView/AdjustmentRejectView: SupervisorRequiredMixin is the floor; Phase 12's can_approve() narrows further per-adjustment — shown-but-disabled-with-reason, never hidden (§8b). #}
+                    {# Rule: a denied approve is shown disabled with a reason, not hidden. #}
                     {% if request.user.role == 'admin' or request.user.role == 'supervisor' %}
                       {% if adjustment.required_level == 'admin' %}<span class="badge badge-danger" title="Requires administrator approval">Admin</span>{% endif %}
                       <button class="pill-btn approve adj-approve-btn" type="button" aria-label="Approve adjustment" {% if not adjustment.can_approve %}disabled title="{{ adjustment.approve_denied_reason }}"{% endif %}><svg class="icon icon-sm"><use href="#icon-check-circle"></use></svg></button>
                       <button class="pill-btn reject adj-reject-btn" type="button" aria-label="Reject adjustment"><svg class="icon icon-sm"><use href="#icon-circle-slash"></use></svg></button>
                     {% endif %}
                   {% endif %}
-                  {# Phase 13 — was a decorative "View adjustment" button with no handler at all; now a real download, same pill-btn-as-link pattern purchases.html/sales.html already use for their own PDF exports. #}
                   <a class="pill-btn js-pdf-link" href="{% url 'frontend:adjustment_pdf' adjustment.pk %}" aria-label="Download PDF" title="Download PDF">
                     <svg class="icon icon-sm"><use href="#icon-receipt"></use></svg>
                   </a>
@@ -148,15 +145,7 @@
     </div>
   </div>
 
-  {% comment %}
-    New adjustment modal
-    Fields sourced from InventoryAdjustment in database/SCHEMA.md, which match
-    the documented create request in api/API_CONTRACTS.md exactly: product,
-    adjustment_type, quantity, reason. All four are required — reason is a
-    plain (non-blank) TextField in the model, so unlike other modules' notes
-    fields, it is NOT optional here. status/requested_by/approved_by/approved_at
-    /rejected_reason are all system-set, not part of this form.
-  {% endcomment %}
+  {# Rule: reason is required here, unlike other modules' notes field. #}
   <div class="modal-overlay" id="addAdjustmentModal" data-modal aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addAdjustmentModalTitle">
 
@@ -209,7 +198,7 @@
           </div>
 
           <div class="field field-full">
-            {# Phase 12 — a structured code alongside the free-text reason below, so ApprovalPolicy can route on it (§4). Required: no blank option. #}
+            {# Rule: required, no blank option -- ApprovalPolicy routes on this code. #}
             <label class="form-label" for="adjustment-reason-code">Reason category<span class="required-mark">*</span></label>
             <div class="select-wrap">
               <select class="input select" id="adjustment-reason-code" name="reason_code">

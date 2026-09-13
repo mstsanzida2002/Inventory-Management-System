@@ -6,34 +6,12 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8.96 — real at last, built directly against docs/09_DASHBOARD.md
-    (approved Phase 8.95/8.95.1). Every number here traces to that spec's
-    decision table; nothing is a |default:"..." fabrication (BUG-41). The
-    AI Insights section from the old mock is gone entirely, not replaced
-    with an empty state — Decision 8/§4d, it returns once Phase 10/11
-    populate DemandForecast/InventoryClassification for real.
-  {% endcomment %}
-
-  {% comment %}
-    Phase 8.99j: removed "Refresh data" and "New purchase order" — both
-    were plain <button type="button">s with no class, no id, no data-*
-    hook, and confirmed (grepped dashboard.js) to have zero JS wiring
-    behind either. "New purchase order" specifically is exactly the
-    action-button class 09_DASHBOARD.md's own Decision 4 keeps off this
-    page on purpose (the dashboard is a read-only summary; actions live
-    in their real modules — Pending Approvals stays read-only too, same
-    reasoning) — removing it aligns the page with its own approved spec,
-    not just decluttering.
-  {% endcomment %}
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">{{ greeting }}, {{ request.user.get_short_name|default:"there" }}</h2>
       <p class="text-slate">Here is what is happening across your inventory today, {{ today|date:"l, j F" }}.</p>
     </div>
   </div>
-
-  {# ------------------------------------------------------- Primary KPIs #}
   <div class="kpi-grid">
 
     <div class="kpi-card">
@@ -73,8 +51,6 @@
     </div>
 
   </div>
-
-  {# --------------------------------------------------- Compact stat strip #}
   <div class="stat-strip">
     <div class="stat-strip-item">
       <svg class="icon icon-lg"><use href="#icon-dollar"></use></svg>
@@ -105,11 +81,7 @@
       </div>
     </div>
   </div>
-
-  {# ------------------------------------------------------------ Main grid #}
   <div class="dash-grid">
-
-    {# ---------------------------------------------------------- Left col #}
     <div class="dash-col">
 
       <div class="panel">
@@ -150,8 +122,6 @@
       </div>
 
     </div>
-
-    {# --------------------------------------------------------- Right col #}
     <div class="dash-col">
 
       <div class="panel">
@@ -261,13 +231,6 @@
       </div>
       {% endif %}
 
-      {% comment %}
-        REQ 11.10 (docs/09_DASHBOARD.md §4d, corrected — see
-        docs/bugsfound.md BUG-76): same Supervisor+ gate as
-        /ai/slow-moving/ itself. total_flagged/counts mirror that page's
-        own counting exactly, so this widget can never silently disagree
-        with it.
-      {% endcomment %}
       {% if classification_insights is not None %}
       <div class="panel">
         <div class="panel-header">
@@ -295,7 +258,7 @@
               {% endif %}
               <div class="widget-main">
                 <div class="widget-title">{{ c.product.name }}</div>
-                {# flagged_by_rule ("No sales in 210 days") is the most useful thing to show here — an opaque index number is not #}
+                {# Rule: shows the flagged rule when there is one, not just the index. #}
                 <div class="widget-meta">{% if c.flagged_by_rule %}Flagged by rule: {{ c.flagged_by_rule }}{% else %}Stagnation index: {{ c.stagnation_index }}{% endif %}</div>
               </div>
               <span class="badge {{ c.badge }}">{{ c.get_classification_display }}</span>
@@ -312,12 +275,6 @@
       </div>
       {% endif %}
 
-      {% comment %}
-        REQ 11.9 (docs/09_DASHBOARD.md §4d, corrected — see
-        docs/bugsfound.md BUG-76). Deliberately not ForecastSummaryAPIView
-        (BUG-64) — see frontend/views.py's own comment on this block for
-        the full reasoning.
-      {% endcomment %}
       {% if forecast_insights is not None %}
       <div class="panel">
         <div class="panel-header">

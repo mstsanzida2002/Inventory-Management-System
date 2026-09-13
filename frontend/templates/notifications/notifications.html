@@ -7,20 +7,6 @@
 
 {% block content %}
 
-  {% comment %}
-    Phase 8 — real Notification queryset for request.user (any logged-in
-    user, no role gate — 11_NOTIFICATIONS.md's views use @login_required
-    only). "Mark as read"/"Mark all as read" now call real endpoints via
-    notifications.js. Icon/tint per row comes from views.py's
-    _NOTIF_ICON map — same exact styling the Phase 3.6 mock hardcoded per
-    notification type, now data-driven off Notification.type instead.
-
-    Pagination pass (2026-08-25), BUG-86 — paginated for real instead of
-    the old hard [:100] cap, which also silently undercounted
-    unread_count for any user past 100 notifications. unread_count is now
-    its own global count, unaffected by which page is showing.
-  {% endcomment %}
-
   <div class="page-heading-row">
     <div>
       <h2 style="margin-bottom:0.2rem;">Notifications</h2>

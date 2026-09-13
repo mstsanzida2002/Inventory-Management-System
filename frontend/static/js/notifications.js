@@ -1,19 +1,8 @@
-/* ==========================================================================
-   NOTIFICATIONS.JS — Notifications list page (mark one/mark all read) and
-   the topbar bell badge's 30s polling, shared across every dashboard page
-   (loaded from dashboard_base.html, not just notifications.html).
-
-   Row-action POSTs go through row-actions.js's shared postAction()/
-   reportResult() (Phase 8.5) rather than a local copy — these endpoints
-   are LoginRequiredMixin-only (no role check), but a mid-session logout/
-   expiry still bounces through the same redirect-instead-of-JSON shape
-   RowActions already knows how to detect and report honestly.
-   ========================================================================== */
+// Rule: loaded on every dashboard page, not just notifications.html.
 
 (function () {
   "use strict";
 
-  /* ------------------------------------------------- List page actions --- */
   function initListPage() {
     var list = document.getElementById("notificationsList");
     if (!list) return;
@@ -34,12 +23,7 @@
     }
   }
 
-  /* --------------------------------------------------------- Badge poll --- */
-  // Phase 8.99f-2: the sidebar's own notification badge (nav-item-badge,
-  // includes/sidebar.html) used to be a hardcoded "6" from the Phase 3.6
-  // mock era. Rather than give it a second query/poll of its own, this
-  // one fetch now drives both it and the topbar dot — same data, same
-  // instant, same "hide entirely at zero" rule, so the two can't disagree.
+  // Rule: one fetch drives both the topbar dot and the sidebar badge.
   function pollUnreadCount() {
     var dot = document.getElementById("notifBadge");
     var sidebarBadge = document.getElementById("sidebarNotifBadge");
@@ -54,7 +38,7 @@
           sidebarBadge.textContent = data.unread_count;
         }
       })
-      .catch(function () { /* leave both badges as-is on a transient network error */ });
+      .catch(function () { /* Edge: a transient network error leaves both badges as-is. */ });
   }
 
   document.addEventListener("DOMContentLoaded", function () {

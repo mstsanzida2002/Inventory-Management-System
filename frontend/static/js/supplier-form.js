@@ -1,15 +1,3 @@
-/* ==========================================================================
-   SUPPLIER-FORM.JS — Add Supplier form (Phase 6) and, since Phase 8.99i,
-   Edit/Deactivate/Reactivate/Delete too — mirrors product-form.js's/
-   category-form.js's own shape exactly (Add and Edit as two independent
-   forms/modals sharing one parameterized onSubmit; row actions via the
-   shared row-actions.js).
-
-   Edit is pre-filled client-side from the clicked row's own data-supplier
-   JSON attribute (SupplierListCreateView.get()) — the same pattern
-   Products'/Categories' own Edit modals already use.
-   ========================================================================== */
-
 (function () {
   "use strict";
 
@@ -127,8 +115,6 @@
     setValue("edit-supplier-address", supplier.address);
   }
 
-  /* ---------------------------------------------------- row actions --- */
-
   function handleRowAction(event) {
     var row = event.target.closest("tr[data-supplier-id]");
     if (!row) return;
@@ -139,6 +125,7 @@
     if (event.target.closest(".supplier-edit-btn")) {
       var supplier;
       try {
+        // Assumption: data-supplier is server-rendered by SupplierListCreateView.
         supplier = JSON.parse(row.getAttribute("data-supplier") || "{}");
       } catch (e) {
         supplier = {};

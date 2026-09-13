@@ -1,15 +1,9 @@
-/* ==========================================================================
-   MAIN.JS — small, dependency-free interactivity.
-   No framework needed for a Django-templates + Bootstrap-utility frontend.
-   ========================================================================== */
-
 document.addEventListener('DOMContentLoaded', () => {
   initNavToggle();
   initTickerLoop();
   initPasswordToggles();
 });
 
-/* ---- Mobile nav ---- */
 function initNavToggle() {
   const toggle = document.querySelector('[data-nav-toggle]');
   const links = document.querySelector('[data-nav-links]');
@@ -21,16 +15,13 @@ function initNavToggle() {
   });
 }
 
-/* ---- Ledger ticker: duplicate its content once so the CSS
-   translateX(-50%) loop is seamless regardless of how many
-   items the template renders. ---- */
+// Rule: duplicated once so the CSS translateX(-50%) loop stays seamless.
 function initTickerLoop() {
   const track = document.querySelector('[data-ticker-track]');
   if (!track) return;
   track.innerHTML += track.innerHTML;
 }
 
-/* ---- Show/hide password ---- */
 function initPasswordToggles() {
   document.querySelectorAll('[data-toggle-password]').forEach((btn) => {
     btn.addEventListener('click', () => {

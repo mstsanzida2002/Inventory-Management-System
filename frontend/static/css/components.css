@@ -1,9 +1,3 @@
-/* ==========================================================================
-   COMPONENTS this is the component.css file— reusable across every page (landing, auth, and later
-   the dashboard app). Depends on tokens.css + base.css.
-   ========================================================================== */
-
-/* ---------------------------------------------------------------- Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -43,11 +37,7 @@
 }
 .btn-ghost:hover { background: var(--c-slate-100); }
 
-/* REQ 18.7 — pdf-download.js's loading state for a PDF export link/button
-   mid-fetch. `<a>` has no :disabled, so this is a plain class the script
-   toggles itself; pointer-events:none is what actually blocks a second
-   click, opacity is just the visual echo of that (same look .pill-btn's
-   own :disabled already uses, applied here to an anchor). */
+/* Workaround: <a> has no :disabled -- pointer-events:none blocks the click. */
 .js-pdf-link.is-loading {
   opacity: 0.6;
   cursor: not-allowed;
@@ -57,7 +47,6 @@
 .btn-block { width: 100%; }
 .btn-lg { padding: 1rem 2rem; font-size: var(--fs-md); }
 
-/* ------------------------------------------------------------------ Cards */
 .card {
   background: var(--c-white);
   border-radius: var(--radius-lg);
@@ -72,7 +61,6 @@
   padding: var(--sp-5);
 }
 
-/* ----------------------------------------------------------- Status pills */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -92,12 +80,8 @@
 .badge-warning { background: var(--c-warning-tint); color: #9C6B12; }
 .badge-danger  { background: var(--c-danger-tint);  color: var(--c-danger); }
 .badge-indigo  { background: var(--c-indigo-tint);  color: var(--c-indigo); }
-/* Prompt 2 (2026-08-24) — muted, deliberately not an accent color: for a
-   state that isn't a problem (insufficient_data) and shouldn't read as
-   one next to badge-warning/badge-danger. */
 .badge-neutral { background: var(--c-slate-100); color: var(--c-slate); }
 
-/* ------------------------------------------------------------ Form fields */
 .field {
   position: relative;
   margin-bottom: var(--sp-4);
@@ -145,10 +129,6 @@
   color: var(--c-slate);
 }
 
-/* -------------------------------------------------- Django messages ---
-   Phase 4 — first real use of Django's messages framework (auth errors/
-   success). Maps message.tags ('error'/'success'/'warning'/'info') to a
-   modifier class in the template: form-alert-{{ message.tags }}. */
 .form-alert {
   display: flex;
   align-items: flex-start;
@@ -163,16 +143,9 @@
 .form-alert-success { background: var(--c-success-tint); color: var(--c-success); }
 .form-alert-warning { background: var(--c-warning-tint); color: #9C6B12; }
 .form-alert-info { background: var(--c-indigo-tint); color: var(--c-indigo); }
-/* Cascade trap (see dashboard.css/§9 note): .form-alert sets display:flex,
-   which beats the UA [hidden]{display:none} rule. Needed now that Phase 5
-   toggles a .form-alert-error via the `hidden` attribute from JS
-   (product-form.js's server-error banner), not just Django {% if %}. */
+/* Workaround: display:flex above beats the UA [hidden] rule; restated. */
 .form-alert[hidden] { display: none; }
 
-/* ------------------------------------------------- Labeled form fields --
-   .field (from above) doubles as the wrapper for plain, icon-less inputs
-   used in forms — .input already provides border/radius/focus styling,
-   .input-plain just removes the left padding reserved for .field-icon. */
 .form-label {
   display: block;
   font-size: var(--fs-sm);
@@ -225,9 +198,6 @@
   pointer-events: none;
 }
 
-/* File upload — the real <input type="file"> is visually hidden (.sr-only,
-   from base.css) but stays focusable; the <label> is the clickable/drop
-   surface so native keyboard + click behavior keeps working. */
 .file-drop {
   display: flex;
   align-items: center;
@@ -260,12 +230,9 @@
   border: 1px solid var(--c-slate-200);
   flex-shrink: 0;
 }
-/* base.css sets `img { display: block }` as an author rule, which (by CSS
-   cascade origin, not specificity) beats the UA stylesheet's [hidden]
-   default — so it must be restated explicitly here. */
+/* Workaround: base.css's img{display:block} beats the UA [hidden] default. */
 .file-drop-preview[hidden] { display: none; }
 
-/* ------------------------------------------------------------- Form grid */
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -274,7 +241,6 @@
 .form-grid .field { margin-bottom: 0; }
 .form-grid .field-full { grid-column: 1 / -1; }
 
-/* ----------------------------------------------------------------- Modal */
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -335,14 +301,8 @@ body.modal-open { overflow: hidden; }
   flex-shrink: 0;
 }
 
-/* Size modifier for forms with a repeatable line-items table (Purchase,
-   Sale) — same modal chrome, just a wider dialog for the extra columns. */
 .modal.modal-lg { max-width: 900px; }
 
-/* -------------------------------------------------------- Line items grid
-   Repeatable product/qty/price/discount/tax rows used by the Purchase and
-   Sale forms (see line-items.js). Built on the same .input/.pill-btn/.mono
-   primitives as the rest of the form system — no new field styling. */
 .line-items-head,
 .line-item-row {
   display: grid;
@@ -406,11 +366,6 @@ body.modal-open { overflow: hidden; }
   .modal-footer .btn { width: 100%; }
 }
 
-/* ------------------------------------------------------------ Empty state
-   Shown in place of a table/grid body when filters match zero rows.
-   Toggled via the native [hidden] attribute (table-filter.js) — no
-   conflicting `display` rule exists for a plain div, so no override needed
-   (contrast with .file-drop-preview[hidden], which does need one). */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -430,20 +385,15 @@ body.modal-open { overflow: hidden; }
 .empty-state-icon .icon { width: 26px; height: 26px; }
 .empty-state-title { font-family: var(--font-display); font-weight: 700; font-size: var(--fs-md); color: var(--c-ink); }
 .empty-state-text { font-size: var(--fs-sm); color: var(--c-slate); max-width: 380px; margin: 0; }
-/* Same cascade-origin gotcha as .file-drop-preview[hidden] above: an
-   author rule setting `display` always beats the UA [hidden] default,
-   regardless of specificity, so it must be restated explicitly here. */
+/* Workaround: display:flex above beats the UA [hidden] rule; restated. */
 .empty-state[hidden] { display: none; }
 
-/* --------------------------------------------------- Async action spinner
-   Used by AsyncRunButton (e.g. "Run forecast now") while a task is queued. */
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .spin { animation: none; }
 }
 
-/* ------------------------------------------------------------------- Nav */
 .site-header {
   position: sticky;
   top: 0;
@@ -497,7 +447,6 @@ body.modal-open { overflow: hidden; }
   }
 }
 
-/* ---------------------------------------------------------------- Footer */
 .site-footer {
   position: relative;
   background: var(--c-indigo-tint);
@@ -515,8 +464,6 @@ body.modal-open { overflow: hidden; }
 .site-footer a { color: var(--c-slate); }
 .site-footer a:hover { color: var(--c-indigo); }
 
-/* Phase 14 — three columns: Brand / Contact Us / Account. Brand gets
-   the extra width (logo + name + a couple sentences of intro copy). */
 .footer-grid {
   display: grid;
   grid-template-columns: 1.6fr 1fr 1fr;
@@ -533,9 +480,6 @@ body.modal-open { overflow: hidden; }
   margin-top: var(--sp-3);
 }
 
-/* Contact Us rows — icon + text, vertically centred, one per line.
-   Blank fields are simply absent {% if %} blocks in the template, so
-   this only ever styles rows that actually have a value. */
 .footer-contact-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
 .footer-contact-list a,
 .footer-contact-static {

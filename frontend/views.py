@@ -92,6 +92,7 @@ from frontend.services import (
     SaleService,
 )
 
+# Section: Authentication
 
 def landing(request):
     return render(request, "landing/index.html")
@@ -247,6 +248,7 @@ class StockwellPasswordResetConfirmView(PasswordResetConfirmView):
         _record_password_change(form.user, self.request)
         return response
 
+# Section: Dashboard
 
 DASHBOARD_PREVIEW_ROWS = 5
 
@@ -476,6 +478,7 @@ class DashboardView(AnyStaffMixin, View):
         }
         return render(request, "dashboard/dashboard.html", context)
 
+# Section: Products
 
 def _product_ids_with_history():
     # Rule: InventoryRecord excluded -- current-state, not history.
@@ -644,6 +647,7 @@ class ProductExportView(AnyStaffMixin, View):
         ]
         return report_lib.generate_csv_response(headers, rows, "products.csv")
 
+# Section: Categories
 def _category_ids_with_products():
     return set(Product.objects.values_list("category_id", flat=True))
 
@@ -744,6 +748,7 @@ class CategoryDeleteView(SupervisorRequiredMixin, View):
         )
         return JsonResponse({"success": True})
 
+# Section: Suppliers
 
 class SupplierListCreateView(AnyStaffMixin, View):
 
@@ -1202,6 +1207,7 @@ class SaleTransactionPDFView(AnyStaffMixin, View):
         )
         return report_lib.generate_sale_transaction_pdf(sale, generated_by=request.user.full_name)
 
+# Section: Inventory and movement ledger
 
 # Rule: status is read straight off InventoryRecord, never recomputed here.
 _INVENTORY_STATUS_BADGE = {
@@ -1413,6 +1419,7 @@ class AdjustmentPDFView(AnyStaffMixin, View):
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
         return report_lib.generate_adjustment_pdf(adjustment, generated_by=request.user.full_name)
 
+# Section: AI modules
 
 class DemandForecastingView(SupervisorRequiredMixin, View):
 
@@ -1662,6 +1669,7 @@ class SlowMovingDeadStockView(SupervisorRequiredMixin, View):
 
         return JsonResponse({"success": True, "results": results})
 
+# Section: Reports
 class ReportsView(SupervisorRequiredMixin, View):
     """9 report cards, each a direct PDF/CSV link to ReportExportView."""
 
@@ -1782,6 +1790,7 @@ class NotificationRecentView(LoginRequiredMixin, View):
             })
         return JsonResponse({"unread_count": unread_count, "notifications": notifications})
 
+# Section: Users
 _ROLE_BADGE = {UserRole.ADMIN: "badge-indigo", UserRole.SUPERVISOR: "badge-warning", UserRole.STAFF: "badge-success"}
 
 
@@ -1934,6 +1943,7 @@ class UserDeleteView(AdminRequiredMixin, View):
         )
         return JsonResponse({"success": True})
 
+# Section: Audit log
 def _format_audit_details(details):
     if not details:
         return None
@@ -1985,6 +1995,7 @@ class AuditLogExportView(AdminRequiredMixin, View):
         ]
         return report_lib.generate_csv_response(headers, rows, "audit_log.csv")
 
+# Section: Settings
 
 _SETTINGS_AUDIT_FIELDS = SystemSettingsForm.Meta.fields
 _CLASSIFIER_AUDIT_FIELDS = [
@@ -2030,6 +2041,7 @@ class SettingsView(AdminRequiredMixin, View):
         )
         return JsonResponse({"success": True})
 
+# Section: Approval policies
 
 _POLICY_AUDIT_FIELDS = [
     "name", "transaction_type", "reason_code", "min_value",

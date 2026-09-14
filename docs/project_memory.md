@@ -8433,3 +8433,52 @@ to a Staff login with no deactivate button; a fully-active product list
 renders zero badges. Full suite 514/514 (512 baseline + 2 new).
 
 Not committed — left uncommitted per instruction.
+
+---
+
+## Comment policy amended — SECTION MARKERS, applied to views.py
+
+**Policy:** `docs/COMMENT_POLICY.md` gains a new section, SECTION MARKERS
+— narrow exception, inserted after NO SPECULATIVE PLACEMENT. A seventh
+prefix, `# Section:`, permitted only in files over 1000 lines, one per
+module area (never per function/class), one line ≤ 80 chars, no ASCII
+dividers, no padding beyond one blank line either side. Where a boundary
+already carries a `# Rule:`/`# Security:` line stating a section-level
+invariant, that line stands alone — no marker added beside it.
+
+**Applied to `frontend/views.py` only** (2143 lines) — 16 module areas
+(Authentication, Dashboard, Products, Categories, Suppliers, Purchases,
+Sales, Inventory and movement ledger, Adjustments, AI modules, Reports,
+Notifications, Users, Audit log, Settings, Approval policies), matching
+the order already in the file. 4 already carried a section-level
+`# Rule:`/`# Security:` line (Purchases, Sales, Adjustments,
+Notifications — each states "X is the only code path allowed to..." or
+equivalent) and got no marker. 2 borderline cases — Inventory's
+`# Rule: status is read straight off InventoryRecord...` and Approval
+policies' `# Security: policy changes must be as auditable as...` — read
+as construct-level rationale (for the badge dict, for `_policy_snapshot()`
+respectively), not section-level statements, so both areas got a marker
+anyway, placed ahead of the `# Rule:`/`# Security:` line they precede
+rather than after it. 12 markers total. Each area's marker sits before
+its true first construct, which for several areas is a helper function
+or module-level constant, not the first view class (e.g. Categories
+starts at `_category_ids_with_products()`, not
+`CategoryListCreateView`).
+
+**Whitespace discipline:** no blank line added or removed anywhere —
+only comment lines move. Where an existing gap was 2 blank lines, the
+marker split it evenly (1 blank above, 1 below). Where a boundary
+already had only 1 blank line (Categories, Reports, Users, Audit log —
+caught only after Phase A first mis-stated this as affecting just three
+spots, not four), the marker was inserted using that existing single
+blank line above it, with zero blank line between the marker and the
+construct it introduces, rather than manufacturing a second blank line
+to get symmetric padding.
+
+**Verification:** `scripts/comment_guard.py frontend/views.py` — clean.
+Full suite 514/514, unchanged (no logic touched, comments only). 12
+markers, longest `# Section: Inventory and movement ledger` at 40
+characters, well under the 80-char cap. `# Section:` confirmed present
+in `frontend/views.py` only — no other file in the repo uses it.
+
+Not committed — left uncommitted per instruction.

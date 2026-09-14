@@ -73,6 +73,19 @@ single line only.
 - No comment is written at a site that may not exist after editing. If nothing survives there,
   write nothing.
 
+## SECTION MARKERS — narrow exception
+
+- Applies ONLY to files over 1000 lines. No other file may use these.
+- A seventh prefix, `# Section:`, is permitted for this purpose alone.
+- One marker per module area, never per function, never per class.
+- One line, <= 80 characters. No ASCII rules, no dividers, no blank-line padding beyond one
+  blank line either side.
+- Names the business area, not the code beneath it: `# Section: Purchase orders` not
+  `# Section: PurchaseListCreateView and friends`.
+- Where a boundary already carries a `# Rule:` or `# Security:` line that marks it, that line
+  stands alone -- do NOT add a marker beside it.
+- These are navigation aids. They state no rule and carry no rationale.
+
 ## DOCSTRINGS
 
 - Public entry points: one line, ≤ 80 chars, states the contract.

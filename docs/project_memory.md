@@ -8256,3 +8256,90 @@ strict-diff check.
 Remaining: Pass 2 (`frontend/tests.py`).
 
 Not committed — left uncommitted per instruction.
+
+## Bug-fix session — BUG-100(1): topbar notification dropdown wired to real data
+
+Behavior change, not part of the comment-hygiene pass. Scope: only the
+topbar notification dropdown flagged in BUG-100(1). BUG-100(2) (sidebar
+hardcoded hrefs) explicitly untouched.
+
+**Before:** `includes/topbar_actions.html` rendered three hardcoded
+`<a class="dropdown-notif">` rows — fixed titles/times, identical for
+every user, never touched by `notifications.js`. The unread badge (topbar
+dot + sidebar badge) already worked correctly, driven by
+`notifications.js`'s existing poll of `/notifications/unread-count/` —
+only the dropdown's list content was inert.
+
+**Fix:** new `NotificationRecentView` (`GET /notifications/recent/`,
+`LoginRequiredMixin`) — same `recipient=request.user` scoping and
+`_NOTIF_ICON`/`_NOTIF_ICON_DEFAULT` lookup as `NotificationListView`,
+capped at the existing `DASHBOARD_PREVIEW_ROWS` constant (reused, not
+duplicated), returns `{unread_count, notifications: [...]}` with
+`created_at` humanized server-side via `django.utils.timesince.timesince`
+— checked, not assumed: rendered the full page and the API for the same
+notification and compared the raw strings; both produce the identical
+`"2\xa0minutes ago"` (Django's `timesince()` inserts a non-breaking space
+between the number and the unit; the template's own `{{ ...|timesince }}
+ago` and the view's `f"{timesince(...)} ago"` are the same function
+called the same way, so they can't drift).
+`notifications.js`'s poll (renamed `refreshNotifications`) switched from
+`/unread-count/` to `/recent/` — one fetch now drives the topbar dot,
+sidebar badge, and dropdown list, per the existing "one fetch drives
+multiple UI elements" pattern, extended rather than duplicated. Dropdown
+rows built via `document.createElement`/`.textContent` (this codebase's
+established safe-rendering convention for server data, matching
+`purchase-form.js`), never raw string-to-`innerHTML`. Clicking a row
+POSTs to the existing `notification_read` endpoint and re-runs the same
+refresh function on success — no page reload. Empty state reuses
+`text-slate text-sm` (a real "No notifications yet." message), never a
+blank container. `/notifications/unread-count/` and its test are
+untouched — kept per explicit instruction, even though the poll no
+longer calls it.
+
+**Response size** (the thing to watch, per explicit ask): capped at 5
+rows (`DASHBOARD_PREVIEW_ROWS`); a 5-row response with realistic
+title/message lengths measured at ~1.5KB. Polled every 30s, same interval
+as before — this is a small, bounded, fixed-size payload, not a growing
+list.
+
+**Security:** `NotificationRecentView`'s queryset filters
+`recipient=request.user` in the queryset itself
+(`Notification.objects.filter(recipient=request.user).order_by(...)`) —
+the per-row loop below it only shapes already-scoped rows into dicts, it
+does no filtering of its own. `test_recent_endpoint_never_leaks_another_users_notifications`
+signs in as one user, relies on `setUp`'s notification created for a
+second user, hits `/notifications/recent/`, and asserts that other
+user's notification id is not present in any returned row — id-based,
+not title-based, so a coincidental title match can't hide a real leak.
+
+**DOM safety:** every server string that can contain user-influenced
+text (`title`; `message`, though not currently rendered in the dropdown
+at all) goes through `.textContent`, never `innerHTML` — confirmed by
+reading the row-building code, not assumed. The one `innerHTML` use in
+`buildDropdownRow()` interpolates `icon_name`/`icon_style` only, both
+sourced from the server's fixed, enum-keyed `_NOTIF_ICON` map — constant
+strings that are never user-entered, unlike `title`/`message`.
+
+**Verification:** full suite 489/489 (6 new tests in `NotificationViewTests`:
+own-notifications-only scoping, the dedicated cross-user-leak test above,
+unread-count/recent-count consistency, cap-and-order, empty state,
+dropdown-mock-gone). Live-checked as admin, supervisor, and staff in turn
+(a script, not just unit tests): each user's dashboard renders
+`topbarNotifList`, `/recent/`'s `unread_count` matches
+`/unread-count/`'s, no user's own titles leak to another's response,
+marking one notification read drops the count by exactly one. Cross-user
+mark-read re-confirmed 404, target row unmodified. A pre-existing,
+unrelated gap noticed in passing: `_NOTIF_ICON` has no entry for
+`SALE_PENDING` (falls back to the default bell icon) — this predates
+this fix, affects the full notifications page equally, and is
+left alone as out of scope.
+
+Also fixed as a direct, necessary side effect: `NotificationViewTests`'
+`test_sidebar_badge_is_no_longer_a_hardcoded_mock_value` carried a
+docstring claiming the sidebar badge is "driven by notifications.js
+polling this same notification_unread_count endpoint" — no longer true
+now that the poll targets `/recent/`; docstring deleted rather than
+re-written to a new stale claim (the test name already states its own
+intent).
+
+Not committed — left uncommitted per instruction.

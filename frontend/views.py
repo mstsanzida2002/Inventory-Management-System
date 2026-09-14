@@ -21,6 +21,7 @@ from django.db.models.functions import TruncMonth, TruncWeek
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.timesince import timesince
 from django.views import View
 
 from frontend import audit
@@ -1758,6 +1759,28 @@ class NotificationUnreadCountView(LoginRequiredMixin, View):
     def get(self, request):
         count = Notification.objects.filter(recipient=request.user, is_read=False).count()
         return JsonResponse({"unread_count": count})
+
+
+class NotificationRecentView(LoginRequiredMixin, View):
+
+    def get(self, request):
+        qs = Notification.objects.filter(recipient=request.user).order_by("-created_at")
+        recent = qs[:DASHBOARD_PREVIEW_ROWS]
+        unread_count = Notification.objects.filter(recipient=request.user, is_read=False).count()
+        notifications = []
+        for notif in recent:
+            icon_name, icon_style = _NOTIF_ICON.get(notif.type, _NOTIF_ICON_DEFAULT)
+            notifications.append({
+                "id": notif.pk,
+                "title": notif.title,
+                "message": notif.message,
+                "created_at": f"{timesince(notif.created_at)} ago",
+                "is_read": notif.is_read,
+                "is_critical": notif.is_critical,
+                "icon_name": icon_name,
+                "icon_style": icon_style,
+            })
+        return JsonResponse({"unread_count": unread_count, "notifications": notifications})
 
 _ROLE_BADGE = {UserRole.ADMIN: "badge-indigo", UserRole.SUPERVISOR: "badge-warning", UserRole.STAFF: "badge-success"}
 

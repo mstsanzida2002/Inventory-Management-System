@@ -3935,21 +3935,61 @@ class NotificationViewTests(TestCase):
         for url in (
             reverse('frontend:notifications'),
             reverse('frontend:notification_unread_count'),
+            reverse('frontend:notification_recent'),
         ):
             self.assertEqual(self.client.get(url).status_code, 302)
 
     def test_sidebar_badge_is_no_longer_a_hardcoded_mock_value(self):
-        """Phase 8.99f-2: sidebar.html's notification badge used to be a
-        literal, unwired "6" (Phase 3.6 mock era). It's now the same
-        hidden-by-default element the topbar dot already uses the pattern
-        for, driven by notifications.js polling this same
-        notification_unread_count endpoint — not a second server-computed
-        value, so there's nothing new to assert server-side beyond "the
-        mock value is gone and the real hook point exists."""
         self.client.login(username='notifuser', password='x')
         response = self.client.get(reverse('frontend:dashboard'))
         self.assertNotContains(response, '<span class="nav-item-badge">6</span>')
         self.assertContains(response, 'id="sidebarNotifBadge"')
+
+    def test_topbar_dropdown_is_no_longer_a_hardcoded_mock(self):
+        self.client.login(username='notifuser', password='x')
+        response = self.client.get(reverse('frontend:dashboard'))
+        self.assertNotContains(response, 'Nitrile Gloves, Box of 100')
+        self.assertContains(response, 'id="topbarNotifList"')
+
+    def test_recent_endpoint_shows_only_own_notifications(self):
+        self.client.login(username='notifuser', password='x')
+        response = self.client.get(reverse('frontend:notification_recent'))
+        titles = [row['title'] for row in response.json()['notifications']]
+        self.assertIn('NotifOwnTitleTwo', titles)
+        self.assertNotIn('NotifOtherUserTitleThree', titles)
+
+    def test_recent_endpoint_never_leaks_another_users_notifications(self):
+        self.client.login(username='notifuser', password='x')
+        response = self.client.get(reverse('frontend:notification_recent'))
+        ids = [row['id'] for row in response.json()['notifications']]
+        self.assertNotIn(self.other_notif.pk, ids)
+
+    def test_recent_endpoint_matches_unread_count(self):
+        self.client.login(username='notifuser', password='x')
+        recent = self.client.get(reverse('frontend:notification_recent')).json()
+        unread = self.client.get(reverse('frontend:notification_unread_count')).json()
+        self.assertEqual(recent['unread_count'], unread['unread_count'])
+
+    def test_recent_endpoint_caps_and_orders_newest_first(self):
+        self.client.login(username='notifuser', password='x')
+        for i in range(10):
+            Notification.objects.create(
+                recipient=self.user, type=NotificationType.LOW_STOCK,
+                title=f'NotifCapTitle{i}', message='M',
+            )
+        response = self.client.get(reverse('frontend:notification_recent'))
+        rows = response.json()['notifications']
+        self.assertEqual(len(rows), 5, "capped at DASHBOARD_PREVIEW_ROWS")
+        self.assertEqual(rows[0]['title'], 'NotifCapTitle9', "newest first")
+
+    def test_recent_endpoint_empty_state(self):
+        empty_user = User.objects.create_user(
+            username='notifempty', email='notifempty@example.com', password='x',
+            employee_id='EMP-8012', full_name='Notif Empty', role=UserRole.STAFF,
+        )
+        self.client.login(username='notifempty', password='x')
+        response = self.client.get(reverse('frontend:notification_recent'))
+        self.assertEqual(response.json(), {'unread_count': 0, 'notifications': []})
 
 
 class PasswordGeneratorTests(TestCase):

@@ -104,7 +104,10 @@
             <tr data-product-id="{{ product.pk }}" data-product="{{ product.edit_json }}">
               <td>
                 {{ product.name }}
-                <div class="cell-sub">{{ product.sku }}</div>
+                <div class="cell-sub">
+                  {{ product.sku }}
+                  {% if not product.is_active %}<span class="badge badge-danger">Inactive</span>{% endif %}
+                </div>
               </td>
               <td>{{ product.category.name }}</td>
               <td>{{ product.supplier.company_name|default:"—" }}</td>

@@ -2079,6 +2079,29 @@ class ProductUpdateDeactivateViewTests(TestCase):
         self.assertContains(super_response, 'aria-label="Deactivate product"')
         self.assertContains(super_response, 'aria-label="Edit product"')
 
+    def test_inactive_badge_visible_to_staff_only_for_deactivated_product(self):
+        """The gap this fixes: unlike the deactivate/reactivate button
+        (Admin/Supervisor only), Staff had no way to tell a deactivated
+        product from an active one. The badge must be unconditional."""
+        self.client.login(username='pedsuper', password='x')
+        self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))
+        self.client.logout()
+
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.get(reverse('frontend:products'))
+        content = response.content.decode()
+
+        self.assertContains(response, 'badge badge-danger">Inactive</span>')
+        self.assertEqual(
+            content.count('badge badge-danger">Inactive</span>'), 1,
+            "only the deactivated product should carry the marker, not the still-active one",
+        )
+
+    def test_no_inactive_badge_shown_when_all_products_active(self):
+        self.client.login(username='pedstaff', password='x')
+        response = self.client.get(reverse('frontend:products'))
+        self.assertNotContains(response, 'badge-danger">Inactive</span>')
+
     def test_reactivate_restores_a_deactivated_product(self):
         self.client.login(username='pedsuper', password='x')
         self.client.post(reverse('frontend:product_deactivate', args=[self.product.pk]))

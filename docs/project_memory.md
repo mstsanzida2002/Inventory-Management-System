@@ -8399,3 +8399,37 @@ admin door specifically, not assumed from `full_clean()`), plus 0/negative/
 existing tests needed changing — none constructed a zero-price fixture.
 
 Not committed — left uncommitted per instruction.
+
+---
+
+## Bug-fix session — deactivated products invisible to Staff (BUG-102)
+
+**Problem:** Products, Categories, and Suppliers all deliberately list
+inactive rows (so Admin/Supervisor can find and reactivate them).
+Categories/Suppliers pair that with a visible inactive marker; Products
+had none — Staff (no deactivate/reactivate button) saw zero difference
+between an active and a deactivated product.
+
+**Scope ruling (overturned my own Phase A suggestion):** not a new
+"Status" column — Products already owns that word for the stock badge
+(In stock/Low stock/Out of stock); a second column meaning something
+else under the same header would conflate two facts. Matched Categories'
+fold-in approach instead: inactive-only marker (nothing rendered for the
+45/46 active rows — badging every row is noise), unconditional (Staff
+must see it, that's the whole point), in the name/SKU cell.
+
+**Fix — one template edit only**, `frontend/templates/products/products.html`:
+the SKU cell-sub now appends `<span class="badge badge-danger">Inactive</span>`
+when `not product.is_active`, reusing the existing `badge`/`badge-danger`
+CSS classes (no new CSS). No view change, no filter change, no migration
+— `counts.inactive` tile and a client-side status filter (Suppliers has
+both) were explicitly skipped as not worth the cost for what's currently
+a 1-row case; can be added later if the count becomes operationally
+interesting.
+
+**Verification:** 2 new tests in `ProductUpdateDeactivateViewTests` —
+badge appears exactly once and only for the deactivated product, visible
+to a Staff login with no deactivate button; a fully-active product list
+renders zero badges. Full suite 514/514 (512 baseline + 2 new).
+
+Not committed — left uncommitted per instruction.

@@ -1593,6 +1593,142 @@ class RBACDecoratorMixinTests(TestCase):
 # endpoint. Real HTTP round-trips through frontend/urls.py, like AuthTestCase
 # above — not direct function calls.
 
+class PriceValidationModelTests(TestCase):
+    """MinValueValidator(0.01) on Product.purchase_price/selling_price and
+    PurchaseOrderItem/SaleItem.unit_price, exercised via full_clean() --
+    the model layer is the real gate every entry point inherits, not just
+    ProductForm's own clean_purchase_price()/clean_selling_price()."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='pvstaff', email='pvstaff@example.com', password='x',
+            employee_id='EMP-6301', full_name='Price Validation Staffer', role=UserRole.STAFF,
+        )
+        self.category = Category.objects.create(name='Price Validation Widgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='PV Supply', company_name='PV Supply Co', contact_person='Jo',
+            email='pvsupply@example.com', phone='555-0198', address='1 PV Way', is_active=True,
+        )
+        self.product = Product.objects.create(
+            sku='PV-SKU-001', name='PV Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('9.00'),
+        )
+        self.po = PurchaseOrder.objects.create(supplier=self.supplier, created_by=self.staff)
+        self.sale = SaleTransaction.objects.create(created_by=self.staff)
+
+    def test_product_purchase_price_rejects_zero_and_negative(self):
+        for bad_value in (Decimal('0.00'), Decimal('-1.00')):
+            product = Product(
+                sku=f'PV-BAD-PP-{bad_value}', name='Bad Widget', category=self.category,
+                supplier=self.supplier, purchase_price=bad_value, selling_price=Decimal('9.00'),
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                product.full_clean()
+            self.assertIn('purchase_price', ctx.exception.message_dict)
+
+    def test_product_purchase_price_accepts_one_cent(self):
+        product = Product(
+            sku='PV-OK-PP', name='Cheap Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('0.01'), selling_price=Decimal('9.00'),
+        )
+        product.full_clean()
+
+    def test_product_selling_price_rejects_zero_and_negative(self):
+        for bad_value in (Decimal('0.00'), Decimal('-1.00')):
+            product = Product(
+                sku=f'PV-BAD-SP-{bad_value}', name='Bad Widget', category=self.category,
+                supplier=self.supplier, purchase_price=Decimal('5.00'), selling_price=bad_value,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                product.full_clean()
+            self.assertIn('selling_price', ctx.exception.message_dict)
+
+    def test_product_selling_price_accepts_one_cent(self):
+        product = Product(
+            sku='PV-OK-SP', name='Cheap Widget', category=self.category, supplier=self.supplier,
+            purchase_price=Decimal('5.00'), selling_price=Decimal('0.01'),
+        )
+        product.full_clean()
+
+    def test_purchase_order_item_unit_price_rejects_zero_and_negative(self):
+        for bad_value in (Decimal('0.00'), Decimal('-1.00')):
+            item = PurchaseOrderItem(
+                purchase_order=self.po, product=self.product, ordered_qty=1, unit_price=bad_value,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                item.full_clean()
+            self.assertIn('unit_price', ctx.exception.message_dict)
+
+    def test_purchase_order_item_unit_price_accepts_one_cent(self):
+        item = PurchaseOrderItem(
+            purchase_order=self.po, product=self.product, ordered_qty=1, unit_price=Decimal('0.01'),
+        )
+        item.full_clean()
+
+    def test_sale_item_unit_price_rejects_zero_and_negative(self):
+        for bad_value in (Decimal('0.00'), Decimal('-1.00')):
+            item = SaleItem(
+                transaction=self.sale, product=self.product, quantity=1, unit_price=bad_value,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                item.full_clean()
+            self.assertIn('unit_price', ctx.exception.message_dict)
+
+    def test_sale_item_unit_price_accepts_one_cent(self):
+        item = SaleItem(
+            transaction=self.sale, product=self.product, quantity=1, unit_price=Decimal('0.01'),
+        )
+        item.full_clean()
+
+
+class ProductAdminPriceValidationTests(TestCase):
+    """Django admin's ProductAdmin has no `form =` override -- it builds
+    its own ModelForm straight off Product with none of ProductForm's
+    clean_purchase_price()/clean_selling_price(). Proves the model-level
+    validator (not ProductForm's) is what actually closes this door."""
+
+    def setUp(self):
+        self.superuser = User.objects.create_superuser(
+            username='priceadmin', email='priceadmin@example.com', password='x',
+            employee_id='EMP-6401', full_name='Price Admin',
+        )
+        self.category = Category.objects.create(name='Admin Widgets', is_active=True)
+        self.supplier = Supplier.objects.create(
+            supplier_name='Admin Supply', company_name='Admin Supply Co', contact_person='Jo',
+            email='adminsupply@example.com', phone='555-0199', address='1 Admin Way', is_active=True,
+        )
+
+    def admin_payload(self, **overrides):
+        payload = {
+            'sku': 'ADMIN-SKU-001', 'name': 'Admin Widget', 'category': self.category.pk,
+            'supplier': self.supplier.pk, 'unit': 'pcs', 'purchase_price': '5.00',
+            'selling_price': '9.00', 'tax_rate': '0', 'reorder_level': '10', 'current_stock': '0',
+            'is_active': 'on',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_admin_rejects_zero_purchase_price(self):
+        self.client.login(username='priceadmin', password='x')
+        response = self.client.post(reverse('admin:frontend_product_add'), self.admin_payload(purchase_price='0'))
+        self.assertEqual(response.status_code, 200, "a rejected admin form re-renders, it doesn't redirect")
+        self.assertContains(response, 'Ensure this value is greater than or equal to 0.01')
+        self.assertEqual(Product.objects.filter(sku='ADMIN-SKU-001').count(), 0)
+
+    def test_admin_rejects_zero_selling_price(self):
+        self.client.login(username='priceadmin', password='x')
+        response = self.client.post(reverse('admin:frontend_product_add'), self.admin_payload(selling_price='0'))
+        self.assertEqual(response.status_code, 200, "a rejected admin form re-renders, it doesn't redirect")
+        self.assertContains(response, 'Ensure this value is greater than or equal to 0.01')
+        self.assertEqual(Product.objects.filter(sku='ADMIN-SKU-001').count(), 0)
+
+    def test_admin_accepts_one_cent_purchase_price(self):
+        self.client.login(username='priceadmin', password='x')
+        response = self.client.post(reverse('admin:frontend_product_add'), self.admin_payload(purchase_price='0.01'))
+        self.assertEqual(response.status_code, 302, "a successful admin add redirects to the changelist")
+        self.assertEqual(Product.objects.get(sku='ADMIN-SKU-001').purchase_price, Decimal('0.01'))
+
+
 class ProductCreateViewTests(TestCase):
 
     def setUp(self):
@@ -1689,6 +1825,50 @@ class ProductCreateViewTests(TestCase):
 
         product = Product.objects.get(name='Test Gadget')
         self.assertEqual(product.reorder_level, 37)
+
+    def test_zero_purchase_price_rejected_with_human_message(self):
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(purchase_price='0'))
+        self.assertEqual(response.status_code, 400)
+        errors = response.json().get('errors', {})
+        self.assertIn('purchase_price', errors)
+        self.assertEqual(errors['purchase_price'][0]['message'], 'Purchase price must be more than 0.')
+        self.assertEqual(Product.objects.filter(name='Test Gadget').count(), 0)
+
+    def test_negative_purchase_price_rejected(self):
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(purchase_price='-5.00'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('purchase_price', response.json().get('errors', {}))
+        self.assertEqual(Product.objects.filter(name='Test Gadget').count(), 0)
+
+    def test_purchase_price_of_one_cent_accepted(self):
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(purchase_price='0.01'))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(Product.objects.get(name='Test Gadget').purchase_price, Decimal('0.01'))
+
+    def test_zero_selling_price_rejected_with_human_message(self):
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(selling_price='0'))
+        self.assertEqual(response.status_code, 400)
+        errors = response.json().get('errors', {})
+        self.assertIn('selling_price', errors)
+        self.assertEqual(errors['selling_price'][0]['message'], 'Selling price must be more than 0.')
+        self.assertEqual(Product.objects.filter(name='Test Gadget').count(), 0)
+
+    def test_negative_selling_price_rejected(self):
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(selling_price='-5.00'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('selling_price', response.json().get('errors', {}))
+        self.assertEqual(Product.objects.filter(name='Test Gadget').count(), 0)
+
+    def test_selling_price_of_one_cent_accepted(self):
+        self.client.login(username='pstaff', password='x')
+        response = self.client.post(reverse('frontend:products'), self.valid_payload(selling_price='0.01'))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(Product.objects.get(name='Test Gadget').selling_price, Decimal('0.01'))
 
 
 class ProductUpdateDeactivateViewTests(TestCase):
@@ -2617,6 +2797,47 @@ class PurchaseWorkflowViewTests(TestCase):
         self.client.logout()
         return PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
 
+    def test_line_item_zero_unit_price_rejected_with_human_message(self):
+        self.client.login(username='pobstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 0, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 400)
+        errors = response.json().get('errors', {})
+        self.assertIn('items', errors)
+        self.assertIn('Line 1: unit price must be more than 0.', [e['message'] for e in errors['items']])
+        self.assertEqual(PurchaseOrder.objects.filter(supplier=self.supplier).count(), 0)
+
+    def test_line_item_negative_unit_price_rejected(self):
+        self.client.login(username='pobstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': -1, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('items', response.json().get('errors', {}))
+        self.assertEqual(PurchaseOrder.objects.filter(supplier=self.supplier).count(), 0)
+
+    def test_line_item_unit_price_of_one_cent_accepted(self):
+        self.client.login(username='pobstaff', password='x')
+        payload = {
+            'supplier': self.supplier.pk,
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 0.01, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:purchases'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        po = PurchaseOrder.objects.filter(supplier=self.supplier).order_by('-pk').first()
+        self.assertEqual(po.items.get().unit_price, Decimal('0.01'))
+
     def test_create_draft_po_with_line_items_no_stock_change(self):
         po = self.create_draft_po(quantity=10)
         self.assertEqual(po.status, POStatus.DRAFT)
@@ -3121,6 +3342,47 @@ class SaleWorkflowViewTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.client.logout()
         return SaleTransaction.objects.filter(created_by=self.staff).order_by('-pk').first()
+
+    def test_line_item_zero_unit_price_rejected_with_human_message(self):
+        self.client.login(username='salestaff', password='x')
+        payload = {
+            'customer_name': 'Walk-in customer',
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 0, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:sales'), payload)
+        self.assertEqual(response.status_code, 400)
+        errors = response.json().get('errors', {})
+        self.assertIn('items', errors)
+        self.assertIn('Line 1: unit price must be more than 0.', [e['message'] for e in errors['items']])
+        self.assertEqual(SaleTransaction.objects.filter(created_by=self.staff).count(), 0)
+
+    def test_line_item_negative_unit_price_rejected(self):
+        self.client.login(username='salestaff', password='x')
+        payload = {
+            'customer_name': 'Walk-in customer',
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': -1, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:sales'), payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('items', response.json().get('errors', {}))
+        self.assertEqual(SaleTransaction.objects.filter(created_by=self.staff).count(), 0)
+
+    def test_line_item_unit_price_of_one_cent_accepted(self):
+        self.client.login(username='salestaff', password='x')
+        payload = {
+            'customer_name': 'Walk-in customer',
+            'items_json': json.dumps([
+                {'productLabel': str(self.product.pk), 'quantity': 5, 'unitPrice': 0.01, 'discount': 0},
+            ]),
+        }
+        response = self.client.post(reverse('frontend:sales'), payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        sale = SaleTransaction.objects.filter(created_by=self.staff).order_by('-pk').first()
+        self.assertEqual(sale.items.get().unit_price, Decimal('0.01'))
 
     def test_create_sale_is_draft_with_no_stock_change(self):
         sale = self.create_draft_sale(quantity=5)

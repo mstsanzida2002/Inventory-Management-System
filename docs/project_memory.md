@@ -8343,3 +8343,59 @@ re-written to a new stale claim (the test name already states its own
 intent).
 
 Not committed — left uncommitted per instruction.
+
+---
+
+## Bug-fix session — zero/negative price accepted on Product and line items (BUG-101)
+
+**Problem:** `Product.purchase_price`/`selling_price` and `PurchaseOrderItem`/
+`SaleItem.unit_price` were plain `DecimalField`s with no validators.
+`ProductForm.clean_purchase_price()`/`clean_selling_price()` and
+`parse_line_items()` only rejected `< 0`, so `0` passed everywhere. Django
+admin's `ProductAdmin` has no `form =` override, so it ran no validation
+at all — a laxer door than the real form, negative included.
+
+**Discovery:** no downstream code divides by a price (`capital_at_risk()`,
+`calculate_line_total()`, `InventoryRecord.total_value`), so a zero price
+never crashed anything — it silently produced zero-valued money figures.
+Two same-day dev rows already existed with a zero field (`Flagylq`
+purchase_price=0, `Medical2` selling_price=0), both manual-test artifacts,
+neither from `seed_dev_data.py`.
+
+**Fix:** `MinValueValidator(Decimal('0.01'))` added to all four fields
+(`frontend/models.py`) as the real gate — migration `0015` is a state-only
+`AlterField` (validators aren't DDL, no `ALTER TABLE` on Postgres).
+`ProductForm` and `parse_line_items()` (`frontend/forms.py`) give a human
+message ahead of the model's generic one: `"Purchase price must be more
+than 0."` / `"Selling price must be more than 0."` / `"Line N: unit price
+must be more than 0."`. No `selling_price >= purchase_price` rule added —
+selling below cost stays a legitimate business decision, deliberately out
+of scope.
+
+**Existing zero-price rows — resolved asymmetrically:** `Flagylq` (no
+transaction history) deleted via the same two-step `ProductDeleteView`
+uses (`InventoryRecord` then `Product`) — gone. `Medical2` (blocked by
+`PurchaseOrderItem`/`InventoryMovement` `PROTECT`, a real received PO)
+was only deactivated (`is_active=False`); `purchase_price`, `selling_price`,
+its `InventoryRecord`, PO line, and movement row are all left untouched —
+forcing the delete would destroy real transaction history to fix a
+display price, and inventing a plausible `selling_price` would be
+fabrication. Confirmed empirically where it still surfaces: gone from
+the classifier's `is_active=True` input set and the Purchase/Sale
+product dropdowns, but **still visible** in the Products page list and
+`ProductExportView`'s CSV — both come from `filters.filter_products()`,
+which never filters on `is_active` — rendering literally as `$0.00` in
+the "Unit price" column, with no "Inactive" badge distinguishing the
+row (Staff sees no marker at all; only Admin/Supervisor see a
+reactivate-vs-deactivate icon). Deactivation alone does not conceal
+it — documented as accepted, deliberate residue in `bugsfound.md`
+BUG-101, not a follow-up gap.
+
+**Verification:** new `PriceValidationModelTests` (model-layer, all four
+fields via `full_clean()`), `ProductAdminPriceValidationTests` (proves the
+admin door specifically, not assumed from `full_clean()`), plus 0/negative/
+0.01 cases added to `ProductCreateViewTests`, `PurchaseWorkflowViewTests`,
+`SaleWorkflowViewTests`. Full suite 512/512 (489 baseline + 23 new); zero
+existing tests needed changing — none constructed a zero-price fixture.
+
+Not committed — left uncommitted per instruction.

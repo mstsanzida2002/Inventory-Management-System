@@ -63,14 +63,14 @@ class ProductForm(forms.ModelForm):
 
     def clean_purchase_price(self):
         value = self.cleaned_data.get("purchase_price")
-        if value is not None and value < 0:
-            raise forms.ValidationError("Purchase price cannot be negative.")
+        if value is not None and value <= 0:
+            raise forms.ValidationError("Purchase price must be more than 0.")
         return value
 
     def clean_selling_price(self):
         value = self.cleaned_data.get("selling_price")
-        if value is not None and value < 0:
-            raise forms.ValidationError("Selling price cannot be negative.")
+        if value is not None and value <= 0:
+            raise forms.ValidationError("Selling price must be more than 0.")
         return value
 
     def clean_tax_rate(self):
@@ -132,8 +132,8 @@ def parse_line_items(raw_json, min_quantity=1):
             unit_price = Decimal(str(raw.get("unitPrice")))
         except (InvalidOperation, TypeError, ValueError):
             unit_price = None
-        if unit_price is None or unit_price < 0:
-            errors.append(f"Line {index}: unit price cannot be negative.")
+        if unit_price is None or unit_price <= 0:
+            errors.append(f"Line {index}: unit price must be more than 0.")
             continue
 
         try:

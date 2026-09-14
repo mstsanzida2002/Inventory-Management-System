@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
@@ -142,8 +143,12 @@ class Product(TimeStampedModel):
     brand = models.CharField(max_length=100, blank=True)
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products')
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='products')
-    purchase_price = models.DecimalField(max_digits=12, decimal_places=2)
-    selling_price = models.DecimalField(max_digits=12, decimal_places=2)
+    purchase_price = models.DecimalField(
+        max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    selling_price = models.DecimalField(
+        max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))],
+    )
     # Rule: tax_rate lives on Product, not entered per-transaction.
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     reorder_level = models.PositiveIntegerField(default=10)
@@ -265,7 +270,9 @@ class PurchaseOrderItem(TimeStampedModel):
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     ordered_qty = models.PositiveIntegerField()
     received_qty = models.PositiveIntegerField(default=0)
-    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    unit_price = models.DecimalField(
+        max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))],
+    )
     discount = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     # Rule: tax snapshotted from Product.tax_rate at creation, not live.
     tax = models.DecimalField(max_digits=5, decimal_places=2, default=0)
@@ -349,7 +356,9 @@ class SaleItem(TimeStampedModel):
     transaction = models.ForeignKey(SaleTransaction, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField()
-    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    unit_price = models.DecimalField(
+        max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))],
+    )
     discount = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     # Rule: tax snapshotted from Product.tax_rate at creation, not live.
     tax = models.DecimalField(max_digits=5, decimal_places=2, default=0)
